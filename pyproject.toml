@@ -1,0 +1,70 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "remote-sense"
+version = "0.1.0"
+description = "Internal satellite agricultural intelligence platform (Sentinel-2/CDSE). Backbone behind the AgriTrack farmer app."
+requires-python = ">=3.11"
+authors = [{ name = "Mishael" }]
+
+# Phase 0 core: enough to boot the API/worker and exercise the mock imagery adapter.
+# Geospatial libs (rasterio/rio-tiler) are an extra, pulled in when the windowed_cog
+# adapter and analysis engine land (Phase 2+), to keep the base image slim.
+dependencies = [
+    "fastapi>=0.111",
+    "uvicorn[standard]>=0.30",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "structlog>=24.1",
+    "numpy>=1.26",
+    "celery>=5.4",
+    "redis>=5.0",
+    "httpx>=0.27",
+    "tenacity>=8.4",
+]
+
+[project.optional-dependencies]
+geo = [
+    "rasterio>=1.3",
+    "rio-tiler>=6.4",
+    "shapely>=2.0",
+    "pyproj>=3.6",
+    "geopandas>=0.14",
+    "pystac-client>=0.7",
+]
+resilience = [
+    "pybreaker>=1.2",
+    "authlib>=1.3",
+    "aiolimiter>=1.1",
+]
+db = [
+    "sqlalchemy>=2.0",
+    "geoalchemy2>=0.15",
+    "alembic>=1.13",
+    "psycopg[binary]>=3.1",
+]
+interpret = [
+    "anthropic>=0.34",
+]
+dev = [
+    "pytest>=8.2",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.5",
+]
+
+[tool.setuptools.packages.find]
+where = ["packages"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = [".", "packages"]
