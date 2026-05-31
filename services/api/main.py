@@ -6,7 +6,14 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
-from rs_core import configure_logging, get_logger, get_settings
+from rs_core import (
+    configure_logging,
+    configure_telemetry,
+    get_logger,
+    get_settings,
+    instrument_fastapi,
+    instrument_httpx,
+)
 
 settings = get_settings()
 log = get_logger("api")
@@ -15,12 +22,20 @@ log = get_logger("api")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     configure_logging(settings.log_level)
-    log.info("api.startup", env=settings.app_env, imagery_adapter=settings.imagery_adapter.value)
+    tracing = configure_telemetry(settings)
+    instrument_httpx()
+    log.info(
+        "api.startup",
+        env=settings.app_env,
+        imagery_adapter=settings.imagery_adapter.value,
+        tracing=tracing,
+    )
     yield
     log.info("api.shutdown")
 
 
 app = FastAPI(title="remote-sense API", version="0.1.0", lifespan=lifespan)
+instrument_fastapi(app)
 
 
 @app.get("/healthz")

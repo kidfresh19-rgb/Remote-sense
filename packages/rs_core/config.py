@@ -32,6 +32,13 @@ class Settings(BaseSettings):
     app_env: str = "dev"
     log_level: str = "INFO"
 
+    # Observability (OpenTelemetry). Tracing is opt-in; when disabled, or when the OTel
+    # packages / an OTLP endpoint are absent, the stack boots identically with tracing as a
+    # safe no-op. Logs carry the active trace/span ids so logs and traces cross-reference.
+    otel_enabled: bool = False
+    otel_service_name: str = "remote-sense"
+    otel_exporter_otlp_endpoint: str = ""  # e.g. http://otel-collector:4318
+
     # PostgreSQL + PostGIS
     database_url: str = "postgresql+psycopg://rs:rs@localhost:5432/remote_sense"
 
