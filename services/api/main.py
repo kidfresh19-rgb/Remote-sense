@@ -1,5 +1,6 @@
 """FastAPI entrypoint. Phase 0: health + readiness reporting the active configuration.
-Ingestion (L1), the workspace BFF (L6) and the publish trigger (L7) land in later phases."""
+Phase 1 adds ingestion (L1). The workspace BFF (L6) and the publish trigger (L7) land in
+later phases."""
 
 from __future__ import annotations
 
@@ -14,6 +15,10 @@ from rs_core import (
     instrument_fastapi,
     instrument_httpx,
 )
+
+from services.api.ingestion import router as ingestion_router
+from services.api.operations import router as operations_router
+from services.api.workspace import router as workspace_router
 
 settings = get_settings()
 log = get_logger("api")
@@ -36,6 +41,9 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="remote-sense API", version="0.1.0", lifespan=lifespan)
 instrument_fastapi(app)
+app.include_router(ingestion_router)
+app.include_router(operations_router)
+app.include_router(workspace_router)
 
 
 @app.get("/healthz")

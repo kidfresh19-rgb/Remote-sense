@@ -30,3 +30,14 @@ You are the data-pipeline engineer for **remote-sense**. You own `services/worke
 Backfill + forward-fill run idempotently under concurrency (no double-enqueue), state survives a
 crash and resumes, gaps are detected and retried, and tasks are covered by tests using the mock
 adapter.
+
+## Current state (2026-05-31)
+Phase 3 kernel is in: `services/worker/planning.py` (`backfill_window`, `plan_scenes` dedup/gap =
+R-1, `due_for_forward_fill`, `collection_key`) and `collection.py: collect_field` (mock-adapter
+tested). R-1 enqueue-lock landed: `services/worker/locks.py: enqueue_lock` (SET NX EX +
+compare-and-delete release) and `collection.py: collect_field_locked`. Collection state landed:
+`rs_core.models.FieldCollectionState` + Alembic `0002` + cursor helpers (`ensure_collection_state`,
+`get_collection_state`, `record_forward_fill_poll`, `mark_backfill_complete`, and the monotonic
+`advance_cursor`). Still open: the live Celery task wiring `collect_field_locked` + DB persistence
+(`services/worker/persistence.py`) + cursor writes + per-scene `metadata()`→`upsert_scene_metadata`
+(D4-live), and CDSE 429 backoff (lives in the real adapter, D6).

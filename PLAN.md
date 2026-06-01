@@ -208,3 +208,73 @@ correlation) threads through Phases 5–6 as overlay layers + correlation views.
    + provenance tag, and assert parity in the validation matrix.
 6. **Claude interpretation hallucination** — agronomic text must be grounded in the actual zonal
    stats + thresholds and gated behind agronomist review before any push. Never auto-publish.
+
+---
+
+## 10. Deferred & skipped work (tracking)
+
+Built so far: Phase 0 (done), Phase 1 (ingestion + data model), Phase 2 (analysis core, science
+verified against synthetic references), Phase 3 (collection pipeline). Landed 2026-05-31 once the
+firmware blocker cleared: the analysis→DB persistence helper (D3), the collection-state table +
+migration `0002` + cursor persistence (D5), concurrent first-create hardening on ingest (D8), the
+Redis enqueue-lock + lock-gated collection (R-1), and the live collection itself - `run_collection`
+/ `prepare_and_run` (scene-metadata + zonal-stats persistence + cursor/backfill state), the
+`backfill_field` / `forward_fill_field` Celery tasks, and the daily `scan_and_enqueue` beat
+scheduler (D4). Reviewed via `/code-review` + `/security-review`: one correctness fix applied (the
+forward-fill geometry-version join), two items tracked as D10/D11 below. **Phase 4b
+(`rs_interpret`, L4b) landed 2026-06-01** (buildable without the parked infra): index-band
+thresholds (⚑ agronomy), grounding (`AnalysisOutput` → evidence), the cacheable agronomic prompt,
+the never-auto-published `interpret` service, the `AnthropicInterpretClient` (prompt caching, SDK
+isolated behind the `interpret` extra), the `interpretation` table + Alembic `0003` +
+first-draft-wins upsert, and the `interpret_field_pass` worker + `interpret.field_pass` task.
+**Phase 6 (`rs_sync`, L7) landed 2026-06-01**: the versioned, geometry-free `GatewayPayload` +
+`build_payload` + deterministic idempotency keys, the CSV export, `GatewayPort` with
+`RecordingGatewayPort` / `HttpGatewayPort` (bearer + Idempotency-Key header + tenacity retry), the
+`sync_outbox` ledger + Alembic `0004`, and the `publish_farm` worker + `sync.publish_farm` task
+(R-2 idempotent: an already-published result set is not re-pushed; a failed push dead-letters).
+GeoTIFF/PDF exporters stay parked on the raster/PDF stacks. **Phase 7 (auth + observability,
+partial) landed 2026-06-01**: RBAC (`rs_core/rbac.py` - view/annotate/run-analysis/publish +
+viewer/analyst/publisher/admin roles, permissions derived server-side), stdlib HS256 JWT
+verification (alg-pinned, constant-time, `exp`-checked) + the `require(permission)` dependency
+(`services/api/auth.py`), and the RBAC-gated `POST /publish/farm/{id}` (publish) +
+`GET /pipeline/health` (view; coverage + dead-letter summary, R-4). Load/scale testing, alerting,
+and authenticating the ingestion endpoint (tied to the ⚑ DI-1 arrival contract) remain. **L5/L6
+(partial) landed 2026-06-01**: S-4 UTC/CAT time handling (`rs_core/timeutil.py`), the tiler service
+skeleton (`services/tiler` - pure render-params + XYZ→bbox math; the tile route 503s without the
+raster stack, real render is in-container), and the RBAC'd workspace BFF read endpoints
+(`services/api/workspace.py` - farms / fields-with-geometry / time-series / scenes /
+interpretations). The React + MapLibre workspace UI (L6 frontend) and the in-container raster
+rendering (L5) remain. Each ships with no-infra unit tests;
+their DB/broker-backed tests are written and skip locally, set to run under `docker compose` / CI.
+The items below remain consciously deferred. Nothing here is forgotten work, it is parked against
+a dependency.
+
+**Environment dependency (updated 2026-05-31).** UEFI virtualisation (VT-x) is now enabled and
+WSL2 is installed; Docker Desktop is being installed, so the local stack (Postgres+PostGIS,
+Redis, MinIO) is about to come up and the DB/broker-gated tests can finally run for real.
+`rasterio` / `rio-tiler` still will not install on the host directly (no MSVC C++ toolchain,
+Python 3.14), but they are plain wheels in the `python:3.11-slim` image, so anything needing the
+raster stack unblocks *inside the container* once the stack is up - it is no longer blocked on
+the host toolchain.
+
+| # | Deferred / skipped item | Phase | Status / why parked | Unblocks when |
+|---|---|---|---|---|
+| D1 | COG emission in the analysis path | 2 | parked: needs `rasterio` | raster stack (in-container, once stack is up) |
+| D2 | Real Copernicus Browser entries in the validation matrix | 2 | parked: needs live CDSE data | real adapter + CDSE access |
+| D3 | `upsert_analysis` persistence helper (AnalysisOutput → `analysis` row) | 2/3 | **done 2026-05-31** — additive/idempotent upsert on `uq_analysis_identity` (refresh-in-place); unit-tested, DB idempotency/additivity test skips locally | — |
+| D4 | Live Celery execution + Redis enqueue-lock (R-1 concurrency) | 3 | **done 2026-05-31** — enqueue-lock + `collect_field_locked` + live `run_collection`/`prepare_and_run` + Celery `backfill_field`/`forward_fill_field` + daily `scan_and_enqueue` beat; orchestration DB-gated-tested for CI | — |
+| D5 | Per-field collection-state table + cursor persistence + migration `0002` | 3 | **done 2026-05-31** — `field_collection_state` model + migration + cursor helpers (monotonic `advance_cursor`); DB-gated helper tests skip locally | live verification on the stack |
+| D6 | CDSE 429 backoff (R-3) in the data adapter | 3 | parked: lives in the real adapter | real adapter (rasterio/CDSE) |
+| D7 | Explicit COG-then-discard step (S-1) | 3 | parked: needs COG emission (D1) | raster stack (in-container) |
+| D8 | Concurrent first-create idempotency hardening (ingest) | 1→3 | **done 2026-05-31** — `get_or_create_farm` savepoint + IntegrityError recovery; race branch unit-tested, DB test skips locally | — |
+| D9 | Deactivate fields dropped from a later gateway payload | 1 | parked: open policy decision | gateway-team confirmation |
+| D10 | Field-level concurrent first-create hardening (extend the `get_or_create_farm` savepoint+retry to `_upsert_field`) | 1→3 | code-review (2026-05-31): D8 hardened the farm create, not the per-field create, so a simultaneous first-ingest of the same farm+field can still 500 on `uq_field_farm_canonical` | Phase 3 concurrency work + a true-parallel test harness |
+| D11 | Per-pass backfill fan-out | 3 | code-review (2026-05-31): `run_collection` does a whole backfill window in one task/transaction (lock held + memory scale with the window); PLAN §7 envisages per-pass enqueue | scale testing; a deliberate v1 simplification until then |
+| S1 | DB/infra-gated tests that skip locally — now **17** (was 7): ingestion + get-or-create (`test_ingestion_db`), analysis upsert (`test_analysis_db`), collection-state cursor (`test_collection_state_db`), live collection + due-selection (`test_tasks_db`) | 1→3 | no local PostGIS/Redis | Docker stack up / CI |
+
+**`# ⚑ CONFIRM` domain knobs awaiting agronomy review:** SCL clear-class set
+(`rs_analysis/scl.py`), per-index colormap display ranges (`colormaps.py`), clear-fraction
+confidence thresholds (`engine.py`), and the interpretation index-band thresholds + per-crop
+overrides + the static agronomic system prompt (`rs_interpret/thresholds.py`,
+`rs_interpret/prompts.py`). All carry generic defaults behind the flag until an agronomist tunes
+them; the interpretation layer never auto-publishes (risk #6), so a human reviews every read.

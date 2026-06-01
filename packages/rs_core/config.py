@@ -73,6 +73,11 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""
     anthropic_model: str = "claude-opus-4-8"
 
+    # Auth / RBAC (Phase 7). The IdP/gateway issues JWTs; the API only verifies them (HS256).
+    jwt_secret: str = ""
+    jwt_algorithm: str = "HS256"
+    jwt_audience: str = ""
+
 
 @lru_cache
 def get_settings() -> Settings:

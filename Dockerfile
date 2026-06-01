@@ -1,6 +1,7 @@
-# Phase 0 base image: boots the API and worker against the mock imagery adapter.
-# Geospatial system libs (GDAL) are NOT needed yet - rasterio is an optional extra
-# pulled in for the analysis engine / windowed_cog adapter in a later stage.
+# Base image: boots the API, worker, and Alembic migrations. Phase 1 adds the PostGIS data
+# model; its deps (sqlalchemy/geoalchemy2/alembic/psycopg/shapely/pyproj) are pure wheels in
+# the base install. Heavy raster system libs (GDAL) are still NOT needed - rasterio is an
+# optional extra pulled in for the analysis engine / windowed_cog adapter in a later stage.
 FROM python:3.11-slim AS base
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -9,9 +10,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-COPY pyproject.toml ./
+COPY pyproject.toml alembic.ini ./
 COPY packages ./packages
 COPY services ./services
+COPY alembic ./alembic
 
 RUN pip install --no-cache-dir -e .
 

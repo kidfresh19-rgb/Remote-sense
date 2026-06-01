@@ -32,3 +32,13 @@ domain models, RBAC), `packages/rs_sync` (export builders + `GatewayPort`), and 
 Endpoints have request/response models + validation, migrations apply cleanly, ingestion is
 idempotent and rejects/quarantines bad geometry, and tests cover the happy path plus malformed
 input.
+
+## Current state (2026-05-31)
+Data model + ingestion are code-complete and now run on live PostGIS (Docker stack up). Migrations:
+Alembic `0001` (farm/field/field_geometry_version/scene_metadata/analysis) + `0002`
+(field_collection_state). Persistence helpers in `rs_core.repositories`: `upsert_scene_metadata`
+(first-write-wins, keyed by scene_id), `upsert_analysis` (additive/idempotent on
+`uq_analysis_identity`, refresh-in-place), and the collection-state cursor helpers. Ingestion is
+hardened against a concurrent first-create: `get_or_create_farm` (savepoint `begin_nested` +
+IntegrityError re-fetch). Still behind ⚑ CONFIRM: the `GatewayPort` wire format and the
+`ArrivalSource` default; `rs_sync` export/push (L7) not yet built.

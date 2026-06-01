@@ -1,5 +1,32 @@
-"""rs_sync: outbound sync (Phase 6). Export builders (GeoTIFF/CSV/PDF/gateway payload)
-and the GatewayPort, with retry + backoff + dead-letter + idempotency keys. Results are
-pushed additively, keyed to the canonical farm ID; geometry is never returned.
+"""rs_sync (L7): outbound sync. Build export formats and push selected results to the gateway,
+additively, robustly, and idempotently. The gateway push goes through `GatewayPort` only
+(CLAUDE.md §1.1); results are keyed to the canonical farm id and **geometry is never returned**
+(§1.6). GeoTIFF/PDF exports are parked on the raster/PDF stacks; CSV + the JSON gateway payload
+are in place. The gateway URL/auth/wire format is the open `⚑ CONFIRM` item, defaulted behind the
+port."""
 
-Not yet implemented. The gateway URL/auth/payload is a parked decision (⚑ CONFIRM)."""
+from rs_sync.adapters import HttpGatewayPort, RecordingGatewayPort
+from rs_sync.exporters import analyses_to_csv
+from rs_sync.payload import (
+    PAYLOAD_VERSION,
+    AnalysisRow,
+    GatewayPayload,
+    IndexResult,
+    build_payload,
+    compute_idempotency_key,
+)
+from rs_sync.port import GatewayPort, PushResult
+
+__all__ = [
+    "HttpGatewayPort",
+    "RecordingGatewayPort",
+    "analyses_to_csv",
+    "PAYLOAD_VERSION",
+    "AnalysisRow",
+    "GatewayPayload",
+    "IndexResult",
+    "build_payload",
+    "compute_idempotency_key",
+    "GatewayPort",
+    "PushResult",
+]

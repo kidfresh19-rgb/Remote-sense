@@ -4,6 +4,7 @@ cleanly. Backfill, the forward-fill scheduler, and per-field state/locking land 
 from __future__ import annotations
 
 from celery import Celery
+from celery.schedules import crontab
 from celery.signals import worker_process_init
 from rs_core import (
     configure_logging,
@@ -26,6 +27,18 @@ celery.conf.update(
     timezone="UTC",
     enable_utc=True,
 )
+
+# Forward-fill runs on Sentinel-2 cadence (~5 days); the scheduler checks daily and enqueues only
+# the fields actually due, plus any flagged for backfill (services.worker.tasks.scan_and_enqueue).
+celery.conf.beat_schedule = {
+    "collection-scan-and-enqueue": {
+        "task": "collection.scan_and_enqueue",
+        "schedule": crontab(hour=2, minute=0),
+    },
+}
+
+# Register the collection tasks (services.worker.tasks) on the worker/beat.
+celery.autodiscover_tasks(["services.worker"])
 
 
 @worker_process_init.connect

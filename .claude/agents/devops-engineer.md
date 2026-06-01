@@ -28,3 +28,12 @@ service environment and everything cross-cutting that keeps it observable and sh
 ## Done when
 `docker compose up` brings the stack up healthy, config is fully env-driven with a complete
 `.env.example`, logs are structured, and CI runs lint + tests on every change.
+
+## Current state (2026-05-31)
+Local stack is runnable: VT-x enabled in UEFI, WSL2 installed, Docker Desktop (engine 29.4.3) up.
+`docker compose up` brings Postgres+PostGIS (`postgis/postgis:16-3.4`), Redis, MinIO + bucket
+init, and the build-based `migrate`/`api`/`worker`/`beat`. The `geo` extra (rasterio/rio-tiler)
+will not install on the host (no MSVC toolchain, Python 3.14) but is a plain wheel in the
+`python:3.11-slim` image, so raster work runs in-container. Headless-shell gotcha: prepend
+`C:\Program Files\Docker\Docker\resources\bin` to PATH so `docker` and its `docker-credential-desktop`
+helper resolve, otherwise image pulls fail on a credential-helper lookup.
