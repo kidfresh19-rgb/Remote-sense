@@ -14,6 +14,7 @@ This is a developer convenience, not part of the deployed app: production runs t
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import subprocess
@@ -32,6 +33,10 @@ _WINDOWS_DOCKER_BIN = Path(r"C:\Program Files\Docker\Docker\resources\bin")
 # collides with compose's own `postgres` service; compose's postgres supersedes it, so it is safe
 # to drop before bringing the stack up.
 _TEST_DB_CONTAINER = "rs-testpg"
+
+# Services that run to completion and legitimately end in `exited`; everything else is long-running
+# and should be `running`. Used to tell a healthy stack from the wreckage of an interrupted `up`.
+_ONE_SHOT_SERVICES = frozenset({"migrate", "createbuckets"})
 
 
 def _fail(message: str) -> None:
@@ -87,6 +92,58 @@ def free_db_port(docker: str) -> None:
             "compose postgres may fail to start.",
             file=sys.stderr,
         )
+
+
+def _parse_compose_ps(stdout: str) -> list[dict]:
+    """Parse `docker compose ps --format json`, which is a JSON array on some Compose versions and
+    newline-delimited objects on others. Unparseable lines are skipped rather than fatal."""
+    text = stdout.strip()
+    if not text:
+        return []
+    try:
+        data = json.loads(text)
+        return data if isinstance(data, list) else [data]
+    except json.JSONDecodeError:
+        containers: list[dict] = []
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                containers.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+        return containers
+
+
+def clear_stale_containers(docker: str) -> None:
+    """Self-heal the wreckage of an interrupted or failed `up`. A previous run can leave containers
+    in `created` state or a long-running service `exited` (e.g. postgres losing the init-phase
+    shutdown race on Docker Desktop for Windows), which makes the next `up` fail with a name
+    conflict. Detect that and clear it with `down --remove-orphans`; named volumes are kept, so the
+    already-initialized database survives. A healthy stack (long-running services `running`,
+    one-shots `exited`) is left untouched, so this is a no-op on a normal re-run."""
+    result = subprocess.run(
+        [docker, "compose", "ps", "-a", "--format", "json"],
+        capture_output=True,
+        text=True,
+        cwd=REPO_ROOT,
+        check=False,
+    )
+    if result.returncode != 0:
+        return
+    stale: list[str] = []
+    for container in _parse_compose_ps(result.stdout):
+        service = container.get("Service", "")
+        state = (container.get("State") or "").lower()
+        name = container.get("Name") or service
+        if state in {"created", "dead", "restarting", "paused", "removing"}:
+            stale.append(name)
+        elif state == "exited" and service not in _ONE_SHOT_SERVICES:
+            stale.append(name)
+    if stale:
+        print(f"Clearing stale containers from a previous run ({', '.join(stale)}) before start.")
+        subprocess.run([docker, "compose", "down", "--remove-orphans"], cwd=REPO_ROOT, check=False)
 
 
 def compose(docker: str, *args: str) -> int:
@@ -147,6 +204,7 @@ def main(argv: list[str] | None = None) -> int:
         return compose(docker, "logs", "-f")
 
     ensure_env()
+    clear_stale_containers(docker)
     free_db_port(docker)
 
     detach = args.detach or args.frontend
