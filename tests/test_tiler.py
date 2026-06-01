@@ -39,10 +39,11 @@ def test_healthz() -> None:
 
 def test_tile_unknown_index_is_404() -> None:
     with TestClient(app) as client:
-        assert client.get("/tiles/bogus/0/0/0.png").status_code == 404
+        # The index is validated before any raster work, so this is 404 even without the stack.
+        assert client.get("/tiles/bogus/1/FIELD-1/SCENE-1/0/0/0.png").status_code == 404
 
 
 def test_tile_without_raster_stack_is_503() -> None:
     with TestClient(app) as client:
         # rio-tiler (the geo extra) is not installed on the host -> the route degrades to 503.
-        assert client.get("/tiles/ndvi/0/0/0.png").status_code == 503
+        assert client.get("/tiles/ndvi/1/FIELD-1/SCENE-1/0/0/0.png").status_code == 503

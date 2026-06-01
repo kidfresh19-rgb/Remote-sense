@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+import pytest
 from rs_core.config import ImageryAdapter, Settings
 from rs_imagery import AOI, TimeRange, get_access_adapter
 
@@ -37,6 +38,12 @@ async def test_collect_field_returns_all_indices_per_scene() -> None:
         names = {o.index_name for o in r.outputs}
         assert names == set(_INDICES)
         assert all(0.0 <= o.clear_fraction <= 1.0 for o in r.outputs)
+
+
+async def test_collect_field_rejects_empty_indices() -> None:
+    # An empty index list would search + skip every scene and store nothing; fail fast instead.
+    with pytest.raises(ValueError, match="at least one index"):
+        await collect_field(adapter=_adapter(), aoi=_AOI, time_range=_RANGE, indices=[])
 
 
 async def test_collect_field_honours_native_resolution() -> None:
@@ -76,6 +83,28 @@ async def test_collect_field_partial_resume() -> None:
     )
     assert len(remaining) == len(first) - 1
     assert skip_one.isdisjoint({r.scene_id for r in remaining})
+
+
+async def test_collect_field_emits_no_rasters_by_default() -> None:
+    results = await collect_field(adapter=_adapter(), aoi=_AOI, time_range=_RANGE, indices=["ndvi"])
+    assert results
+    assert all(r.rasters == {} for r in results)
+
+
+async def test_collect_field_emits_index_rasters_when_requested() -> None:
+    results = await collect_field(
+        adapter=_adapter(),
+        aoi=_AOI,
+        time_range=_RANGE,
+        indices=["ndvi", "ndre"],
+        emit_rasters=True,
+    )
+    assert results
+    rasters = results[0].rasters
+    assert set(rasters) == {"ndvi", "ndre"}
+    assert rasters["ndvi"].array.ndim == 2
+    assert rasters["ndvi"].crs  # carries the grid CRS for the COG
+    assert len(rasters["ndre"].transform) == 6
 
 
 class _FakeRedis:

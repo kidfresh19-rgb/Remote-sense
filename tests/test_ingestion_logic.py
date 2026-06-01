@@ -4,6 +4,8 @@ canonical/spatial matching used for idempotency, and the Pydantic contract valid
 
 from __future__ import annotations
 
+import uuid
+
 import pytest
 from geoalchemy2.shape import from_shape
 from pydantic import ValidationError
@@ -20,6 +22,7 @@ from services.api.ingestion import (
     _resolve_farm_boundary,
     _validate_fields,
     get_or_create_farm,
+    get_or_create_field,
 )
 
 
@@ -233,3 +236,81 @@ async def test_get_or_create_farm_returns_existing_without_building() -> None:
     assert created is False
     assert farm is existing
     assert called["build"] is False  # no insert attempted when the farm already exists
+
+
+# --- D10: the same hardening for the field create (uq_field_farm_canonical). A keyed field recovers
+# from a concurrent first-create; an unkeyed/derived field has no unique key so it inserts directly.
+
+
+class _FieldRacingSession:
+    """Loses a concurrent first-create on a keyed field: the savepoint flush raises IntegrityError
+    (a competitor inserted the same farm+canonical id) and the re-fetch returns the winner."""
+
+    def __init__(self, winner: Field) -> None:
+        self._winner = winner
+        self.flush_calls = 0
+
+    def begin_nested(self) -> _Nested:
+        return _Nested()
+
+    def add(self, obj: object) -> None:
+        pass
+
+    async def flush(self) -> None:
+        self.flush_calls += 1
+        raise IntegrityError("INSERT", {}, Exception("duplicate key"))
+
+    async def execute(self, _stmt: object) -> _Result:
+        return _Result(self._winner)
+
+
+class _DirectSession:
+    def __init__(self) -> None:
+        self.added: list[object] = []
+        self.nested_calls = 0
+
+    def begin_nested(self) -> _Nested:
+        self.nested_calls += 1
+        return _Nested()
+
+    def add(self, obj: object) -> None:
+        self.added.append(obj)
+
+    async def flush(self) -> None:
+        pass
+
+
+async def test_get_or_create_field_recovers_from_concurrent_create() -> None:
+    farm_id = uuid.uuid4()
+    winner = Field(farm_id=farm_id, canonical_field_id="fld-9")
+    session = _FieldRacingSession(winner)
+    built: list[Field] = []
+
+    def _build() -> Field:
+        f = Field(farm_id=farm_id, canonical_field_id="fld-9")
+        built.append(f)
+        return f
+
+    field, created = await get_or_create_field(
+        session, build=_build, farm_id=farm_id, canonical_field_id="fld-9"
+    )
+
+    assert created is False
+    assert field is winner  # the competitor's row, not our discarded build
+    assert session.flush_calls == 1
+    assert len(built) == 1
+
+
+async def test_get_or_create_field_unkeyed_creates_directly() -> None:
+    farm_id = uuid.uuid4()
+    session = _DirectSession()
+    built = Field(farm_id=farm_id, canonical_field_id=None)
+
+    field, created = await get_or_create_field(
+        session, build=lambda: built, farm_id=farm_id, canonical_field_id=None
+    )
+
+    assert created is True
+    assert field is built
+    assert built in session.added
+    assert session.nested_calls == 0  # no savepoint: an unkeyed field has nothing to dedupe on

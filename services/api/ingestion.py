@@ -14,6 +14,7 @@ What it enforces:
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime
 
@@ -119,6 +120,48 @@ def _check_nesting(
             )
 
 
+async def _fetch_field(
+    session: AsyncSession, *, farm_id: uuid.UUID, canonical_field_id: str
+) -> Field | None:
+    return (
+        await session.execute(
+            select(Field).where(
+                Field.farm_id == farm_id,
+                Field.canonical_field_id == canonical_field_id,
+            )
+        )
+    ).scalar_one_or_none()
+
+
+async def get_or_create_field(
+    session: AsyncSession,
+    *,
+    build: Callable[[], Field],
+    farm_id: uuid.UUID,
+    canonical_field_id: str | None,
+) -> tuple[Field, bool]:
+    """Create a field, idempotent under a concurrent first-create on (farm, canonical_field_id)
+    (D10). Returns (field, created). A keyed field is inserted inside a savepoint; on the unique
+    violation (uq_field_farm_canonical) we roll back, re-fetch the winner and return it as
+    not-created. An unkeyed/derived field has no unique key to dedupe on, so it is inserted
+    directly - its concurrency belongs to the broader R-1 enqueue work, tracked separately."""
+    field = build()
+    if canonical_field_id is None:
+        session.add(field)
+        await session.flush()
+        return field, True
+    try:
+        async with session.begin_nested():
+            session.add(field)
+            await session.flush()
+    except IntegrityError:
+        winner = await _fetch_field(session, farm_id=farm_id, canonical_field_id=canonical_field_id)
+        if winner is None:
+            raise
+        return winner, False
+    return field, True
+
+
 async def _upsert_field(
     session: AsyncSession,
     *,
@@ -138,20 +181,39 @@ async def _upsert_field(
     now = datetime.now(UTC)
 
     if existing is None:
-        new_field = Field(
-            farm=farm,
+
+        def _build_field() -> Field:
+            return Field(
+                farm_id=farm.id,
+                canonical_field_id=canonical_field_id,
+                name=name,
+                crop=crop,
+                boundary=from_shape(stored, srid=4326),
+                geometry_version=1,
+                derived_from_farm=derived_from_farm,
+                needs_backfill=True,
+                source_crs=_crs_str(src_epsg),
+                working_crs=working_crs,
+            )
+
+        new_field, created = await get_or_create_field(
+            session,
+            build=_build_field,
+            farm_id=farm.id,
             canonical_field_id=canonical_field_id,
-            name=name,
-            crop=crop,
-            boundary=from_shape(stored, srid=4326),
-            geometry_version=1,
-            derived_from_farm=derived_from_farm,
-            needs_backfill=True,
-            source_crs=_crs_str(src_epsg),
-            working_crs=working_crs,
         )
-        session.add(new_field)
-        await session.flush()
+        if not created:
+            # Lost a concurrent first-create (D10): a competitor inserted this field first. It is
+            # the same arrival payload, so the result converges - report unchanged at the winner's
+            # version instead of 500-ing on the unique violation.
+            return FieldIngestReport(
+                canonical_field_id=canonical_field_id,
+                field_id=str(new_field.id),
+                action="unchanged",
+                geometry_version=new_field.geometry_version,
+                repaired=repaired,
+                warnings=warnings,
+            )
         session.add(
             FieldGeometryVersion(
                 field_id=new_field.id,

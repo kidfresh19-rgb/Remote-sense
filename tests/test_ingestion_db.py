@@ -21,7 +21,13 @@ from shapely.geometry import shape
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from services.api.ingestion import IngestionError, _as_multipolygon, get_or_create_farm, ingest_farm
+from services.api.ingestion import (
+    IngestionError,
+    _as_multipolygon,
+    get_or_create_farm,
+    get_or_create_field,
+    ingest_farm,
+)
 
 _TEST_DB_URL = os.environ.get(
     "RS_TEST_DATABASE_URL", "postgresql+psycopg://rs:rs@localhost:5432/remote_sense"
@@ -235,3 +241,49 @@ async def test_get_or_create_farm_created_then_existing(sessionmaker_) -> None:
     assert created1 is True
     assert created2 is False
     assert await _count(sessionmaker_, Farm) == 1
+
+
+async def test_get_or_create_field_created_then_existing(sessionmaker_) -> None:
+    """D10: against real PostgreSQL the keyed-field savepoint insert returns created=True, and a
+    second call for the same (farm, canonical_field_id) recovers the existing row (created=False)
+    through the unique-violation path, without duplicating it."""
+
+    def _build_farm() -> Farm:
+        return Farm(
+            canonical_farm_id="GC-F",
+            boundary=from_shape(_as_multipolygon(shape(_square(*_HARARE, 0.02))), srid=4326),
+            centroid_lon=_HARARE[0],
+            centroid_lat=_HARARE[1],
+            source_crs="EPSG:4326",
+            working_crs="EPSG:32736",
+        )
+
+    async with sessionmaker_() as session:
+        farm, _ = await get_or_create_farm(session, canonical_farm_id="GC-F", build=_build_farm)
+        await session.flush()
+
+        def _build_field() -> Field:
+            return Field(
+                farm_id=farm.id,
+                canonical_field_id="f-1",
+                boundary=from_shape(_as_multipolygon(shape(_square(*_HARARE, 0.008))), srid=4326),
+                geometry_version=1,
+                derived_from_farm=False,
+                needs_backfill=True,
+                source_crs="EPSG:4326",
+                working_crs="EPSG:32736",
+            )
+
+        f1, created1 = await get_or_create_field(
+            session, build=_build_field, farm_id=farm.id, canonical_field_id="f-1"
+        )
+        await session.flush()
+        f2, created2 = await get_or_create_field(
+            session, build=_build_field, farm_id=farm.id, canonical_field_id="f-1"
+        )
+        await session.commit()
+
+    assert created1 is True
+    assert created2 is False
+    assert f2.id == f1.id
+    assert await _count(sessionmaker_, Field) == 1

@@ -19,6 +19,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from services.api.workspace import (
+    field_audit,
     field_interpretations,
     field_scenes,
     field_timeseries,
@@ -165,3 +166,42 @@ async def test_field_interpretations(maker_) -> None:
     assert len(interps) == 1
     assert interps[0].status == "vigorous"
     assert interps[0].published is False
+
+
+async def test_field_audit(maker_) -> None:
+    field_id = await _seed(maker_)
+    # A second index on the same scene: two rows that share scene/geometry/formula, so the audit
+    # query must return both with a deterministic order (not order-dependent assertions here).
+    async with maker_() as session:
+        await upsert_analysis(
+            session,
+            field_id=field_id,
+            scene_id=_SCENE,
+            pass_date=_PASS,
+            index_name="ndmi",
+            formula_version="1",
+            geometry_version=1,
+            provider="cdse",
+            provider_scene_id=_SCENE,
+            processing_mode="windowed_cog",
+            resolution_m=20.0,
+            clear_fraction=0.9,
+            mean=0.2,
+            confidence="high",
+        )
+        await session.commit()
+    async with maker_() as session:
+        records = await field_audit(session, field_id)
+    assert len(records) == 2
+    by_index = {r.index_name: r for r in records}
+    assert set(by_index) == {"ndvi", "ndmi"}
+    # The full provenance tuple travels with each analysis (CLAUDE.md invariant 5).
+    record = by_index["ndvi"]
+    assert record.scene_id == _SCENE
+    assert record.provider == "cdse"
+    assert record.provider_scene_id == _SCENE
+    assert record.processing_mode == "windowed_cog"
+    assert record.formula_version == "1"
+    assert record.geometry_version == 1
+    assert record.resolution_m == 10.0
+    assert record.clear_fraction == 0.9

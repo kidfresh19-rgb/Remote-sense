@@ -23,8 +23,28 @@ def test_nodata_becomes_nan_not_negative() -> None:
 
 
 def test_zero_quantification_rejected() -> None:
-    with pytest.raises(ValueError, match="non-zero"):
+    with pytest.raises(ValueError, match="positive"):
         to_reflectance(np.array([1.0]), add_offset=-1000.0, quantification=0.0)
+
+
+def test_negative_quantification_rejected() -> None:
+    # A negative quantification would silently flip the sign of every reflectance value.
+    with pytest.raises(ValueError, match="positive"):
+        to_reflectance(np.array([1.0]), add_offset=-1000.0, quantification=-10000.0)
+
+
+def test_nonfinite_quantification_rejected() -> None:
+    # A NaN quantification would silently mask every pixel instead of raising.
+    with pytest.raises(ValueError, match="positive"):
+        to_reflectance(np.array([1.0]), add_offset=-1000.0, quantification=float("nan"))
+
+
+def test_stack_rejects_missing_per_band_offset() -> None:
+    # Per-band offsets come from scene metadata; a band without one should fail fast and name
+    # the gap, not raise a bare KeyError deep in the conversion loop (invariant 2).
+    bands = {"B04": np.array([2000.0]), "B08": np.array([5000.0])}
+    with pytest.raises(ValueError, match="B08"):
+        stack_to_reflectance(bands, add_offset={"B04": -1000.0}, quantification=10000.0)
 
 
 def test_stack_applies_per_band_offset() -> None:

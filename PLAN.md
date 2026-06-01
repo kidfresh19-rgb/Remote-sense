@@ -243,8 +243,19 @@ and authenticating the ingestion endpoint (tied to the ⚑ DI-1 arrival contract
 skeleton (`services/tiler` - pure render-params + XYZ→bbox math; the tile route 503s without the
 raster stack, real render is in-container), and the RBAC'd workspace BFF read endpoints
 (`services/api/workspace.py` - farms / fields-with-geometry / time-series / scenes /
-interpretations). The React + MapLibre workspace UI (L6 frontend) and the in-container raster
-rendering (L5) remain. Each ships with no-infra unit tests;
+interpretations + a read-only **provenance/audit** endpoint over the existing analysis tuple,
+no migration). The L6 frontend is **built** in `frontend/` (Vite + TS + Tailwind v4 + MapLibre +
+TanStack Query: app shell, farm/field sidebar, map with field geometry + tiler index overlay,
+per-index time-series chart, pass list + shared timeline scrubber, interpretation panel, token-gate
+auth). The four workspace features landed 2026-06-01: **side-by-side pass comparison** (two
+synced MapLibre maps sharing one camera, via the extracted `useFieldMap` hook), **saved views**
+(bookmarked AOIs, local store), **field notes** (annotation layer; local store behind an interface,
+the shared write-backed store is a ⚑ CONFIRM backend decision), and the **provenance/audit** panel.
+The **in-container raster
+render (L5) is in**: the tiler renders a colorized PNG tile from a stored index COG via rio-tiler
+(route `/tiles/{index}/{geometry_version}/{field_id}/{scene_id}/{z}/{x}/{y}.png`), fed by D1 COG
+emission + D7 store-and-discard; both run in-container. The Python slices each ship with no-infra
+unit tests;
 their DB/broker-backed tests are written and skip locally, set to run under `docker compose` / CI.
 The items below remain consciously deferred. Nothing here is forgotten work, it is parked against
 a dependency.
@@ -259,18 +270,18 @@ the host toolchain.
 
 | # | Deferred / skipped item | Phase | Status / why parked | Unblocks when |
 |---|---|---|---|---|
-| D1 | COG emission in the analysis path | 2 | parked: needs `rasterio` | raster stack (in-container, once stack is up) |
+| D1 | COG emission in the analysis path | 2 | **done 2026-06-01** — `rs_analysis/cog.py`: `index_raster` (pure) + `write_cog` (rasterio-guarded). The pipeline emits per-index COGs to the object store when a `CogStore` is wired (`run_collection(cog_store=...)`). Pure prep host-tested; encode round-trip geo-gated | runs in-container |
 | D2 | Real Copernicus Browser entries in the validation matrix | 2 | parked: needs live CDSE data | real adapter + CDSE access |
 | D3 | `upsert_analysis` persistence helper (AnalysisOutput → `analysis` row) | 2/3 | **done 2026-05-31** — additive/idempotent upsert on `uq_analysis_identity` (refresh-in-place); unit-tested, DB idempotency/additivity test skips locally | — |
 | D4 | Live Celery execution + Redis enqueue-lock (R-1 concurrency) | 3 | **done 2026-05-31** — enqueue-lock + `collect_field_locked` + live `run_collection`/`prepare_and_run` + Celery `backfill_field`/`forward_fill_field` + daily `scan_and_enqueue` beat; orchestration DB-gated-tested for CI | — |
 | D5 | Per-field collection-state table + cursor persistence + migration `0002` | 3 | **done 2026-05-31** — `field_collection_state` model + migration + cursor helpers (monotonic `advance_cursor`); DB-gated helper tests skip locally | live verification on the stack |
 | D6 | CDSE 429 backoff (R-3) in the data adapter | 3 | parked: lives in the real adapter | real adapter (rasterio/CDSE) |
-| D7 | Explicit COG-then-discard step (S-1) | 3 | parked: needs COG emission (D1) | raster stack (in-container) |
+| D7 | Explicit COG-then-discard step (S-1) | 3 | **done 2026-06-01** — `collect_field(emit_rasters=...)` carries the index arrays out, `run_collection` writes + stores the COG, and the raw bands stay transient (never persisted). Wired through the worker via `cog_store_from_settings` (no-op when boto3 absent) | runs in-container |
 | D8 | Concurrent first-create idempotency hardening (ingest) | 1→3 | **done 2026-05-31** — `get_or_create_farm` savepoint + IntegrityError recovery; race branch unit-tested, DB test skips locally | — |
 | D9 | Deactivate fields dropped from a later gateway payload | 1 | parked: open policy decision | gateway-team confirmation |
-| D10 | Field-level concurrent first-create hardening (extend the `get_or_create_farm` savepoint+retry to `_upsert_field`) | 1→3 | code-review (2026-05-31): D8 hardened the farm create, not the per-field create, so a simultaneous first-ingest of the same farm+field can still 500 on `uq_field_farm_canonical` | Phase 3 concurrency work + a true-parallel test harness |
-| D11 | Per-pass backfill fan-out | 3 | code-review (2026-05-31): `run_collection` does a whole backfill window in one task/transaction (lock held + memory scale with the window); PLAN §7 envisages per-pass enqueue | scale testing; a deliberate v1 simplification until then |
-| S1 | DB/infra-gated tests that skip locally — now **17** (was 7): ingestion + get-or-create (`test_ingestion_db`), analysis upsert (`test_analysis_db`), collection-state cursor (`test_collection_state_db`), live collection + due-selection (`test_tasks_db`) | 1→3 | no local PostGIS/Redis | Docker stack up / CI |
+| D10 | Field-level concurrent first-create hardening | 1→3 | **done 2026-06-01** — `get_or_create_field` (savepoint + IntegrityError re-fetch on `uq_field_farm_canonical`) woven into `_upsert_field`; a lost first-create converges to `unchanged` instead of a 500. Unkeyed/derived fields insert directly (no unique key — tracked under R-1). Race branch unit-tested; real-constraint recovery DB-gated | — |
+| D11 | Per-pass backfill fan-out | 3 | **done 2026-06-01** — `backfill_field` now `plan_backfill_scenes` → enqueues one `collect_pass` task per outstanding pass (per-scene lock, own transaction); an empty re-plan converges to backfill-complete. `prepare_and_run(is_backfill=True)` kept as the synchronous primitive. Planner + per-pass DB-gated-tested | live verification on the stack |
+| S1 | DB/infra-gated tests that skip locally — now **19** (was 7): ingestion + get-or-create farm/field (`test_ingestion_db`), analysis upsert (`test_analysis_db`), collection-state cursor (`test_collection_state_db`), live collection + fan-out + due-selection (`test_tasks_db`) | 1→3 | no local PostGIS/Redis | Docker stack up / CI |
 
 **`# ⚑ CONFIRM` domain knobs awaiting agronomy review:** SCL clear-class set
 (`rs_analysis/scl.py`), per-index colormap display ranges (`colormaps.py`), clear-fraction

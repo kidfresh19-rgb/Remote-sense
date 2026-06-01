@@ -10,6 +10,8 @@ becomes NaN - never treated as zero reflectance, which would silently bias every
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 
 NODATA_DN = 0
@@ -26,8 +28,8 @@ def to_reflectance(
     Computed in float64 for numerical headroom; callers may downcast. The offset is additive
     and typically negative (-1000), so a DN of 0 would map to a spurious negative reflectance
     if not masked - hence NoData is applied explicitly."""
-    if quantification == 0:
-        raise ValueError("quantification value must be non-zero")
+    if not math.isfinite(quantification) or quantification <= 0:
+        raise ValueError(f"quantification value must be a positive number, got {quantification!r}")
     dn_arr = np.asarray(dn, dtype="float64")
     reflectance = (dn_arr + add_offset) / quantification
     return np.where(dn_arr == NODATA_DN, np.nan, reflectance)
@@ -41,6 +43,13 @@ def stack_to_reflectance(
 ) -> dict[str, np.ndarray]:
     """Convert a dict of DN band arrays to reflectance. `add_offset` may be a per-band dict
     (as carried in SceneMetadata.boa_add_offset) or a single scalar applied to every band."""
+    if isinstance(add_offset, dict):
+        missing = [band_id for band_id in bands if band_id not in add_offset]
+        if missing:
+            raise ValueError(
+                f"scene metadata has no BOA add-offset for bands {missing}; "
+                "every requested band needs a per-band offset (invariant 2)"
+            )
     out: dict[str, np.ndarray] = {}
     for band_id, dn in bands.items():
         offset = add_offset[band_id] if isinstance(add_offset, dict) else add_offset

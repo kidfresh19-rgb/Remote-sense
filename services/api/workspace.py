@@ -6,7 +6,7 @@ the geometry-free *outbound* push (invariant 6 governs the gateway direction onl
 from __future__ import annotations
 
 import uuid
-from datetime import date
+from datetime import date, datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends
@@ -66,6 +66,26 @@ class InterpretationOut(BaseModel):
     narrative: str
     published: bool
     needs_review: bool
+
+
+class AuditRecordOut(BaseModel):
+    """The provenance tuple (CLAUDE.md invariant 5) of one stored analysis, surfaced so an analyst
+    can see exactly which scene, formula, geometry version, and processing mode produced a value.
+    Read-only and geometry-free; this is internal reproducibility metadata, not the gateway push."""
+
+    pass_date: date
+    index_name: str
+    scene_id: str
+    provider: str
+    provider_scene_id: str
+    processing_mode: str
+    formula_version: str
+    geometry_version: int
+    resolution_m: float
+    clear_fraction: float
+    confidence: str | None
+    cog_uri: str | None
+    created_at: datetime
 
 
 async def list_farms(session: AsyncSession) -> list[FarmOut]:
@@ -170,6 +190,46 @@ async def field_interpretations(
     ]
 
 
+async def field_audit(session: AsyncSession, field_id: uuid.UUID) -> list[AuditRecordOut]:
+    """The provenance log for a field: every stored analysis with the tuple that reproduces it.
+    Ordered newest-processed first, then newest pass, with index and scene as stable tiebreakers
+    (rows from one run share created_at, so the extra keys keep the order deterministic)."""
+    rows = (
+        (
+            await session.execute(
+                select(Analysis)
+                .where(Analysis.field_id == field_id)
+                .order_by(
+                    Analysis.created_at.desc(),
+                    Analysis.pass_date.desc(),
+                    Analysis.index_name,
+                    Analysis.scene_id,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [
+        AuditRecordOut(
+            pass_date=a.pass_date,
+            index_name=a.index_name,
+            scene_id=a.scene_id,
+            provider=a.provider,
+            provider_scene_id=a.provider_scene_id,
+            processing_mode=a.processing_mode,
+            formula_version=a.formula_version,
+            geometry_version=a.geometry_version,
+            resolution_m=a.resolution_m,
+            clear_fraction=a.clear_fraction,
+            confidence=a.confidence,
+            cog_uri=a.cog_uri,
+            created_at=a.created_at,
+        )
+        for a in rows
+    ]
+
+
 @router.get("/farms")
 async def list_farms_endpoint(principal: ViewPrincipal, session: SessionDep) -> list[FarmOut]:
     return await list_farms(session)
@@ -201,3 +261,10 @@ async def field_interpretations_endpoint(
     field_id: uuid.UUID, principal: ViewPrincipal, session: SessionDep
 ) -> list[InterpretationOut]:
     return await field_interpretations(session, field_id)
+
+
+@router.get("/fields/{field_id}/audit")
+async def field_audit_endpoint(
+    field_id: uuid.UUID, principal: ViewPrincipal, session: SessionDep
+) -> list[AuditRecordOut]:
+    return await field_audit(session, field_id)

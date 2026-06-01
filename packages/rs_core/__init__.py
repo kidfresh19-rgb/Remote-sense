@@ -30,6 +30,14 @@ from rs_core.repositories import (
     upsert_analysis,
     upsert_scene_metadata,
 )
+from rs_core.storage import (
+    CogStore,
+    S3CogStore,
+    cog_key,
+    cog_store_from_settings,
+    gdal_s3_env,
+    vsis3_uri,
+)
 from rs_core.telemetry import (
     configure_telemetry,
     get_tracer,
@@ -73,6 +81,12 @@ __all__ = [
     "Principal",
     "Role",
     "permissions_for",
+    "CogStore",
+    "S3CogStore",
+    "cog_key",
+    "cog_store_from_settings",
+    "gdal_s3_env",
+    "vsis3_uri",
     "configure_telemetry",
     "get_tracer",
     "instrument_celery",

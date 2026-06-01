@@ -1,0 +1,100 @@
+@import "tailwindcss";
+
+/* Class-based dark mode: the inline script in index.html sets `.dark` on <html> pre-paint. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* Semantic tokens. Components use the utilities (bg-panel, text-muted, border-border, ...) so a
+   single source of truth drives both themes. One accent, used everywhere, saturation kept moderate. */
+@theme inline {
+  --color-bg: var(--bg);
+  --color-panel: var(--panel);
+  --color-panel-2: var(--panel-2);
+  --color-border: var(--border);
+  --color-fg: var(--fg);
+  --color-muted: var(--muted);
+  --color-accent: var(--accent);
+  --color-accent-fg: var(--accent-fg);
+  --color-positive: var(--positive);
+  --color-caution: var(--caution);
+  --color-critical: var(--critical);
+
+  --font-sans: "Outfit Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono Variable", ui-monospace, "SFMono-Regular", monospace;
+}
+
+:root {
+  --bg: #f6f6f7;
+  --panel: #ffffff;
+  --panel-2: #f0f0f2;
+  --border: #e3e3e7;
+  --fg: #1b1b1f;
+  --muted: #6d6d76;
+  --accent: #3563c9;
+  --accent-fg: #ffffff;
+  --positive: #2f8f57;
+  --caution: #b07908;
+  --critical: #c0463b;
+  color-scheme: light;
+}
+
+.dark {
+  --bg: #0b0b0d;
+  --panel: #131317;
+  --panel-2: #1b1b21;
+  --border: #28282f;
+  --fg: #e8e8ec;
+  --muted: #8b8b95;
+  --accent: #5a86e0;
+  --accent-fg: #0b0b0d;
+  --positive: #4cae74;
+  --caution: #d9a13a;
+  --critical: #e0695e;
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Tabular figures for every number in a data tool: columns line up, values stop jittering. */
+.tnum {
+  font-variant-numeric: tabular-nums;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* MapLibre controls retinted to the panel theme rather than its default white chrome. */
+.maplibregl-ctrl-group {
+  background: var(--panel) !important;
+  border: 1px solid var(--border) !important;
+  box-shadow: none !important;
+}
+.maplibregl-ctrl-group button + button {
+  border-top: 1px solid var(--border) !important;
+}
+.maplibregl-ctrl button .maplibregl-ctrl-icon {
+  filter: var(--ctrl-icon-filter, none);
+}
+.dark .maplibregl-ctrl button .maplibregl-ctrl-icon {
+  filter: invert(0.9);
+}

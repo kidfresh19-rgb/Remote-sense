@@ -42,6 +42,10 @@ geo = [
     "geopandas>=0.14",
     "pystac-client>=0.7",
 ]
+# Object store for derived COG previews: the worker writes via boto3, the tiler reads via GDAL.
+storage = [
+    "boto3>=1.34",
+]
 resilience = [
     "pybreaker>=1.2",
     "authlib>=1.3",

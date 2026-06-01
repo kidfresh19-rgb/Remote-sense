@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import os
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 import pytest_asyncio
@@ -22,7 +22,13 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from services.api.ingestion import ingest_farm
 from services.worker.planning import field_collection_key
-from services.worker.tasks import due_field_ids, prepare_and_run
+from services.worker.tasks import (
+    collect_pass,
+    due_field_ids,
+    field_to_aoi,
+    plan_backfill_scenes,
+    prepare_and_run,
+)
 
 _TEST_DB_URL = os.environ.get(
     "RS_TEST_DATABASE_URL", "postgresql+psycopg://rs:rs@localhost:5432/remote_sense"
@@ -186,6 +192,55 @@ async def test_held_lock_yields_without_writing(maker_) -> None:
         await session.commit()
     assert summary.locked is True
     assert await _count(maker_, Analysis) == 0
+
+
+async def test_backfill_fan_out_plans_and_collects_one_pass(maker_) -> None:
+    """D11: plan_backfill_scenes lists the window's outstanding passes; collect_pass collects a
+    single one (only that scene lands, cursor advances, backfill stays incomplete); a re-plan then
+    excludes the collected pass."""
+    field_id = await _seed_field(maker_)
+    adapter = _adapter()
+    async with maker_() as session:
+        field = (await session.execute(select(Field).where(Field.id == field_id))).scalar_one()
+        gv = field.geometry_version
+        aoi = field_to_aoi(field)
+        plan = await plan_backfill_scenes(
+            session, adapter, field_id=field_id, geometry_version=gv, aoi=aoi, months=18, now=_NOW
+        )
+    assert len(plan) > 1  # the window has several passes to fan out
+    first_scene, first_date = plan[0]
+
+    async with maker_() as session:
+        summary = await collect_pass(
+            session,
+            _FakeRedis(),
+            adapter,
+            field_id=field_id,
+            geometry_version=gv,
+            aoi=aoi,
+            scene_id=first_scene,
+            pass_date=date.fromisoformat(first_date),
+            indices=["ndvi", "ndre"],
+            now=_NOW,
+        )
+        await session.commit()
+
+    assert summary.locked is False
+    assert summary.scenes == 1  # the one-day window resolves to exactly this pass
+    assert summary.analyses == 2  # two indices
+    async with maker_() as session:
+        scene_ids = (await session.execute(select(Analysis.scene_id).distinct())).scalars().all()
+        assert scene_ids == [first_scene]  # only the fanned-out pass collected
+        state = (await session.execute(select(FieldCollectionState))).scalar_one()
+        assert state.cursor_date is not None
+        assert state.backfill_complete is False  # one pass does not complete the backfill
+
+    async with maker_() as session:
+        plan2 = await plan_backfill_scenes(
+            session, adapter, field_id=field_id, geometry_version=gv, aoi=aoi, months=18, now=_NOW
+        )
+    assert first_scene not in {scene_id for scene_id, _ in plan2}
+    assert len(plan2) == len(plan) - 1
 
 
 async def test_due_field_ids_backfill_then_forward(maker_) -> None:

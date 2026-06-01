@@ -63,6 +63,7 @@ def test_select_forward_fill_due_filters_correctly() -> None:
 def test_collection_tasks_are_registered() -> None:
     for name in (
         "collection.backfill_field",
+        "collection.collect_pass",
         "collection.forward_fill_field",
         "collection.scan_and_enqueue",
         "interpret.field_pass",

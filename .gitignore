@@ -36,3 +36,9 @@ frontend/.vite/
 Thumbs.db
 .idea/
 .vscode/
+
+# Generated reports / local artifacts
+*.docx
+
+# Nested scratch repo (never track)
+/remote-sense/

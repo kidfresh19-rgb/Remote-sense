@@ -13,15 +13,18 @@ from __future__ import annotations
 import asyncio
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 
 import redis.asyncio as aioredis
 from geoalchemy2.shape import to_shape
 from rs_core import (
+    CogStore,
     Field,
     FieldCollectionState,
     Settings,
     advance_cursor,
+    cog_key,
+    cog_store_from_settings,
     get_collection_state,
     get_settings,
     mark_backfill_complete,
@@ -44,7 +47,9 @@ from services.worker.persistence import persist_analysis_output
 from services.worker.planning import (
     SENTINEL2_REVISIT_DAYS,
     backfill_window,
+    collection_key,
     field_collection_key,
+    plan_scenes,
     select_forward_fill_due,
 )
 from services.worker.publish import publish_farm
@@ -98,13 +103,15 @@ async def run_collection(
     collection_key: str,
     already_processed: frozenset[str] = frozenset(),
     is_backfill: bool = False,
+    cog_store: CogStore | None = None,
     now: datetime | None = None,
     ttl_seconds: int = DEFAULT_LOCK_TTL_SECONDS,
 ) -> CollectionSummary:
     """The body both collection tasks share: collect a field over a time range under its enqueue
     lock, persist every result (scene metadata + per-index zonal stats), and advance the cursor.
-    Returns a summary; `locked=True` means another worker held the unit and we did nothing (R-1).
-    Runs inside the caller's transaction - the caller commits."""
+    When `cog_store` is given, also emit + store each index COG for the tiler (D1/D7). Returns a
+    summary; `locked=True` means another worker held the unit and we did nothing (R-1). Runs inside
+    the caller's transaction - the caller commits."""
     results = await collect_field_locked(
         lock_client=lock_client,
         collection_key=collection_key,
@@ -113,6 +120,7 @@ async def run_collection(
         time_range=time_range,
         indices=indices,
         already_processed=already_processed,
+        emit_rasters=cog_store is not None,
         ttl_seconds=ttl_seconds,
     )
     if results is None:
@@ -137,6 +145,18 @@ async def run_collection(
         )
         pass_date = result.sensing_datetime.date()
         for output in result.outputs:
+            # When a COG is emitted for this index, stamp its object key on the row so a stored
+            # analysis points at the raster it produced (provenance, invariant 5).
+            cog_uri = (
+                cog_key(
+                    field_id=field_id,
+                    scene_id=result.scene_id,
+                    index=output.index_name,
+                    geometry_version=geometry_version,
+                )
+                if cog_store is not None and output.index_name in result.rasters
+                else None
+            )
             await persist_analysis_output(
                 session,
                 output,
@@ -147,8 +167,22 @@ async def run_collection(
                 provider=result.provider,
                 provider_scene_id=result.scene_id,
                 processing_mode=result.processing_mode,
+                cog_uri=cog_uri,
             )
             analyses += 1
+        if cog_store is not None and result.rasters:
+            from rs_analysis import write_cog  # lazy: rasterio (geo extra), in-container only
+
+            for name, raster in result.rasters.items():
+                cog_store.put(
+                    cog_key(
+                        field_id=field_id,
+                        scene_id=result.scene_id,
+                        index=name,
+                        geometry_version=geometry_version,
+                    ),
+                    write_cog(raster.array, transform=raster.transform, crs=raster.crs),
+                )
         if advance_cursor(latest_pass, pass_date) != latest_pass:
             latest_pass, latest_scene = pass_date, result.scene_id
 
@@ -187,6 +221,7 @@ async def prepare_and_run(
     is_backfill: bool,
     backfill_months: int,
     indices: list[str],
+    cog_store: CogStore | None = None,
     now: datetime | None = None,
     ttl_seconds: int = DEFAULT_LOCK_TTL_SECONDS,
 ) -> CollectionSummary:
@@ -221,7 +256,75 @@ async def prepare_and_run(
         collection_key=field_collection_key(str(field_id), geometry_version),
         already_processed=already,
         is_backfill=is_backfill,
+        cog_store=cog_store,
         now=when,
+        ttl_seconds=ttl_seconds,
+    )
+
+
+async def plan_backfill_scenes(
+    session: AsyncSession,
+    adapter: AccessPort,
+    *,
+    field_id: uuid.UUID,
+    geometry_version: int,
+    aoi: AOI,
+    months: int,
+    now: datetime,
+) -> list[tuple[str, str]]:
+    """The not-yet-processed passes in the field's backfill window, as (scene_id, pass_date) pairs
+    to fan one task out per pass (D11). Dedups against the scenes already stored for this field at
+    this geometry version (R-1), so a re-scan enqueues only what is missing - which is also how the
+    backfill converges: an empty plan means the window is fully collected."""
+    window_start, _ = backfill_window(now.date(), months)
+    scenes = await adapter.search(aoi, TimeRange(start=_start_of_day(window_start), end=now))
+    already = await processed_scene_ids(
+        session, field_id=field_id, geometry_version=geometry_version
+    )
+    by_id = {s.scene_id: s for s in scenes}
+    return [
+        (scene_id, by_id[scene_id].sensing_datetime.date().isoformat())
+        for scene_id in plan_scenes([s.scene_id for s in scenes], already)
+    ]
+
+
+async def collect_pass(
+    session: AsyncSession,
+    lock_client: LockClient,
+    adapter: AccessPort,
+    *,
+    field_id: uuid.UUID,
+    geometry_version: int,
+    aoi: AOI,
+    scene_id: str,
+    pass_date: date,
+    indices: list[str],
+    cog_store: CogStore | None = None,
+    now: datetime | None = None,
+    ttl_seconds: int = DEFAULT_LOCK_TTL_SECONDS,
+) -> CollectionSummary:
+    """Collect a single backfill pass (one scene) under its per-scene lock (R-1, D11). The one-day
+    search window resolves to just that scene; persistence and the cursor advance reuse
+    run_collection. `is_backfill=False` so the pass advances the cursor without prematurely marking
+    the field's backfill complete - convergence is decided by plan_backfill_scenes."""
+    already = await processed_scene_ids(
+        session, field_id=field_id, geometry_version=geometry_version
+    )
+    day_start = _start_of_day(pass_date)
+    return await run_collection(
+        session,
+        lock_client,
+        adapter,
+        field_id=field_id,
+        geometry_version=geometry_version,
+        aoi=aoi,
+        time_range=TimeRange(start=day_start, end=day_start + timedelta(days=1)),
+        indices=indices,
+        collection_key=collection_key(str(field_id), scene_id, geometry_version),
+        already_processed=already,
+        is_backfill=False,
+        cog_store=cog_store,
+        now=now,
         ttl_seconds=ttl_seconds,
     )
 
@@ -277,6 +380,79 @@ async def _run_for_field(field_id: str, *, is_backfill: bool) -> dict[str, objec
                 is_backfill=is_backfill,
                 backfill_months=settings.backfill_months,
                 indices=CORE_INDICES,
+                cog_store=cog_store_from_settings(settings),
+            )
+            await session.commit()
+        return _summary_dict(summary)
+    finally:
+        await redis.aclose()
+        await engine.dispose()
+
+
+async def _fan_out_backfill(field_id: str) -> dict[str, object]:
+    """Plan the field's outstanding backfill passes and enqueue one collect_pass task per pass; if
+    none remain, the window is fully collected, so mark the backfill complete and clear the flag
+    (D11). Each pass then runs and commits independently under its own per-scene lock."""
+    settings = get_settings()
+    adapter = get_access_adapter(settings)
+    engine = create_async_engine(settings.database_url, poolclass=NullPool)
+    now = datetime.now(UTC)
+    try:
+        async with async_sessionmaker(engine, expire_on_commit=False)() as session:
+            field = (
+                await session.execute(select(Field).where(Field.id == uuid.UUID(field_id)))
+            ).scalar_one()
+            geometry_version = field.geometry_version
+            plan = await plan_backfill_scenes(
+                session,
+                adapter,
+                field_id=field.id,
+                geometry_version=geometry_version,
+                aoi=field_to_aoi(field),
+                months=settings.backfill_months,
+                now=now,
+            )
+            if not plan:
+                await mark_backfill_complete(
+                    session,
+                    field_id=field.id,
+                    geometry_version=geometry_version,
+                    completed_at=now,
+                )
+                await session.execute(
+                    update(Field).where(Field.id == field.id).values(needs_backfill=False)
+                )
+                await session.commit()
+    finally:
+        await engine.dispose()
+    if not plan:
+        return {"fanned_out": 0, "complete": True}
+    for scene_id, pass_date in plan:
+        collect_pass_task.delay(field_id, scene_id, pass_date)
+    return {"fanned_out": len(plan), "complete": False}
+
+
+async def _collect_one_pass(field_id: str, scene_id: str, pass_date: str) -> dict[str, object]:
+    settings = get_settings()
+    adapter = get_access_adapter(settings)
+    redis = aioredis.Redis.from_url(settings.redis_url)
+    engine = create_async_engine(settings.database_url, poolclass=NullPool)
+    try:
+        async with async_sessionmaker(engine, expire_on_commit=False)() as session:
+            field = (
+                await session.execute(select(Field).where(Field.id == uuid.UUID(field_id)))
+            ).scalar_one()
+            summary = await collect_pass(
+                session,
+                redis,
+                adapter,
+                field_id=field.id,
+                geometry_version=field.geometry_version,
+                aoi=field_to_aoi(field),
+                scene_id=scene_id,
+                pass_date=date.fromisoformat(pass_date),
+                indices=CORE_INDICES,
+                cog_store=cog_store_from_settings(settings),
             )
             await session.commit()
         return _summary_dict(summary)
@@ -302,8 +478,15 @@ async def _scan_and_enqueue() -> dict[str, int]:
 
 @celery.task(name="collection.backfill_field")
 def backfill_field(field_id: str) -> dict[str, object]:
-    """Backfill a field's full history on arrival (settings.backfill_months)."""
-    return asyncio.run(_run_for_field(field_id, is_backfill=True))
+    """Fan a field's full-history backfill into one collect_pass task per outstanding pass (D11);
+    a later scan that finds no passes left converges it to backfill-complete."""
+    return asyncio.run(_fan_out_backfill(field_id))
+
+
+@celery.task(name="collection.collect_pass")
+def collect_pass_task(field_id: str, scene_id: str, pass_date: str) -> dict[str, object]:
+    """Collect one backfill pass (a single scene) for a field under its per-scene lock (D11)."""
+    return asyncio.run(_collect_one_pass(field_id, scene_id, pass_date))
 
 
 @celery.task(name="collection.forward_fill_field")

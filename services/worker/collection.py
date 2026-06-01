@@ -11,14 +11,25 @@ persisted (S-1)."""
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 
-from rs_analysis import AnalysisOutput, analyze_index, get_index
+import numpy as np
+from rs_analysis import AnalysisOutput, analyze_index, get_index, index_raster
 from rs_imagery import AOI, AccessPort, TimeRange
 
 from services.worker.locks import DEFAULT_LOCK_TTL_SECONDS, LockClient, enqueue_lock
 from services.worker.planning import plan_scenes
+
+
+@dataclass(frozen=True)
+class IndexRaster:
+    """A computed index as a georeferenced array, carried out of collection so the I/O layer can
+    write + store its COG (D1/D7) without re-fetching reflectance."""
+
+    array: np.ndarray
+    transform: tuple[float, float, float, float, float, float]
+    crs: str
 
 
 @dataclass(frozen=True)
@@ -31,6 +42,7 @@ class ScenePassResult:
     processing_mode: str
     sensing_datetime: datetime
     outputs: list[AnalysisOutput]
+    rasters: dict[str, IndexRaster] = field(default_factory=dict)
 
 
 def _indices_by_resolution(indices: list[str]) -> dict[int, list[str]]:
@@ -48,12 +60,15 @@ async def collect_field(
     indices: list[str],
     already_processed: frozenset[str] = frozenset(),
     max_scene_cloud_pct: float | None = None,
+    emit_rasters: bool = False,
 ) -> list[ScenePassResult]:
     """Search the archive for the AOI over `time_range`, then compute the requested indices for
     every not-yet-processed scene. `already_processed` (scene ids done for this field at the
     current geometry version) makes the call idempotent and resumable: re-running skips
     finished scenes (dedup + gap fill, R-1). Works for backfill (a long range) and forward-fill
     (a short range since the last cursor) alike."""
+    if not indices:
+        raise ValueError("collect_field needs at least one index; an empty list stores nothing")
     scenes = await adapter.search(aoi, time_range, max_scene_cloud_pct=max_scene_cloud_pct)
     by_id = {s.scene_id: s for s in scenes}
     to_process = plan_scenes([s.scene_id for s in scenes], already_processed)
@@ -63,6 +78,7 @@ async def collect_field(
     for scene_id in to_process:
         scene = by_id[scene_id]
         outputs: list[AnalysisOutput] = []
+        rasters: dict[str, IndexRaster] = {}
         provider = scene.provider
         processing_mode = "mock"
         for resolution_m, names in resolution_groups.items():
@@ -78,6 +94,12 @@ async def collect_field(
                         clear_fraction_override=fetched.clear_fraction,
                     )
                 )
+                if emit_rasters:
+                    rasters[name] = IndexRaster(
+                        array=index_raster(fetched.data.bands, name),
+                        transform=fetched.data.transform,
+                        crs=fetched.data.crs,
+                    )
         results.append(
             ScenePassResult(
                 scene_id=scene_id,
@@ -85,6 +107,7 @@ async def collect_field(
                 processing_mode=processing_mode,
                 sensing_datetime=scene.sensing_datetime,
                 outputs=outputs,
+                rasters=rasters,
             )
         )
     return results
@@ -100,6 +123,7 @@ async def collect_field_locked(
     indices: list[str],
     already_processed: frozenset[str] = frozenset(),
     max_scene_cloud_pct: float | None = None,
+    emit_rasters: bool = False,
     ttl_seconds: int = DEFAULT_LOCK_TTL_SECONDS,
 ) -> list[ScenePassResult] | None:
     """Run `collect_field` for a work unit only while this worker holds its enqueue lock (R-1).
@@ -117,4 +141,5 @@ async def collect_field_locked(
             indices=indices,
             already_processed=already_processed,
             max_scene_cloud_pct=max_scene_cloud_pct,
+            emit_rasters=emit_rasters,
         )
