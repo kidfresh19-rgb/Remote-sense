@@ -29,6 +29,9 @@ FRONTEND_DIR = REPO_ROOT / "frontend"
 # Docker Desktop installs the CLI here but does not reliably put it on PATH on Windows.
 _WINDOWS_DOCKER_BIN = Path(r"C:\Program Files\Docker\Docker\resources\bin")
 
+# Node's Windows installer is the same story: npm.cmd lands here but is routinely off PATH.
+_WINDOWS_NODE_BIN = Path(r"C:\Program Files\nodejs")
+
 # The throwaway PostGIS container used for host-side pytest. It publishes host 5432, which
 # collides with compose's own `postgres` service; compose's postgres supersedes it, so it is safe
 # to drop before bringing the stack up.
@@ -55,6 +58,21 @@ def find_docker() -> str:
         os.environ["PATH"] = f"{_WINDOWS_DOCKER_BIN}{os.pathsep}{os.environ.get('PATH', '')}"
         return str(win_docker)
     _fail("docker CLI not found. Install Docker Desktop or add it to PATH.")
+    raise AssertionError  # unreachable; _fail raises
+
+
+def find_npm() -> str:
+    """Resolve the npm executable, falling back to Node's default Windows install dir when it is
+    off PATH (the same gap as the Docker CLI) and putting it on PATH so child npm/node processes
+    resolve from here too."""
+    npm = shutil.which("npm")
+    if npm:
+        return npm
+    win_npm = _WINDOWS_NODE_BIN / "npm.cmd"
+    if sys.platform == "win32" and win_npm.exists():
+        os.environ["PATH"] = f"{_WINDOWS_NODE_BIN}{os.pathsep}{os.environ.get('PATH', '')}"
+        return str(win_npm)
+    _fail("npm not found; install Node.js or add it to PATH.")
     raise AssertionError  # unreachable; _fail raises
 
 
@@ -153,9 +171,7 @@ def compose(docker: str, *args: str) -> int:
 
 def start_frontend() -> int:
     """Run the Vite analyst workspace in the foreground, installing deps on first use."""
-    npm = shutil.which("npm")
-    if not npm:
-        _fail("npm not found; install Node.js to run the frontend.")
+    npm = find_npm()
     if not (FRONTEND_DIR / "node_modules").exists():
         print("Installing frontend dependencies (npm install)...")
         code = subprocess.run([npm, "install"], cwd=FRONTEND_DIR, check=False).returncode

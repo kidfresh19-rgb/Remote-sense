@@ -55,9 +55,9 @@ tests/       unit + the index validation matrix
 
 ## Quickstart (local)
 
-One command brings the whole backend up. `start.py` resolves the Docker CLI (Windows installs it
-off PATH), seeds `.env` from the contract, frees the host DB port if a stray test container holds
-it, then runs compose:
+One command brings the whole backend up. `start.py` resolves the Docker CLI and Node (both are
+commonly installed off PATH on Windows), seeds `.env` from the contract, frees the host DB port if
+a stray test container holds it, then runs compose:
 
 ```bash
 python start.py               # --frontend also starts the Vite workspace; --build forces a rebuild
@@ -87,9 +87,31 @@ ruff check .
 ## Frontend (analyst workspace)
 
 A Vite + React + TypeScript SPA in `frontend/`, styled with Tailwind v4 and mapping with MapLibre
-GL. It talks to the RBAC-gated BFF (`services/api/workspace.py`) and the tiler. The workspace needs
-a bearer token from the gateway IdP; for local dev paste one into the token gate or set
-`VITE_DEV_TOKEN`.
+GL. It talks to the RBAC-gated BFF (`services/api/workspace.py`) and the tiler.
+
+**Auth (set this up first).** The BFF verifies an HS256 JWT on every request, so the backend `.env`
+must set `RS_JWT_SECRET` before the workspace is usable; with an empty secret every gated endpoint
+returns `500 "auth is not configured"`. In production the gateway IdP issues tokens. For local dev,
+generate a secret and mint one signed with it, then paste it into the token gate or set
+`VITE_DEV_TOKEN` in `frontend/.env` to skip the gate.
+
+```bash
+python -c "import secrets; print(secrets.token_urlsafe(36))"   # paste into RS_JWT_SECRET in .env
+```
+
+```python
+# mint a local-dev token (the gateway IdP issues these in production)
+import base64, hashlib, hmac, json, time
+from rs_core import get_settings
+
+def b64(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+
+header = b64(json.dumps({"alg": "HS256", "typ": "JWT"}).encode())
+claims = b64(json.dumps({"sub": "you", "roles": ["admin"], "exp": int(time.time()) + 30 * 86400}).encode())
+sig = b64(hmac.new(get_settings().jwt_secret.encode(), f"{header}.{claims}".encode(), hashlib.sha256).digest())
+print(f"{header}.{claims}.{sig}")
+```
 
 Workspace features: a three-panel layout (farms/fields, map, field inspector); the field inspector
 tabs through the index time series, pass list, agronomic read, field notes, and the provenance/audit
