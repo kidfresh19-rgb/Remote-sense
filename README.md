@@ -67,12 +67,12 @@ Or drive compose directly:
 
 ```bash
 cp .env.example .env          # then fill in any real credentials
-docker compose up             # postgres+postgis, redis, minio, api, worker, beat, tiler
+docker compose up             # postgres+postgis, redis, minio, nginx, api, worker, beat, tiler
 ```
 
 - API health: <http://localhost:8000/healthz> · config: <http://localhost:8000/readyz>
 - API docs: <http://localhost:8000/docs>
-- Tiler health: <http://localhost:8001/healthz>
+- Tiler health: <http://localhost:8000/tiler/healthz> (nginx fronts the tiler; tiles serve at `/tiles/`)
 - MinIO console: <http://localhost:9001> (minioadmin / minioadmin)
 
 ## Develop without Docker
