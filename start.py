@@ -1,11 +1,11 @@
 """One-command launcher for the remote-sense local stack.
 
-`python start.py` brings the backend up with `docker compose`, smoothing over the three frictions
-this dev box has: the Docker CLI is installed but not always on PATH, `.env` may be missing, and a
-throwaway `rs-testpg` test container can be holding host port 5432 that compose's own postgres
-needs to publish. Flags: `--frontend` also starts the Vite analyst workspace, `-d/--detach` runs
-the backend in the background, `--down` stops the stack, `--logs` follows logs, `--build` forces an
-image rebuild.
+`python start.py` brings the backend up with `docker compose`, smoothing over the frictions
+this dev box has: the Docker CLI is installed but not always on PATH, Docker Desktop may not
+be running yet, `.env` may be missing, and a throwaway `rs-testpg` test container can be
+holding host port 5432 that compose's own postgres needs to publish. Flags: `--frontend` also
+starts the Vite analyst workspace, `-d/--detach` runs the backend in the background, `--down`
+stops the stack, `--logs` follows logs, `--build` forces an image rebuild.
 
 This is a developer convenience, not part of the deployed app: production runs the same
 `docker compose` (or the per-service containers) directly.
@@ -19,6 +19,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent
@@ -28,6 +29,9 @@ FRONTEND_DIR = REPO_ROOT / "frontend"
 
 # Docker Desktop installs the CLI here but does not reliably put it on PATH on Windows.
 _WINDOWS_DOCKER_BIN = Path(r"C:\Program Files\Docker\Docker\resources\bin")
+
+# Docker Desktop application executable — used to launch the daemon when it is not running.
+_WINDOWS_DOCKER_DESKTOP = Path(r"C:\Program Files\Docker\Docker\Docker Desktop.exe")
 
 # Node's Windows installer is the same story: npm.cmd lands here but is routinely off PATH.
 _WINDOWS_NODE_BIN = Path(r"C:\Program Files\nodejs")
@@ -41,10 +45,64 @@ _TEST_DB_CONTAINER = "rs-testpg"
 # and should be `running`. Used to tell a healthy stack from the wreckage of an interrupted `up`.
 _ONE_SHOT_SERVICES = frozenset({"migrate", "createbuckets"})
 
+# How long to wait for the Docker daemon to become ready after launching Docker Desktop.
+_DOCKER_WAIT_SECONDS = 120
+_DOCKER_POLL_INTERVAL = 3
+
 
 def _fail(message: str) -> None:
     print(f"start.py: {message}", file=sys.stderr)
     raise SystemExit(1)
+
+
+def _docker_daemon_ready(docker: str) -> bool:
+    """Return True if the Docker daemon is accepting connections."""
+    result = subprocess.run(
+        [docker, "info"],
+        capture_output=True,
+        check=False,
+    )
+    return result.returncode == 0
+
+
+def _ensure_docker_running(docker: str) -> None:
+    """If the daemon is not up yet, launch Docker Desktop and wait for it to become ready.
+    On non-Windows platforms this is a no-op (the daemon is managed by the OS service)."""
+    if _docker_daemon_ready(docker):
+        return
+
+    if sys.platform != "win32":
+        _fail(
+            "Docker daemon is not running. Start it with: sudo systemctl start docker"
+        )
+
+    if not _WINDOWS_DOCKER_DESKTOP.exists():
+        _fail(
+            "Docker daemon is not running and Docker Desktop was not found at "
+            f"{_WINDOWS_DOCKER_DESKTOP}. Start Docker Desktop manually or reinstall it."
+        )
+
+    print("Docker Desktop is not running — launching it now (this takes ~30 s on first start)...")
+    subprocess.Popen(
+        [str(_WINDOWS_DOCKER_DESKTOP)],
+        creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
+    )
+
+    deadline = time.monotonic() + _DOCKER_WAIT_SECONDS
+    dots = 0
+    while time.monotonic() < deadline:
+        time.sleep(_DOCKER_POLL_INTERVAL)
+        dots += 1
+        print(f"\r  waiting for Docker daemon{'.' * (dots % 4):<4}", end="", flush=True)
+        if _docker_daemon_ready(docker):
+            print("\r  Docker daemon is ready.          ")
+            return
+
+    print()
+    _fail(
+        f"Docker daemon did not become ready within {_DOCKER_WAIT_SECONDS} s. "
+        "Check Docker Desktop for errors, then re-run start.py."
+    )
 
 
 def find_docker() -> str:
@@ -57,7 +115,9 @@ def find_docker() -> str:
     if sys.platform == "win32" and win_docker.exists():
         os.environ["PATH"] = f"{_WINDOWS_DOCKER_BIN}{os.pathsep}{os.environ.get('PATH', '')}"
         return str(win_docker)
-    _fail("docker CLI not found. Install Docker Desktop or add it to PATH.")
+    _fail(
+        "Docker CLI not found. Install Docker Desktop from https://www.docker.com/products/docker-desktop/"
+    )
     raise AssertionError  # unreachable; _fail raises
 
 
@@ -72,7 +132,7 @@ def find_npm() -> str:
     if sys.platform == "win32" and win_npm.exists():
         os.environ["PATH"] = f"{_WINDOWS_NODE_BIN}{os.pathsep}{os.environ.get('PATH', '')}"
         return str(win_npm)
-    _fail("npm not found; install Node.js or add it to PATH.")
+    _fail("npm not found; install Node.js from https://nodejs.org/ or add it to PATH.")
     raise AssertionError  # unreachable; _fail raises
 
 
@@ -213,6 +273,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     docker = find_docker()
+    _ensure_docker_running(docker)
 
     if args.down:
         return compose(docker, "down")

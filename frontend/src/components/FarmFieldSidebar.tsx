@@ -1,11 +1,12 @@
 import { CaretRight, Folder, Plant } from "@phosphor-icons/react";
+import type { Geometry } from "geojson";
 
 import type { Farm } from "@/lib/api";
 import { cn } from "@/lib/format";
 import { useFarms, useFields } from "@/lib/queries";
 import { useWorkspace } from "@/state/workspace";
 
-import { SavedViews } from "./SavedViews";
+import { CustomAOIPanel } from "./CustomAOIPanel";
 import { EmptyState, ErrorState, LoadingRows } from "./states";
 
 const rowBase =
@@ -13,7 +14,17 @@ const rowBase =
 
 export function FarmFieldSidebar() {
   const farms = useFarms();
-  const { farmId, selectFarm } = useWorkspace();
+  const { farmId, selectFarm, setCustomAOI } = useWorkspace();
+
+  function handleActivateAOI(geometry: Geometry) {
+    setCustomAOI(geometry);
+  }
+
+  function handleDeleteAOI(_id: string) {
+    // The CustomAOIPanel component calls deleteCustomAOI from the store directly; this callback
+    // is the hook point for any additional side effects (e.g. clearing the active AOI if it was
+    // the deleted one). No-op for now.
+  }
 
   return (
     <aside className="flex min-h-0 flex-col border-b border-border bg-panel lg:border-b-0 lg:border-r">
@@ -40,7 +51,7 @@ export function FarmFieldSidebar() {
           </ul>
         )}
       </div>
-      <SavedViews />
+      <CustomAOIPanel onActivate={handleActivateAOI} onDelete={handleDeleteAOI} />
     </aside>
   );
 }

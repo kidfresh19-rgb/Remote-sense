@@ -34,6 +34,7 @@
   --positive: #2f8f57;
   --caution: #b07908;
   --critical: #c0463b;
+  --shadow-panel: 0 4px 24px 0 rgb(0 0 0 / 0.08);
   color-scheme: light;
 }
 
@@ -49,6 +50,7 @@
   --positive: #4cae74;
   --caution: #d9a13a;
   --critical: #e0695e;
+  --shadow-panel: 0 4px 24px 0 rgb(0 0 0 / 0.4);
   color-scheme: dark;
 }
 
@@ -81,6 +83,22 @@ body {
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
   }
+}
+
+/* Draw cursor — applied to the map canvas during polygon draw */
+.draw-active .maplibregl-canvas {
+  cursor: crosshair !important;
+}
+
+/* Collapsed panels must not intercept pointer events */
+.lg\:max-w-0 {
+  pointer-events: none;
+}
+
+/* Modal backdrop blur — explicit vendor prefix for broader Safari support */
+.backdrop-blur-sm {
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
 }
 
 /* MapLibre controls retinted to the panel theme rather than its default white chrome. */

@@ -1,22 +1,55 @@
-import { Columns, Stack } from "@phosphor-icons/react";
-import { useMemo, useRef } from "react";
+import { CaretLeft, CaretRight, Columns, Stack, X } from "@phosphor-icons/react";
+import { useMemo, useRef, useState } from "react";
 
 import type { Field } from "@/lib/api";
+import { saveCustomAOI } from "@/lib/customAOIs";
 import { indexMeta, type IndexKey } from "@/lib/indices";
 import { useFields, useScenes } from "@/lib/queries";
 import { useWorkspace } from "@/state/workspace";
 
+import { AOIBar } from "./AOIBar";
+import { CoordinateEntryModal } from "./CoordinateEntryModal";
+import { FileUploadPanel } from "./FileUploadPanel";
 import { IndexLegend } from "./IndexLegend";
 import { SceneCompare } from "./SceneCompare";
 import { EmptyState } from "./states";
 import { IconButton } from "./ui";
-import { useFieldMap } from "./useFieldMap";
+import { bboxOf, useFieldMap } from "./useFieldMap";
 
-export function MapPanel() {
-  const { farmId, fieldId, index, passDate, compareDate, showRaster, toggleRaster, setCompareDate } =
-    useWorkspace();
+interface MapPanelProps {
+  sidebarOpen: boolean;
+  onToggleSidebar: () => void;
+  inspectorOpen: boolean;
+  onToggleInspector: () => void;
+}
+
+export function MapPanel({
+  sidebarOpen,
+  onToggleSidebar,
+  inspectorOpen,
+  onToggleInspector,
+}: MapPanelProps) {
+  const {
+    farmId,
+    fieldId,
+    index,
+    passDate,
+    compareDate,
+    showRaster,
+    toggleRaster,
+    setCompareDate,
+    customAOI,
+    setCustomAOI,
+  } = useWorkspace();
+
   const fields = useFields(farmId);
   const scenes = useScenes(fieldId);
+
+  const [drawMode, setDrawMode] = useState(false);
+  const [showCoords, setShowCoords] = useState(false);
+  const [showUpload, setShowUpload] = useState(false);
+  const flyToRef = useRef<((center: [number, number], zoom?: number) => void) | null>(null);
+  const fitBoundsRef = useRef<((sw: [number, number], ne: [number, number]) => void) | null>(null);
 
   const selectedField = useMemo(
     () => fields.data?.find((f) => f.field_id === fieldId) ?? null,
@@ -24,7 +57,6 @@ export function MapPanel() {
   );
   const list = useMemo(() => scenes.data ?? [], [scenes.data]);
 
-  // The pass the single-map overlay shows: the scrubbed pass, else the most recent.
   const activeSceneId = useMemo(() => {
     if (!list.length) return null;
     const match = passDate ? list.find((s) => s.pass_date === passDate) : undefined;
@@ -32,8 +64,6 @@ export function MapPanel() {
   }, [list, passDate]);
 
   const comparing = compareDate !== null;
-  // Two passes are comparable only if there are two distinct dates: the /scenes route can return
-  // several scene ids on one date, which would otherwise enable the toggle but leave it inert.
   const canCompare = useMemo(() => new Set(list.map((s) => s.pass_date)).size >= 2, [list]);
 
   const toggleCompare = () => {
@@ -48,18 +78,32 @@ export function MapPanel() {
 
   return (
     <section className="relative min-h-[55vh] bg-bg lg:min-h-0">
-      {selectedField ? (
-        comparing ? (
-          <SceneCompare field={selectedField} />
-        ) : (
-          <SingleSceneMap
-            field={selectedField}
-            index={index}
-            sceneId={activeSceneId}
-            showRaster={showRaster}
-          />
-        )
+      {/* Map — always mounted so the AOI toolbar and coordinate/geocoder callbacks have a
+           live map regardless of field selection state. */}
+      {comparing && selectedField ? (
+        <SceneCompare field={selectedField} />
       ) : (
+        <SingleSceneMap
+          field={selectedField}
+          index={index}
+          sceneId={activeSceneId}
+          showRaster={showRaster}
+          customAOI={customAOI}
+          drawMode={drawMode}
+          onDrawComplete={(polygon) => {
+            setCustomAOI(polygon);
+            setDrawMode(false);
+          }}
+          onMapReady={(flyTo, fitBounds) => {
+            flyToRef.current = flyTo;
+            fitBoundsRef.current = fitBounds;
+          }}
+        />
+      )}
+
+      {/* Empty-state overlay — shown over the map when no field is selected and no custom AOI is
+           set, so entering coordinates / drawing an AOI clears the prompt. */}
+      {!selectedField && !customAOI && (
         <div className="pointer-events-none absolute inset-0 grid place-items-center">
           <EmptyState
             title="Select a field"
@@ -68,7 +112,28 @@ export function MapPanel() {
         </div>
       )}
 
-      <div className="absolute left-3 top-3 z-20 flex flex-col gap-2">
+      {/* AOI toolbar — sits at the very top of the map */}
+      <div className="absolute inset-x-0 top-0 z-30 p-2">
+        <AOIBar
+          drawActive={drawMode}
+          onDrawToggle={() => setDrawMode(true)}
+          onCancelDraw={() => {
+            setDrawMode(false);
+          }}
+          onOpenCoords={() => setShowCoords(true)}
+          onOpenUpload={() => setShowUpload(true)}
+          onAOISet={(geometry, label) => {
+            setCustomAOI(geometry);
+            // Note: geocoder results are not auto-saved — the analyst saves explicitly via the
+            // CustomAOIPanel if they want to keep it.
+            void label;
+          }}
+          onFlyTo={(center, zoom) => flyToRef.current?.(center, zoom)}
+        />
+      </div>
+
+      {/* Left-side map controls — shifted down to clear the AOI bar */}
+      <div className="absolute left-3 top-[72px] z-20 flex flex-col gap-2">
         <IconButton
           label={showRaster ? "Hide index layer" : "Show index layer"}
           active={showRaster}
@@ -89,11 +154,69 @@ export function MapPanel() {
         </IconButton>
       </div>
 
+      {/* Clear AOI badge — centered below the toolbar */}
+      {customAOI && !drawMode && (
+        <div className="absolute inset-x-0 top-[72px] z-20 flex justify-center pointer-events-none">
+          <button
+            onClick={() => setCustomAOI(null)}
+            className="pointer-events-auto flex items-center gap-1.5 rounded-full bg-panel/90 border border-border px-3 py-1 text-xs text-muted hover:text-fg transition-colors backdrop-blur-sm"
+          >
+            <X size={12} /> Clear custom AOI
+          </button>
+        </div>
+      )}
+
+      {/* Sidebar collapse toggle — left edge */}
+      <button
+        onClick={onToggleSidebar}
+        aria-label={sidebarOpen ? "Collapse sidebar" : "Expand sidebar"}
+        className="absolute left-0 top-1/2 -translate-y-1/2 z-30 flex h-12 w-5 items-center justify-center rounded-r-md bg-panel border border-l-0 border-border text-muted hover:text-fg transition-colors duration-150"
+      >
+        {sidebarOpen ? <CaretLeft size={12} weight="bold" /> : <CaretRight size={12} weight="bold" />}
+      </button>
+
+      {/* Inspector collapse toggle — right edge */}
+      <button
+        onClick={onToggleInspector}
+        aria-label={inspectorOpen ? "Collapse inspector" : "Expand inspector"}
+        className="absolute right-0 top-1/2 -translate-y-1/2 z-30 flex h-12 w-5 items-center justify-center rounded-l-md bg-panel border border-r-0 border-border text-muted hover:text-fg transition-colors duration-150"
+      >
+        {inspectorOpen ? <CaretRight size={12} weight="bold" /> : <CaretLeft size={12} weight="bold" />}
+      </button>
+
+      {/* Index legend */}
       {selectedField ? (
         <div className="absolute bottom-3 left-3 z-20">
           <IndexLegend meta={indexMeta(index)} />
         </div>
       ) : null}
+
+      {/* Modals */}
+      {showCoords && (
+        <CoordinateEntryModal
+          onClose={() => setShowCoords(false)}
+          onApply={(geometry) => {
+            setCustomAOI(geometry);
+            const bbox = bboxOf(geometry);
+            if (bbox) fitBoundsRef.current?.([bbox[0], bbox[1]], [bbox[2], bbox[3]]);
+            setShowCoords(false);
+          }}
+          onFitBounds={(sw, ne) => {
+            fitBoundsRef.current?.(sw, ne);
+            setShowCoords(false);
+          }}
+        />
+      )}
+      {showUpload && (
+        <FileUploadPanel
+          onClose={() => setShowUpload(false)}
+          onApply={(geometry, label) => {
+            setCustomAOI(geometry);
+            saveCustomAOI({ label, geometry });
+            setShowUpload(false);
+          }}
+        />
+      )}
     </section>
   );
 }
@@ -103,13 +226,33 @@ function SingleSceneMap({
   index,
   sceneId,
   showRaster,
+  customAOI,
+  drawMode,
+  onDrawComplete,
+  onMapReady,
 }: {
-  field: Field;
+  field: Field | null;
   index: IndexKey;
   sceneId: string | null;
   showRaster: boolean;
+  customAOI: import("geojson").Geometry | null;
+  drawMode: boolean;
+  onDrawComplete: (polygon: import("geojson").Polygon) => void;
+  onMapReady: (
+    flyTo: (center: [number, number], zoom?: number) => void,
+    fitBounds: (sw: [number, number], ne: [number, number]) => void,
+  ) => void;
 }) {
   const ref = useRef<HTMLDivElement | null>(null);
-  useFieldMap(ref, { field, index, sceneId, showRaster });
+  useFieldMap(ref, {
+    field,
+    index,
+    sceneId,
+    showRaster,
+    customAOI,
+    drawMode,
+    onDrawComplete,
+    onMapReady,
+  });
   return <div ref={ref} className="absolute inset-0" />;
 }

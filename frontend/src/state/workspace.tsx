@@ -1,3 +1,4 @@
+import type { Geometry } from "geojson";
 import { createContext, useContext, useMemo, useReducer, type ReactNode } from "react";
 
 import { DEFAULT_INDEX, type IndexKey } from "@/lib/indices";
@@ -10,6 +11,7 @@ interface WorkspaceState {
   // The second pass to compare the primary against. Non-null puts the map into side-by-side mode.
   compareDate: string | null;
   showRaster: boolean;
+  customAOI: Geometry | null; // user-defined analysis boundary
 }
 
 interface RestoreView {
@@ -25,7 +27,8 @@ type Action =
   | { type: "setPassDate"; passDate: string | null }
   | { type: "setCompareDate"; compareDate: string | null }
   | { type: "restoreView"; view: RestoreView }
-  | { type: "toggleRaster" };
+  | { type: "toggleRaster" }
+  | { type: "setCustomAOI"; geometry: Geometry | null };
 
 const initialState: WorkspaceState = {
   farmId: null,
@@ -34,6 +37,7 @@ const initialState: WorkspaceState = {
   passDate: null,
   compareDate: null,
   showRaster: false,
+  customAOI: null,
 };
 
 function reducer(state: WorkspaceState, action: Action): WorkspaceState {
@@ -63,6 +67,8 @@ function reducer(state: WorkspaceState, action: Action): WorkspaceState {
       };
     case "toggleRaster":
       return { ...state, showRaster: !state.showRaster };
+    case "setCustomAOI":
+      return { ...state, customAOI: action.geometry };
     default:
       return state;
   }
@@ -76,6 +82,7 @@ interface WorkspaceContextValue extends WorkspaceState {
   setCompareDate: (date: string | null) => void;
   restoreView: (view: RestoreView) => void;
   toggleRaster: () => void;
+  setCustomAOI: (geometry: Geometry | null) => void;
 }
 
 const WorkspaceContext = createContext<WorkspaceContextValue | null>(null);
@@ -92,6 +99,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       setCompareDate: (compareDate) => dispatch({ type: "setCompareDate", compareDate }),
       restoreView: (view) => dispatch({ type: "restoreView", view }),
       toggleRaster: () => dispatch({ type: "toggleRaster" }),
+      setCustomAOI: (geometry) => dispatch({ type: "setCustomAOI", geometry }),
     }),
     [state],
   );
