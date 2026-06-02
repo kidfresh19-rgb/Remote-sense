@@ -78,6 +78,11 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     jwt_audience: str = ""
 
+    # CORS. The analyst workspace (L6) is a browser SPA on a separate origin, so the API must allow
+    # that origin for cross-origin requests and their preflight. Comma-separated; dev default is the
+    # Vite server. Set the deployed workspace origin(s) in production; empty disables CORS.
+    cors_allow_origins: str = "http://localhost:5173"
+
 
 @lru_cache
 def get_settings() -> Settings:

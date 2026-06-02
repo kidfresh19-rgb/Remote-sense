@@ -7,6 +7,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from rs_core import (
     configure_logging,
     configure_telemetry,
@@ -41,6 +42,19 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="remote-sense API", version="0.1.0", lifespan=lifespan)
 instrument_fastapi(app)
+
+# The browser workspace (L6) is a separate origin; without CORS its preflight OPTIONS is a 405 and
+# the browser blocks every call. Origins are config-driven (empty disables CORS entirely).
+_cors_origins = [o.strip() for o in settings.cors_allow_origins.split(",") if o.strip()]
+if _cors_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_cors_origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
 app.include_router(ingestion_router)
 app.include_router(operations_router)
 app.include_router(workspace_router)

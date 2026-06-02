@@ -6,7 +6,7 @@ is the analysis backbone behind the **AgriTrack** farmer-facing mobile app; the 
 a gateway. Expert-facing tool: optimized for analytical density and precision, not consumer
 simplicity.
 
-> Status (2026-06-01): the backend spine is built through interpretation. Ingestion + the PostGIS
+> Status (2026-06-02): the backend spine is built through interpretation. Ingestion + the PostGIS
 > data model (L1), the collection pipeline with live Celery backfill/forward-fill + a daily scan
 > beat (L2), the imagery access port + `mock` adapter (L3), the analysis core (L4), the
 > plain-language interpretation layer (L4b), outbound sync (L7), and Phase 7 RBAC/auth are in and
@@ -112,6 +112,10 @@ claims = b64(json.dumps({"sub": "you", "roles": ["admin"], "exp": int(time.time(
 sig = b64(hmac.new(get_settings().jwt_secret.encode(), f"{header}.{claims}".encode(), hashlib.sha256).digest())
 print(f"{header}.{claims}.{sig}")
 ```
+
+The API must allow the workspace's browser origin or the preflight `OPTIONS` is blocked and no data
+loads: set `RS_CORS_ALLOW_ORIGINS` (comma-separated; the dev default is the Vite server at
+`http://localhost:5173`) to the deployed workspace origin(s) in production.
 
 Workspace features: a three-panel layout (farms/fields, map, field inspector); the field inspector
 tabs through the index time series, pass list, agronomic read, field notes, and the provenance/audit

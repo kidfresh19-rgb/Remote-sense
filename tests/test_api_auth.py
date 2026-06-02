@@ -52,3 +52,19 @@ def test_workspace_endpoint_requires_auth() -> None:
     with TestClient(app) as client:
         resp = client.get("/farms")
     assert resp.status_code == 401
+
+
+def test_cors_preflight_allows_workspace_origin() -> None:
+    # The browser SPA preflights cross-origin calls; without CORS this OPTIONS is a 405 and the
+    # browser blocks the real request. Expect the middleware to allow the configured origin.
+    with TestClient(app) as client:
+        resp = client.options(
+            "/farms",
+            headers={
+                "Origin": "http://localhost:5173",
+                "Access-Control-Request-Method": "GET",
+                "Access-Control-Request-Headers": "authorization",
+            },
+        )
+    assert resp.status_code == 200
+    assert resp.headers["access-control-allow-origin"] == "http://localhost:5173"
