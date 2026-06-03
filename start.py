@@ -3,9 +3,12 @@
 `python start.py` brings the backend up with `docker compose`, smoothing over the frictions
 this dev box has: the Docker CLI is installed but not always on PATH, Docker Desktop may not
 be running yet, `.env` may be missing, and a throwaway `rs-testpg` test container can be
-holding host port 5432 that compose's own postgres needs to publish. Flags: `--frontend` also
+holding host port 5432 that compose's own postgres needs to publish. The app images bake source
+in at build time with no bind-mount, so by default this rebuilds them before start to pick up new
+code and migrations (skipping the rebuild is the classic way to boot a stale image whose baked-in
+Alembic history lags the database). Flags: `--no-build` skips that rebuild, `--frontend` also
 starts the Vite analyst workspace, `-d/--detach` runs the backend in the background, `--down`
-stops the stack, `--logs` follows logs, `--build` forces an image rebuild.
+stops the stack, `--logs` follows logs.
 
 This is a developer convenience, not part of the deployed app: production runs the same
 `docker compose` (or the per-service containers) directly.
@@ -267,7 +270,12 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="also start the Vite analyst workspace (implies a detached backend)",
     )
-    parser.add_argument("--build", action="store_true", help="rebuild the app image before start")
+    parser.add_argument(
+        "--build",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="rebuild the app image before start (default: on; use --no-build to skip)",
+    )
     parser.add_argument("--down", action="store_true", help="stop the stack and remove containers")
     parser.add_argument("--logs", action="store_true", help="follow the running stack's logs")
     args = parser.parse_args(argv)
