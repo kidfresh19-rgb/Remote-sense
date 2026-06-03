@@ -144,7 +144,7 @@ migration.
 | Arrival notification ⚑ | `ArrivalSource` port; ship DB-polling first. Webhook + LISTEN/NOTIFY drop in later. | Zero coupling to gateway readiness; resumable. Blocks Phase 1/3. |
 | Gateway push contract ⚑ | `GatewayPort`, configurable URL + bearer token, versioned payload, idempotency key. | Unblocks Phase 6 build/test; wire format is the only unknown. |
 | Boundary-change policy ⚑ | Geometry versioning: changed boundary → fresh backfill; prior analyses retained, tagged. | Matches DI-5; conservative + reproducible. |
-| Frontend map + components | **decided/shipped (L6)**: MapLibre GL + Tailwind v4 + TanStack Query + Phosphor icons + Motion, with custom dense components. Radix and TanStack Table were not adopted. | Vector/raster tiles suit live rendering; the analyst cockpit wants data-grid density. |
+| Frontend map + components (confirmed 2026-06-03) | As built: MapLibre GL, Tailwind v4, TanStack Query, Phosphor icons, Motion; bespoke dense panels (no Radix, no TanStack Table). | Vector/raster tiles suit live rendering; the bespoke panels gave the analyst cockpit tighter control than a data-grid lib. |
 | CRS | Per-farm by centroid: EPSG:32735 (35S, west of 30°E) / 32736 (36S, east). Store source + working CRS. | Zimbabwe straddles two UTM zones. |
 | Backfill window | 18 months (doc says 12–18), configurable. | Conservative default. |
 

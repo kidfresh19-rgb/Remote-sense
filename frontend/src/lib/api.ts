@@ -99,17 +99,19 @@ async function get<T>(path: string, token: string, signal?: AbortSignal): Promis
   return (await resp.json()) as T;
 }
 
-async function post<T>(path: string, body: unknown, token: string): Promise<T> {
+/** Mutating request (POST/DELETE). 204 responses carry no body, so resolve to undefined. */
+async function send<T>(method: string, path: string, token: string, body?: unknown): Promise<T> {
+  const hasBody = body !== undefined;
   let resp: Response;
   try {
     resp = await fetch(`${config.apiBaseUrl}${path}`, {
-      method: "POST",
+      method,
       headers: {
         Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
         Accept: "application/json",
+        ...(hasBody ? { "Content-Type": "application/json" } : {}),
       },
-      body: JSON.stringify(body),
+      body: hasBody ? JSON.stringify(body) : undefined,
     });
   } catch {
     throw new ApiError(0, `cannot reach the workspace API at ${config.apiBaseUrl}`);
@@ -118,23 +120,8 @@ async function post<T>(path: string, body: unknown, token: string): Promise<T> {
     const detail = await resp.text().catch(() => "");
     throw new ApiError(resp.status, detail || `request failed (${resp.status})`);
   }
+  if (resp.status === 204) return undefined as T;
   return (await resp.json()) as T;
-}
-
-async function del(path: string, token: string): Promise<void> {
-  let resp: Response;
-  try {
-    resp = await fetch(`${config.apiBaseUrl}${path}`, {
-      method: "DELETE",
-      headers: { Authorization: `Bearer ${token}` },
-    });
-  } catch {
-    throw new ApiError(0, `cannot reach the workspace API at ${config.apiBaseUrl}`);
-  }
-  if (!resp.ok) {
-    const detail = await resp.text().catch(() => "");
-    throw new ApiError(resp.status, detail || `request failed (${resp.status})`);
-  }
 }
 
 export const api = {
@@ -159,9 +146,13 @@ export const api = {
     fieldId: string,
     input: { body: string; pass_date: string | null },
     token: string,
-  ) => post<Annotation>(`/fields/${fieldId}/annotations`, input, token),
-  removeAnnotation: (annotationId: string, token: string) =>
-    del(`/annotations/${annotationId}`, token),
+  ) => send<Annotation>("POST", `/fields/${fieldId}/annotations`, token, input),
+  deleteAnnotation: (fieldId: string, annotationId: string, token: string) =>
+    send<void>(
+      "DELETE",
+      `/fields/${fieldId}/annotations/${encodeURIComponent(annotationId)}`,
+      token,
+    ),
 };
 
 /** XYZ template the MapLibre raster source points at, addressing one field/scene/geometry-version

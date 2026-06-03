@@ -68,21 +68,21 @@ export function useAnnotations(fieldId: string | null) {
   });
 }
 
-export function useAddAnnotation(fieldId: string) {
+export function useAddAnnotation(fieldId: string | null) {
   const { token } = useToken();
-  const queryClient = useQueryClient();
+  const qc = useQueryClient();
   return useMutation({
     mutationFn: (input: { body: string; pass_date: string | null }) =>
-      api.addAnnotation(fieldId, input, token!),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["annotations", fieldId] }),
+      api.addAnnotation(fieldId!, input, token!),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["annotations", fieldId] }),
   });
 }
 
-export function useRemoveAnnotation(fieldId: string) {
+export function useDeleteAnnotation(fieldId: string | null) {
   const { token } = useToken();
-  const queryClient = useQueryClient();
+  const qc = useQueryClient();
   return useMutation({
-    mutationFn: (id: string) => api.removeAnnotation(id, token!),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["annotations", fieldId] }),
+    mutationFn: (annotationId: string) => api.deleteAnnotation(fieldId!, annotationId, token!),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["annotations", fieldId] }),
   });
 }

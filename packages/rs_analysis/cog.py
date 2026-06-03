@@ -16,10 +16,8 @@ from rs_analysis.scl import clear_mask
 # A COG band carries reflectance-derived float values; NoData is NaN, never 0 (mirrors BandStack).
 NODATA = float("nan")
 
-# COG internal tile size: a fixed 256 (a multiple of 16, the GeoTIFF tiling rule). GDAL pads the
-# last tile for rasters smaller than this, so every COG stays genuinely tiled. Sizing the block to
-# the raster width instead makes a small raster read back as a single strip (tiled=False), which
-# breaks the COG layout the tiler relies on.
+# COG internal tile size (a multiple of 16). 256 keeps the tiler's windowed reads granular; GDAL's
+# COG driver pads the last tile, so even a raster smaller than this stays genuinely tiled.
 COG_BLOCK_SIZE = 256
 
 
@@ -54,11 +52,13 @@ def write_cog(
     nodata: float = NODATA,
     tags: dict[str, str] | None = None,
 ) -> bytes:
-    """Encode a single-band float index raster as a tiled, overviewed GeoTIFF (COG layout) and
-    return its bytes. `tags` are written as GDAL metadata (e.g. provenance for an analyst export).
-    Needs `rasterio` (the `geo` extra, in-container only)."""
+    """Encode a single-band float index raster as a Cloud-Optimized GeoTIFF and return its bytes.
+    Uses GDAL's COG driver, which guarantees the cloud-optimized layout (internal tiling + built
+    overviews) the tiler relies on for windowed reads - a hand-assembled tiled GTiff silently
+    degrades to strips when a single tile spans the whole raster, which is not a valid COG. `tags`
+    are written as GDAL metadata (e.g. provenance for an analyst export). Needs `rasterio` (the
+    `geo` extra, in-container only)."""
     try:
-        from rasterio.enums import Resampling
         from rasterio.io import MemoryFile
         from rasterio.transform import Affine
     except ImportError as exc:  # pragma: no cover - the host has no raster stack
@@ -71,7 +71,7 @@ def write_cog(
         raise ValueError(f"index raster must be 2-D, got shape {data.shape}")
     height, width = data.shape
     profile = {
-        "driver": "GTiff",
+        "driver": "COG",
         "dtype": "float32",
         "count": 1,
         "height": height,
@@ -79,19 +79,13 @@ def write_cog(
         "crs": crs,
         "transform": Affine(*transform),
         "nodata": nodata,
-        "tiled": True,
-        "blockxsize": COG_BLOCK_SIZE,
-        "blockysize": COG_BLOCK_SIZE,
+        "blocksize": COG_BLOCK_SIZE,
         "compress": "deflate",
-        "predictor": 3,  # floating-point predictor
+        "overview_resampling": "average",
     }
     with MemoryFile() as mem:
         with mem.open(**profile) as dst:
             dst.write(data, 1)
             if tags:
                 dst.update_tags(**tags)
-            factors = [f for f in (2, 4, 8) if min(height, width) // f >= 1]
-            if factors:
-                dst.build_overviews(factors, Resampling.average)
-                dst.update_tags(ns="rio_overview", resampling="average")
         return bytes(mem.read())

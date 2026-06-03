@@ -48,9 +48,16 @@ def test_classify_bands() -> None:
 def test_classify_uses_crop_override_when_present() -> None:
     from rs_interpret.thresholds import Band, bands_for
 
-    # The base bands apply for an untuned crop; this just asserts the lookup is crop-aware.
-    assert bands_for("ndvi", "maize") == bands_for("ndvi", None)
+    # A crop with a tuned override returns a different set than the generic base bands...
+    assert bands_for("ndvi", "maize") != bands_for("ndvi", None)
     assert isinstance(bands_for("ndvi", "maize")[0], Band)
+    # ...while an index the crop has no override for falls back to the base set (cotton has no NDMI
+    # override), so the lookup is crop-aware without dropping the fallback.
+    assert bands_for("ndmi", "cotton") == bands_for("ndmi", None)
+    # Maize closes canopy faster than generic cropland: it reaches "vigorous" at a value the base
+    # bands still call "developing".
+    assert classify("ndvi", 0.58, "maize").label == "vigorous"
+    assert classify("ndvi", 0.58, None).label == "developing"
 
 
 def test_ground_uses_min_clear_fraction_and_classifies() -> None:

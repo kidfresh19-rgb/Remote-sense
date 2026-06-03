@@ -2,6 +2,11 @@ node_modules
 dist
 dist-ssr
 *.local
+
+# tsc -b build artifacts (vite.config.ts is the source; these are emitted)
+*.tsbuildinfo
+vite.config.js
+vite.config.d.ts
 .env
 .env.*
 !.env.example

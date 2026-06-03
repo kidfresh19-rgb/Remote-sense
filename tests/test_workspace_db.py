@@ -12,6 +12,8 @@ import pytest
 import pytest_asyncio
 from fastapi import HTTPException
 from geoalchemy2.shape import from_shape
+from pydantic import ValidationError
+from rs_core import Principal, Role
 from rs_core.db import Base
 from rs_core.models import Farm, Field
 from rs_core.repositories import insert_interpretation, upsert_analysis, upsert_scene_metadata
@@ -20,14 +22,14 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from services.api.workspace import (
-    AnnotationIn,
-    create_annotation,
-    delete_annotation,
+    AnnotationCreate,
+    create_annotation_endpoint,
+    delete_annotation_endpoint,
     field_audit,
     field_interpretations,
     field_scenes,
     field_timeseries,
-    list_annotations,
+    list_annotations_endpoint,
     list_farms,
     list_fields,
 )
@@ -212,47 +214,47 @@ async def test_field_audit(maker_) -> None:
     assert record.clear_fraction == 0.9
 
 
+_ANALYST = Principal(subject="analyst-1", roles=frozenset({Role.ANALYST}))
+
+
 async def test_annotation_create_list_delete(maker_) -> None:
     field_id = await _seed(maker_)
     async with maker_() as session:
-        created = await create_annotation(
-            session,
+        created = await create_annotation_endpoint(
             field_id,
-            AnnotationIn(body="  scout the NW corner  ", pass_date=_PASS),
-            author="analyst-1",
+            AnnotationCreate(body="  scout the NW corner  ", pass_date=_PASS),
+            _ANALYST,
+            session,
         )
         await session.commit()
-    assert created.body == "scout the NW corner"  # trimmed server-side
+    assert created.body == "scout the NW corner"  # trimmed by AnnotationCreate's StringConstraints
     assert created.geometry_version == 1  # read from the field, never trusted from the client
-    assert created.author == "analyst-1"
+    assert created.author == "analyst-1"  # the verified token subject, not client input
     assert created.pass_date == _PASS
 
     async with maker_() as session:
-        notes = await list_annotations(session, field_id)
+        notes = await list_annotations_endpoint(field_id, _ANALYST, session)
     assert [n.body for n in notes] == ["scout the NW corner"]
 
     async with maker_() as session:
-        await delete_annotation(session, uuid.UUID(created.id))
+        await delete_annotation_endpoint(field_id, uuid.UUID(created.id), _ANALYST, session)
         await session.commit()
     async with maker_() as session:
-        assert await list_annotations(session, field_id) == []
+        assert await list_annotations_endpoint(field_id, _ANALYST, session) == []
 
 
 async def test_create_annotation_unknown_field_is_404(maker_) -> None:
     await _seed(maker_)
     async with maker_() as session:
         with pytest.raises(HTTPException) as excinfo:
-            await create_annotation(
-                session, uuid.uuid4(), AnnotationIn(body="orphan", pass_date=None), author="a"
+            await create_annotation_endpoint(
+                uuid.uuid4(), AnnotationCreate(body="orphan"), _ANALYST, session
             )
     assert excinfo.value.status_code == 404
 
 
-async def test_create_annotation_empty_body_is_422(maker_) -> None:
-    field_id = await _seed(maker_)
-    async with maker_() as session:
-        with pytest.raises(HTTPException) as excinfo:
-            await create_annotation(
-                session, field_id, AnnotationIn(body="   ", pass_date=None), author="a"
-            )
-    assert excinfo.value.status_code == 422
+def test_create_annotation_empty_body_is_422() -> None:
+    # AnnotationCreate trims and requires a non-empty body, so an all-whitespace note is rejected at
+    # request parse (Pydantic) and never reaches the endpoint.
+    with pytest.raises(ValidationError):
+        AnnotationCreate(body="   ")

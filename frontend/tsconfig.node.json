@@ -7,6 +7,7 @@
     "lib": ["ES2023"],
     "module": "ESNext",
     "moduleResolution": "bundler",
+    "types": ["node"],
     "skipLibCheck": true,
     "allowSyntheticDefaultImports": true,
     "strict": true

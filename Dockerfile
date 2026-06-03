@@ -10,6 +10,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+# rasterio/GDAL (the `geo` extra, used by the tiler and the COG-emitting worker) link against
+# libexpat at runtime, which the slim base omits - without it `import rasterio` fails with
+# "libexpat.so.1: cannot open shared object file". Tiny and harmless for the non-geo services.
+RUN apt-get update && apt-get install -y --no-install-recommends libexpat1 \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY pyproject.toml alembic.ini ./
 COPY packages ./packages
 COPY services ./services

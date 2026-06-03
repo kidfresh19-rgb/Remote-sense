@@ -6,15 +6,17 @@ is the analysis backbone behind the **AgriTrack** farmer-facing mobile app; the 
 a gateway. Expert-facing tool: optimized for analytical density and precision, not consumer
 simplicity.
 
-> Status (2026-06-02): the backend spine is built through interpretation. Ingestion + the PostGIS
+> Status (2026-06-03): the backend spine is built through interpretation. Ingestion + the PostGIS
 > data model (L1), the collection pipeline with live Celery backfill/forward-fill + a daily scan
 > beat (L2), the imagery access port + `mock` adapter (L3), the analysis core (L4), the
 > plain-language interpretation layer (L4b), outbound sync (L7), and Phase 7 RBAC/auth are in and
 > tested. The in-container raster render (L5) is in: the tiler renders colorized index tiles from
 > stored COGs. The React + MapLibre analyst workspace (L6) is built in `frontend/` (Vite, Tailwind
-> v4, MapLibre), including side-by-side pass comparison, saved views, field notes, and a
-> provenance/audit panel. Remaining work is owner-blocked (live CDSE, the agronomy thresholds, the
-> gateway wire format, ingestion-endpoint auth).
+> v4, MapLibre), including side-by-side pass comparison, saved views, a shared team-visible
+> field-notes store, and a provenance/audit panel. Index thresholds, colormaps, and the
+> interpretation prompt carry v1 Zimbabwe-tuned defaults pending an agronomist's sign-off. Remaining
+> work is owner-blocked (live CDSE, agronomist sign-off, the gateway wire format, ingestion-endpoint
+> auth).
 
 ## Build status
 
@@ -26,7 +28,7 @@ simplicity.
 | L4 Analysis core | reflectance (per-scene −1000 offset, fail-fast guards on non-positive quantification and missing per-band BOA offset), per-AOI SCL masking, NDVI/EVI2/SAVI/NDRE/NDMI, zonal stats, validation matrix | done |
 | L4b Interpretation | grounded Claude-API reads per field/pass, never auto-published (agronomist review) | done |
 | L5 Preview & tiles | S-4 UTC/CAT time; the tiler renders colorized index tiles from stored COGs via rio-tiler (per field/scene/geometry version), fed by D1 COG emission + D7 store-and-discard | done (in-container) |
-| L6 Analyst workspace | RBAC'd BFF read endpoints (farms/fields/time-series/scenes/interpretations/audit); React + MapLibre workspace in `frontend/` (Vite, Tailwind v4, TanStack Query) with side-by-side pass comparison, saved views, field notes, and a provenance/audit panel | done |
+| L6 Analyst workspace | RBAC'd BFF endpoints (farms/fields/time-series/scenes/interpretations/audit, plus a write-backed **field-notes** store under the `annotate` permission); React + MapLibre workspace in `frontend/` (Vite, Tailwind v4, TanStack Query) with side-by-side pass comparison, saved views, shared field notes, and a provenance/audit panel | done |
 | L7 Outbound sync | CSV + JSON payload, `GatewayPort` + http/recording adapters, `publish_farm` + `sync_outbox` (additive, idempotent, geometry never returned); GeoTIFF export in-container, PDF parked | done |
 | Platform (Phase 7) | RBAC (view/annotate/run-analysis/publish), HS256 JWT auth + `require()` on endpoints, `GET /pipeline/health` + log-based health alerting; structlog + OTel | partial (load testing parked) |
 

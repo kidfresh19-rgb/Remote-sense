@@ -54,6 +54,25 @@ def test_workspace_endpoint_requires_auth() -> None:
     assert resp.status_code == 401
 
 
+def test_annotation_write_forbidden_for_viewer() -> None:
+    # Posting a field note needs `annotate`; a viewer is gated out (403) before any DB access.
+    _as(Principal(subject="viewer", roles=frozenset({Role.VIEWER})))
+    field_id = "00000000-0000-0000-0000-000000000001"
+    try:
+        with TestClient(app) as client:
+            resp = client.post(f"/fields/{field_id}/annotations", json={"body": "note"})
+    finally:
+        app.dependency_overrides.clear()
+    assert resp.status_code == 403
+
+
+def test_annotation_read_requires_auth() -> None:
+    field_id = "00000000-0000-0000-0000-000000000001"
+    with TestClient(app) as client:  # no override, no bearer -> 401 before any DB access
+        resp = client.get(f"/fields/{field_id}/annotations")
+    assert resp.status_code == 401
+
+
 def test_cors_preflight_allows_workspace_origin() -> None:
     # The browser SPA preflights cross-origin calls; without CORS this OPTIONS is a 405 and the
     # browser blocks the real request. Expect the middleware to allow the configured origin.

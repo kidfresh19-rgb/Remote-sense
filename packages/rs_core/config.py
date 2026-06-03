@@ -26,8 +26,8 @@ class ActivityAdapter(StrEnum):
 
 
 class ArrivalSource(StrEnum):
-    # ⚑ CONFIRM: parked decision. Default is DB polling, behind an interface so
-    # webhook / LISTEN-NOTIFY can swap in without touching ingestion.
+    # Confirmed 2026-06-03: DB polling is the locked default. The interface stays so webhook /
+    # LISTEN-NOTIFY can swap in later without touching ingestion, but no longer a parked decision.
     DB_POLL = "db_poll"
     WEBHOOK = "webhook"
     LISTEN_NOTIFY = "listen_notify"
@@ -95,7 +95,7 @@ class Settings(BaseSettings):
     gateway_push_url: str = ""
     gateway_auth_token: str = ""
 
-    # Arrival notification (⚑ CONFIRM)
+    # Arrival notification (confirmed 2026-06-03: DB polling; webhook/LISTEN-NOTIFY swap in later).
     arrival_source: ArrivalSource = ArrivalSource.DB_POLL
 
     # Interpretation layer (Claude API)
