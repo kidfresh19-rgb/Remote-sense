@@ -402,9 +402,7 @@ async def delete_annotation(
     """Delete one note, scoped to its field so a stale id from another field can never match.
     Returns whether a row was removed (False -> 404 at the API)."""
     result = await session.execute(
-        delete(Annotation).where(
-            Annotation.id == annotation_id, Annotation.field_id == field_id
-        )
+        delete(Annotation).where(Annotation.id == annotation_id, Annotation.field_id == field_id)
     )
     return bool(result.rowcount)
 

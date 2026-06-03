@@ -70,11 +70,11 @@ SYSTEM_CONTEXT = (
     "- You are drafting for an agronomist who reviews and edits before anything reaches a farmer; "
     "this is advisory, not a final recommendation. Describe what the imagery shows. Do not give "
     "prescriptive instructions such as fertiliser rates, spray programmes or irrigation plans.\n"
-    "- Example of the right register (illustrative only - never reuse its numbers): \"Canopy "
+    '- Example of the right register (illustrative only - never reuse its numbers): "Canopy '
     "vigour is high and consistent with a healthy crop at this stage, and canopy moisture looks "
     "adequate. "
     "Red-edge readings are moderate, so nitrogen status is worth watching. Cloud cover was light, "
-    "so confidence in this read is good.\""
+    'so confidence in this read is good."'
 )
 
 

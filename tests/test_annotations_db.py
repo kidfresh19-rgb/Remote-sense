@@ -142,9 +142,7 @@ async def test_delete_is_scoped_to_field(maker_) -> None:
 
     async with maker_() as session:
         # A mismatched field id must not match the note, even with the right annotation id.
-        wrong = await delete_annotation(
-            session, annotation_id=note_id, field_id=uuid.uuid4()
-        )
+        wrong = await delete_annotation(session, annotation_id=note_id, field_id=uuid.uuid4())
         assert wrong is False
         ok = await delete_annotation(session, annotation_id=note_id, field_id=field_id)
         assert ok is True
