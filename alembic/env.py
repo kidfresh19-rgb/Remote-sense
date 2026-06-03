@@ -5,6 +5,7 @@ and skip the PostGIS-managed spatial-index/system tables."""
 
 from __future__ import annotations
 
+import time
 from logging.config import fileConfig
 
 import rs_core.models  # noqa: F401  - import registers every table on Base.metadata
@@ -37,11 +38,30 @@ def run_migrations_offline() -> None:
         context.run_migrations()
 
 
+def _connect_with_retry(connectable, *, attempts: int = 30, delay: float = 2.0):
+    """A fresh-volume postgres accepts local-socket connections (which satisfy the compose
+    healthcheck) before its TCP listener is up, so the migrate service - started the instant
+    postgres reports healthy - can hit a transient connection refusal on a cold `up`. Retry the
+    first connect briefly so the migration step does not fail stack startup."""
+    from sqlalchemy.exc import OperationalError
+
+    last_error: Exception | None = None
+    for _ in range(attempts):
+        try:
+            return connectable.connect()
+        except OperationalError as exc:
+            last_error = exc
+            time.sleep(delay)
+    raise RuntimeError(
+        f"database not reachable for migrations after {attempts} attempts"
+    ) from last_error
+
+
 def run_migrations_online() -> None:
     section = config.get_section(config.config_ini_section) or {}
     section["sqlalchemy.url"] = _DB_URL
     connectable = engine_from_config(section, prefix="sqlalchemy.", poolclass=pool.NullPool)
-    with connectable.connect() as connection:
+    with _connect_with_retry(connectable) as connection:
         context.configure(
             connection=connection,
             target_metadata=target_metadata,
