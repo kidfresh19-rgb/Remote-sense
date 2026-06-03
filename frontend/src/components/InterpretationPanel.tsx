@@ -7,16 +7,26 @@ import { Badge } from "./ui";
 
 type Tone = "positive" | "caution" | "critical" | "neutral";
 
-// ⚑ CONFIRM: map the agronomy status vocabulary (rs_interpret) to tones once thresholds are locked.
+// Map the agronomic status to a badge tone. `status` is the headline band label from rs_interpret
+// (service.py _status: the NDVI band, falling back to NDRE/NDMI), so the keys are the band labels
+// in rs_interpret/thresholds.py. Anything unmapped (e.g. "unknown") falls through to "neutral".
 const STATUS_TONE: Record<string, Tone> = {
-  healthy: "positive",
+  // Vigour bands (NDVI / EVI2 / SAVI)
+  bare: "caution",
+  sparse: "caution",
+  developing: "neutral",
   vigorous: "positive",
-  stable: "positive",
-  stressed: "caution",
-  declining: "caution",
-  marginal: "caution",
-  critical: "critical",
-  failing: "critical",
+  dense: "positive",
+  // Red-edge / nitrogen (NDRE)
+  low: "caution",
+  good: "positive",
+  high: "positive",
+  // Moisture (NDMI)
+  dry: "caution",
+  adequate: "positive",
+  wet: "positive",
+  // Shared mid band (NDRE + NDMI)
+  moderate: "neutral",
 };
 
 export function InterpretationPanel({ fieldId }: { fieldId: string }) {

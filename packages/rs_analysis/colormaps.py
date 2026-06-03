@@ -21,8 +21,10 @@ class ColorMap:
     vmax: float
 
 
-# ⚑ CONFIRM (agronomy review): display ranges tuned for Zimbabwean cropland; the colormap
-# names follow the matplotlib / rio-tiler convention the tiler will use.
+# Display ranges for Zimbabwean cropland: a colour stretch only, not agronomic classification
+# (that lives in rs_interpret/thresholds.py). The tiler renders rasters with these and the
+# workspace legend mirrors them (frontend/src/lib/indices.ts), so the two must stay in sync.
+# Colormap names follow the matplotlib / rio-tiler convention the tiler uses.
 COLORMAPS: dict[str, ColorMap] = {
     "ndvi": ColorMap("ndvi", "RdYlGn", -0.2, 0.9),
     "evi2": ColorMap("evi2", "RdYlGn", -0.2, 0.9),

@@ -6,13 +6,14 @@ from __future__ import annotations
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, status
-from rs_core import Permission, Principal, pipeline_health
+from rs_core import Permission, Principal, evaluate_health, get_logger, pipeline_health
 from rs_core.db import get_session
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from services.api.auth import require
 
 router = APIRouter(tags=["operations"])
+log = get_logger("operations")
 
 
 @router.post("/publish/farm/{canonical_farm_id}", status_code=status.HTTP_202_ACCEPTED)
@@ -32,5 +33,12 @@ async def pipeline_health_endpoint(
     principal: Annotated[Principal, Depends(require(Permission.VIEW))],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> dict[str, int]:
-    """Pipeline coverage + failure summary for the health dashboard (R-4). Requires `view`."""
-    return await pipeline_health(session)
+    """Pipeline coverage + failure summary for the health dashboard (R-4). Requires `view`. Fired
+    alerts (dead-lettered pushes, backfill backlog) are logged so an operator or a log-based
+    notifier can act on them; the summary itself is returned unchanged."""
+    summary = await pipeline_health(session)
+    for alert in evaluate_health(summary):
+        log.warning(
+            "pipeline.health.alert", level=alert.level, code=alert.code, message=alert.message
+        )
+    return summary

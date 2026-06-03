@@ -106,8 +106,13 @@ def test_aoi_rejects_non_polygon():
         AOI(geometry={"type": "Point", "coordinates": [31.0, -17.8]})
 
 
-def test_unimplemented_adapters_raise():
-    with pytest.raises(NotImplementedError):
-        get_access_adapter(Settings(imagery_adapter=ImageryAdapter.WINDOWED_COG))
-    with pytest.raises(NotImplementedError):
-        get_access_adapter(Settings(imagery_adapter=ImageryAdapter.SERVER_COMPUTE))
+def test_real_adapters_are_constructible():
+    # The real CDSE adapters (ADR 0002 windowed_cog, ADR 0003 server_compute) construct without
+    # network/credentials; they validate config lazily on first use, so the registry returns them
+    # behind the config switch with nothing downstream changing.
+    from rs_imagery.adapters import ServerComputeAdapter, WindowedCogAdapter
+
+    windowed = get_access_adapter(Settings(imagery_adapter=ImageryAdapter.WINDOWED_COG))
+    assert isinstance(windowed, WindowedCogAdapter)
+    server = get_access_adapter(Settings(imagery_adapter=ImageryAdapter.SERVER_COMPUTE))
+    assert isinstance(server, ServerComputeAdapter)

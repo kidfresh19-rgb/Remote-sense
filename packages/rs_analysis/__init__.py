@@ -17,9 +17,17 @@ from rs_analysis.engine import (
     confidence_for,
 )
 from rs_analysis.indices import INDICES, IndexSpec, clip_to_range, get_index
+from rs_analysis.phenology import Phenology, phenology
 from rs_analysis.reflectance import stack_to_reflectance, to_reflectance
 from rs_analysis.scl import CLEAR_CLASSES, SCL, clear_fraction, clear_mask
 from rs_analysis.zonal import ZonalStats, zonal_stats
+from rs_analysis.zones import (
+    NODATA_ZONE,
+    ZoneResult,
+    kmeans,
+    productivity_zones,
+    zone_polygons,
+)
 
 __all__ = [
     "BAND_RESOLUTION_M",
@@ -38,6 +46,8 @@ __all__ = [
     "IndexSpec",
     "clip_to_range",
     "get_index",
+    "Phenology",
+    "phenology",
     "to_reflectance",
     "stack_to_reflectance",
     "CLEAR_CLASSES",
@@ -46,4 +56,9 @@ __all__ = [
     "clear_mask",
     "ZonalStats",
     "zonal_stats",
+    "NODATA_ZONE",
+    "ZoneResult",
+    "kmeans",
+    "productivity_zones",
+    "zone_polygons",
 ]

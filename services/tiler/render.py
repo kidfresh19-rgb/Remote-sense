@@ -4,6 +4,8 @@ it with rio-tiler, which needs the raster stack (the `geo` extra, in-container o
 
 from __future__ import annotations
 
+import os
+
 from rs_analysis import get_colormap
 
 
@@ -51,8 +53,17 @@ def render_tile(
     # rio-tiler's registry keys are lowercase matplotlib names (the locked names are mixed-case).
     colormap = default_cmaps.get(str(params["colormap_name"]).lower())
 
+    # rasterio 1.4 refuses AWS credentials as rasterio.Env options; GDAL still reads them from the
+    # process environment for /vsis3/. Move any credential keys into os.environ and pass only the
+    # remaining endpoint/addressing options to the Env.
+    env = dict(gdal_env or {})
+    for cred_key in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"):
+        cred_val = env.pop(cred_key, None)
+        if cred_val is not None:
+            os.environ[cred_key] = cred_val
+
     try:
-        with rasterio.Env(**(gdal_env or {})), Reader(source) as cog:
+        with rasterio.Env(**env), Reader(source) as cog:
             image = cog.tile(x, y, z)
     except TileOutsideBounds as exc:
         raise TileUnavailable(f"tile {z}/{x}/{y} is outside {index} coverage") from exc

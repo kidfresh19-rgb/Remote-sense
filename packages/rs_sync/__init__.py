@@ -2,11 +2,12 @@
 additively, robustly, and idempotently. The gateway push goes through `GatewayPort` only
 (CLAUDE.md §1.1); results are keyed to the canonical farm id and **geometry is never returned**
 (§1.6). GeoTIFF/PDF exports are parked on the raster/PDF stacks; CSV + the JSON gateway payload
-are in place. The gateway URL/auth/wire format is the open `⚑ CONFIRM` item, defaulted behind the
-port."""
+are in place. PDF export is parked on the PDF stack; CSV, GeoTIFF (in-container, the `geo` extra),
+and the JSON gateway payload are in place. The gateway URL/auth/wire format is the open
+`⚑ CONFIRM` item, defaulted behind the port."""
 
 from rs_sync.adapters import HttpGatewayPort, RecordingGatewayPort
-from rs_sync.exporters import analyses_to_csv
+from rs_sync.exporters import analyses_to_csv, index_geotiff
 from rs_sync.payload import (
     PAYLOAD_VERSION,
     AnalysisRow,
@@ -21,6 +22,7 @@ __all__ = [
     "HttpGatewayPort",
     "RecordingGatewayPort",
     "analyses_to_csv",
+    "index_geotiff",
     "PAYLOAD_VERSION",
     "AnalysisRow",
     "GatewayPayload",

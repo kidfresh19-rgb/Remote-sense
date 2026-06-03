@@ -23,7 +23,9 @@ def vsis3_uri(bucket: str, key: str) -> str:
 
 def gdal_s3_env(settings: Settings) -> dict[str, str]:
     """GDAL `/vsis3/` configuration for the MinIO/S3 endpoint, to wrap the tiler's COG reads in a
-    `rasterio.Env`. Path-style addressing (MinIO), credentials from settings."""
+    `rasterio.Env`. Path-style addressing (MinIO), credentials from settings. `render_tile` moves
+    the credential keys into the process environment before building the Env, because rasterio 1.4
+    refuses AWS credentials as Env options (GDAL still reads them from the environment)."""
     return {
         "AWS_S3_ENDPOINT": settings.minio_endpoint,
         "AWS_ACCESS_KEY_ID": settings.minio_access_key,

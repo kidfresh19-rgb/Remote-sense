@@ -5,8 +5,11 @@
 > for Zimbabwean agriculture. Expert-facing (analysts, agronomists, managers); optimized for
 > density and precision, not consumer simplicity.
 >
-> Status: **planning** (2026-05-31). Nothing built yet. Canonical spec:
-> `remote-sense-sdp-architecture.docx`. This file is the working engineering reference.
+> Status (2026-06-02): **built through L7 outbound sync and Phase 7 auth/observability (partial)**;
+> the React + MapLibre analyst workspace (L6) and the in-container tiler (L5) are in. See §10 and
+> `README.md` for the authoritative build state. Remaining work is owner-blocked (live CDSE, agronomy
+> thresholds, the gateway wire format, ingestion-endpoint auth). Canonical spec:
+> `remote-sense-sdp-architecture.docx`; the phase plan (§7) is the original roadmap, kept for context.
 
 ---
 
@@ -141,7 +144,7 @@ migration.
 | Arrival notification ⚑ | `ArrivalSource` port; ship DB-polling first. Webhook + LISTEN/NOTIFY drop in later. | Zero coupling to gateway readiness; resumable. Blocks Phase 1/3. |
 | Gateway push contract ⚑ | `GatewayPort`, configurable URL + bearer token, versioned payload, idempotency key. | Unblocks Phase 6 build/test; wire format is the only unknown. |
 | Boundary-change policy ⚑ | Geometry versioning: changed boundary → fresh backfill; prior analyses retained, tagged. | Matches DI-5; conservative + reproducible. |
-| Frontend map + components ⚑ | MapLibre GL over Leaflet; Radix + Tailwind + TanStack Table/Query. | Vector tiles suit live rendering; internal expert tool wants data-grid density. |
+| Frontend map + components | **decided/shipped (L6)**: MapLibre GL + Tailwind v4 + TanStack Query + Phosphor icons + Motion, with custom dense components. Radix and TanStack Table were not adopted. | Vector/raster tiles suit live rendering; the analyst cockpit wants data-grid density. |
 | CRS | Per-farm by centroid: EPSG:32735 (35S, west of 30°E) / 32736 (36S, east). Store source + working CRS. | Zimbabwe straddles two UTM zones. |
 | Backfill window | 18 months (doc says 12–18), configurable. | Conservative default. |
 
@@ -232,13 +235,17 @@ first-draft-wins upsert, and the `interpret_field_pass` worker + `interpret.fiel
 `RecordingGatewayPort` / `HttpGatewayPort` (bearer + Idempotency-Key header + tenacity retry), the
 `sync_outbox` ledger + Alembic `0004`, and the `publish_farm` worker + `sync.publish_farm` task
 (R-2 idempotent: an already-published result set is not re-pushed; a failed push dead-letters).
-GeoTIFF/PDF exporters stay parked on the raster/PDF stacks. **Phase 7 (auth + observability,
+The PDF exporter stays parked on the PDF stack; **GeoTIFF export landed 2026-06-02**
+(`rs_sync.index_geotiff`: a tiled COG with provenance embedded as GDAL tags, in-container).
+**Phase 7 (auth + observability,
 partial) landed 2026-06-01**: RBAC (`rs_core/rbac.py` - view/annotate/run-analysis/publish +
 viewer/analyst/publisher/admin roles, permissions derived server-side), stdlib HS256 JWT
 verification (alg-pinned, constant-time, `exp`-checked) + the `require(permission)` dependency
 (`services/api/auth.py`), and the RBAC-gated `POST /publish/farm/{id}` (publish) +
-`GET /pipeline/health` (view; coverage + dead-letter summary, R-4). Load/scale testing, alerting,
-and authenticating the ingestion endpoint (tied to the ⚑ DI-1 arrival contract) remain. **L5/L6
+`GET /pipeline/health` (view; coverage + dead-letter summary, R-4). **Log-based health alerting
+landed 2026-06-02** (`rs_core/alerts.py` evaluates the summary; the health endpoint logs fired
+alerts as structured warnings for a log/webhook notifier, R-4). Load/scale testing and
+authenticating the ingestion endpoint (tied to the ⚑ DI-1 arrival contract) remain. **L5/L6
 (partial) landed 2026-06-01**: S-4 UTC/CAT time handling (`rs_core/timeutil.py`), the tiler service
 skeleton (`services/tiler` - pure render-params + XYZ→bbox math; the tile route 503s without the
 raster stack, real render is in-container), and the RBAC'd workspace BFF read endpoints
@@ -249,8 +256,12 @@ TanStack Query: app shell, farm/field sidebar, map with field geometry + tiler i
 per-index time-series chart, pass list + shared timeline scrubber, interpretation panel, token-gate
 auth). The four workspace features landed 2026-06-01: **side-by-side pass comparison** (two
 synced MapLibre maps sharing one camera, via the extracted `useFieldMap` hook), **saved views**
-(bookmarked AOIs, local store), **field notes** (annotation layer; local store behind an interface,
-the shared write-backed store is a ⚑ CONFIRM backend decision), and the **provenance/audit** panel.
+(bookmarked AOIs, local store), **field notes** (annotation layer), and the **provenance/audit**
+panel. **The shared, write-backed annotation store landed 2026-06-02**: the `annotation` table +
+Alembic `0005`, the RBAC `annotate`-gated `GET`/`POST /fields/{id}/annotations` +
+`DELETE /annotations/{id}`, geometry-version pinned server-side (invariant 5); the frontend writes
+through it. Saved views and custom AOIs stay browser-local behind their interface (the shared store
+for those is still a ⚑ CONFIRM backend decision).
 The **in-container raster
 render (L5) is in**: the tiler renders a colorized PNG tile from a stored index COG via rio-tiler
 (route `/tiles/{index}/{geometry_version}/{field_id}/{scene_id}/{z}/{x}/{y}.png`), fed by D1 COG
@@ -260,22 +271,36 @@ their DB/broker-backed tests are written and skip locally, set to run under `doc
 The items below remain consciously deferred. Nothing here is forgotten work, it is parked against
 a dependency.
 
-**Environment dependency (updated 2026-05-31).** UEFI virtualisation (VT-x) is now enabled and
-WSL2 is installed; Docker Desktop is being installed, so the local stack (Postgres+PostGIS,
-Redis, MinIO) is about to come up and the DB/broker-gated tests can finally run for real.
-`rasterio` / `rio-tiler` still will not install on the host directly (no MSVC C++ toolchain,
-Python 3.14), but they are plain wheels in the `python:3.11-slim` image, so anything needing the
-raster stack unblocks *inside the container* once the stack is up - it is no longer blocked on
-the host toolchain.
+**Tier 0 of the improvement plan (real imagery) is code-complete (2026-06-03).** Both real adapters
+are built and tested offline: `windowed_cog` (ADR 0002 - `CdseStacClient` STAC search, `cdse_metadata`
+per-scene offset/quantification for invariant 2, `WindowedCogAdapter` with per-AOI SCL masking +
+reflectance via the one `stack_to_reflectance`, R-3 read backoff, all rasterio behind a `WindowSource`
+seam) and `server_compute` (ADR 0003 - CDSE Process API previews + reflectance fetch behind HTTP and
+decoder seams, with the engine computing the index for both adapters so they cannot drift, risk #5).
+An offline adapter-parity test (`test_adapter_parity.py`) guards that contract, and CI
+(`.github/workflows/ci.yml`) now runs ruff plus the full suite (raster + DB-gated) on every push/PR,
+closing the silent-skip gap. The forward roadmap (Tiers 1 to 3: weather, alerts, zoning, the
+AgriTrack field-activity correlation, SAR) lives in `docs/improvement-plan.md`. What remains is
+purely credential-gated: confirm the two `⚑ CONFIRM` wire details (S2 asset-key naming, the Process
+API evalscripts) against the live catalogue, then the real Copernicus validation-matrix entries (D2).
+
+**Environment dependency (resolved 2026-06-02).** UEFI virtualisation (VT-x) is enabled, WSL2 is
+installed, and Docker (v29) is installed and running. `docker compose up` brings the whole stack
+up: Postgres+PostGIS, Redis and MinIO (healthchecked) plus api / worker / beat / tiler behind
+nginx on `:8000`. So the DB/broker-gated tests (S1) can now run for real against the live stack
+and in CI, and the raster stack (`rasterio` / `rio-tiler`, the `geo` extra) runs inside the tiler
+and COG-emitting worker containers, so nothing is blocked on a host C++ toolchain any more. The
+remaining blockers are external, not environmental: live CDSE access, the gateway wire format,
+and the agronomy thresholds.
 
 | # | Deferred / skipped item | Phase | Status / why parked | Unblocks when |
 |---|---|---|---|---|
 | D1 | COG emission in the analysis path | 2 | **done 2026-06-01** — `rs_analysis/cog.py`: `index_raster` (pure) + `write_cog` (rasterio-guarded). The pipeline emits per-index COGs to the object store when a `CogStore` is wired (`run_collection(cog_store=...)`). Pure prep host-tested; encode round-trip geo-gated | runs in-container |
-| D2 | Real Copernicus Browser entries in the validation matrix | 2 | parked: needs live CDSE data | real adapter + CDSE access |
+| D2 | Real Copernicus Browser entries in the validation matrix | 2 | parked: needs live CDSE data. The real `windowed_cog` adapter is now built (ADR 0002), so this unblocks on credentials, not code | CDSE credentials |
 | D3 | `upsert_analysis` persistence helper (AnalysisOutput → `analysis` row) | 2/3 | **done 2026-05-31** — additive/idempotent upsert on `uq_analysis_identity` (refresh-in-place); unit-tested, DB idempotency/additivity test skips locally | — |
 | D4 | Live Celery execution + Redis enqueue-lock (R-1 concurrency) | 3 | **done 2026-05-31** — enqueue-lock + `collect_field_locked` + live `run_collection`/`prepare_and_run` + Celery `backfill_field`/`forward_fill_field` + daily `scan_and_enqueue` beat; orchestration DB-gated-tested for CI | — |
 | D5 | Per-field collection-state table + cursor persistence + migration `0002` | 3 | **done 2026-05-31** — `field_collection_state` model + migration + cursor helpers (monotonic `advance_cursor`); DB-gated helper tests skip locally | live verification on the stack |
-| D6 | CDSE 429 backoff (R-3) in the data adapter | 3 | parked: lives in the real adapter | real adapter (rasterio/CDSE) |
+| D6 | CDSE 429 backoff (R-3) in the data adapter | 3 | **partial 2026-06-03** — the `windowed_cog` STAC client retries 429/5xx with exponential backoff (`cdse_stac.py`, tenacity); windowed-read backoff in `RasterioWindowSource` still to add | runs against live CDSE |
 | D7 | Explicit COG-then-discard step (S-1) | 3 | **done 2026-06-01** — `collect_field(emit_rasters=...)` carries the index arrays out, `run_collection` writes + stores the COG, and the raw bands stay transient (never persisted). Wired through the worker via `cog_store_from_settings` (no-op when boto3 absent) | runs in-container |
 | D8 | Concurrent first-create idempotency hardening (ingest) | 1→3 | **done 2026-05-31** — `get_or_create_farm` savepoint + IntegrityError recovery; race branch unit-tested, DB test skips locally | — |
 | D9 | Deactivate fields dropped from a later gateway payload | 1 | parked: open policy decision | gateway-team confirmation |
@@ -283,9 +308,12 @@ the host toolchain.
 | D11 | Per-pass backfill fan-out | 3 | **done 2026-06-01** — `backfill_field` now `plan_backfill_scenes` → enqueues one `collect_pass` task per outstanding pass (per-scene lock, own transaction); an empty re-plan converges to backfill-complete. `prepare_and_run(is_backfill=True)` kept as the synchronous primitive. Planner + per-pass DB-gated-tested | live verification on the stack |
 | S1 | DB/infra-gated tests that skip locally — now **19** (was 7): ingestion + get-or-create farm/field (`test_ingestion_db`), analysis upsert (`test_analysis_db`), collection-state cursor (`test_collection_state_db`), live collection + fan-out + due-selection (`test_tasks_db`) | 1→3 | no local PostGIS/Redis | Docker stack up / CI |
 
-**`# ⚑ CONFIRM` domain knobs awaiting agronomy review:** SCL clear-class set
-(`rs_analysis/scl.py`), per-index colormap display ranges (`colormaps.py`), clear-fraction
-confidence thresholds (`engine.py`), and the interpretation index-band thresholds + per-crop
-overrides + the static agronomic system prompt (`rs_interpret/thresholds.py`,
-`rs_interpret/prompts.py`). All carry generic defaults behind the flag until an agronomist tunes
-them; the interpretation layer never auto-publishes (risk #6), so a human reviews every read.
+**Domain knobs, current status:** the SCL clear-class set (`rs_analysis/scl.py`), per-index
+colormap display ranges (`colormaps.py`), and clear-fraction confidence thresholds (`engine.py`)
+are now locked to documented defaults (Sen2Cor L2A convention; display-only colour stretch; tested
+operational cutoffs). Still `# ⚑ CONFIRM` pending agronomy review: the interpretation index-band
+thresholds + per-crop overrides (`rs_interpret/thresholds.py`). The static agronomic system prompt
+(`rs_interpret/prompts.py`) is complete and grounded (it forbids prescriptive advice and restates
+only supplied numbers), so it carries no marker. The thresholds carry generic defaults until an
+agronomist tunes them; the interpretation layer never auto-publishes (risk #6), so a human reviews
+every read.

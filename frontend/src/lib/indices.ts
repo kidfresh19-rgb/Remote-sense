@@ -35,8 +35,9 @@ const MOIST = [
   "#01665e",
 ];
 
-// Display ranges + ramps mirror the parked rs_analysis/colormaps.py defaults.
-// ⚑ CONFIRM: tune the per-index ranges and per-crop ramps with agronomy before launch.
+// Display ranges mirror rs_analysis/colormaps.py, the source of truth the tiler renders rasters
+// with, so the legend matches the raster; keep the two in sync. These are a display colour stretch
+// only, not the agronomic classification bands (those live in rs_interpret/thresholds.py).
 export const INDICES: IndexMeta[] = [
   {
     key: "ndvi",
@@ -52,8 +53,8 @@ export const INDICES: IndexMeta[] = [
     label: "EVI2",
     long: "Two-band Enhanced Vegetation Index",
     description: "Vigour with reduced saturation over dense canopy.",
-    min: 0,
-    max: 0.8,
+    min: -0.2,
+    max: 0.9,
     gradient: VEG,
   },
   {
@@ -61,8 +62,8 @@ export const INDICES: IndexMeta[] = [
     label: "SAVI",
     long: "Soil-Adjusted Vegetation Index",
     description: "Vigour corrected for bare-soil background.",
-    min: 0,
-    max: 0.8,
+    min: -0.2,
+    max: 0.9,
     gradient: VEG,
   },
   {
@@ -70,8 +71,8 @@ export const INDICES: IndexMeta[] = [
     label: "NDRE",
     long: "Normalised Difference Red-Edge",
     description: "Chlorophyll and nitrogen status (20 m).",
-    min: 0,
-    max: 0.6,
+    min: -0.1,
+    max: 0.7,
     gradient: VEG,
   },
   {
@@ -79,8 +80,8 @@ export const INDICES: IndexMeta[] = [
     label: "NDMI",
     long: "Normalised Difference Moisture Index",
     description: "Canopy water content (20 m).",
-    min: -0.3,
-    max: 0.5,
+    min: -0.4,
+    max: 0.6,
     gradient: MOIST,
   },
 ];

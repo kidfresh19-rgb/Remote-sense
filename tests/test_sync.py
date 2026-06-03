@@ -70,6 +70,30 @@ def test_analyses_to_csv_has_header_values_and_no_geometry() -> None:
     assert "geometry" not in csv_text
 
 
+def test_index_geotiff_is_tiled_and_embeds_provenance() -> None:
+    pytest.importorskip("rasterio")
+    import numpy as np
+    from rasterio.io import MemoryFile
+    from rs_sync import index_geotiff
+
+    arr = np.linspace(-0.2, 0.9, num=64 * 64, dtype="float32").reshape(64, 64)
+    transform = (10.0, 0.0, 500000.0, 0.0, -10.0, 8030000.0)  # 10 m pixels, UTM-like origin
+    data = index_geotiff(
+        arr,
+        transform=transform,
+        crs="EPSG:32735",
+        provenance={"index_name": "ndvi", "formula_version": "ndvi/v1", "scene_id": "S2_X"},
+    )
+    assert data[:2] in (b"II", b"MM")  # TIFF magic
+    with MemoryFile(data) as mem, mem.open() as src:
+        assert src.crs.to_epsg() == 32735
+        assert src.profile["tiled"] is True
+        tags = src.tags()
+        assert tags["RS_INDEX_NAME"] == "ndvi"
+        assert tags["RS_FORMULA_VERSION"] == "ndvi/v1"
+        assert tags["RS_SCENE_ID"] == "S2_X"
+
+
 async def test_recording_gateway_dedupes_by_idempotency_key() -> None:
     port = RecordingGatewayPort()
     payload = build_payload("FARM-1", [_result()])

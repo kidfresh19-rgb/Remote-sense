@@ -1,11 +1,22 @@
 """rs_core: shared foundations for remote-sense (config, logging, telemetry, the PostGIS
 data model and the pure geospatial helpers used by ingestion)."""
 
+from rs_core.alerts import (
+    AlertSink,
+    FieldAlert,
+    HealthAlert,
+    LoggingAlertSink,
+    PassReading,
+    RecordingAlertSink,
+    evaluate_field,
+    evaluate_health,
+)
 from rs_core.config import Settings, get_settings
 from rs_core.db import Base, get_engine, get_session, get_sessionmaker
 from rs_core.logging import configure_logging, get_logger
 from rs_core.models import (
     Analysis,
+    Annotation,
     Farm,
     Field,
     FieldCollectionState,
@@ -57,6 +68,7 @@ __all__ = [
     "configure_logging",
     "get_logger",
     "Analysis",
+    "Annotation",
     "Farm",
     "Field",
     "FieldCollectionState",
@@ -72,6 +84,14 @@ __all__ = [
     "insert_interpretation",
     "mark_backfill_complete",
     "pipeline_health",
+    "evaluate_health",
+    "HealthAlert",
+    "evaluate_field",
+    "FieldAlert",
+    "PassReading",
+    "AlertSink",
+    "RecordingAlertSink",
+    "LoggingAlertSink",
     "processed_scene_ids",
     "record_forward_fill_poll",
     "record_push",

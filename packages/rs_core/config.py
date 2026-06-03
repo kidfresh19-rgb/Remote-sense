@@ -15,6 +15,16 @@ class ImageryAdapter(StrEnum):
     WINDOWED_COG = "windowed_cog"
 
 
+class WeatherAdapter(StrEnum):
+    MOCK = "mock"
+    OPEN_METEO = "open_meteo"
+
+
+class ActivityAdapter(StrEnum):
+    MOCK = "mock"
+    GATEWAY = "gateway"
+
+
 class ArrivalSource(StrEnum):
     # ⚑ CONFIRM: parked decision. Default is DB polling, behind an interface so
     # webhook / LISTEN-NOTIFY can swap in without touching ingestion.
@@ -61,6 +71,25 @@ class Settings(BaseSettings):
     cdse_client_id: str = ""
     cdse_client_secret: str = ""
     cdse_stac_url: str = ""
+    # windowed_cog adapter: the STAC collection to search and the eodata S3 store the product
+    # rasters live in (reached over GDAL /vsis3/). S3 keys are issued from the CDSE dashboard and
+    # are distinct from the OAuth2 client credentials above.
+    cdse_stac_collection: str = "SENTINEL-2"
+    cdse_s3_endpoint: str = ""  # e.g. eodata.dataspace.copernicus.eu
+    cdse_s3_access_key: str = ""
+    cdse_s3_secret_key: str = ""
+    cdse_s3_region: str = "default"
+    # server_compute adapter (ADR 0003): the CDSE Process API endpoint that renders index previews
+    # and returns reflectance bands server-side. e.g. https://sh.dataspace.copernicus.eu/api/v1/process
+    cdse_process_url: str = ""
+
+    # Weather access layer (improvement plan Tier 1, ADR 0004). Active adapter is a config switch.
+    weather_adapter: WeatherAdapter = WeatherAdapter.MOCK
+    weather_api_url: str = ""  # real provider base URL (e.g. Open-Meteo); empty for mock
+
+    # AgriTrack activity logs (Tier 2, ADR 0005). Read-only; the active adapter is a config switch.
+    activity_adapter: ActivityAdapter = ActivityAdapter.MOCK
+    activity_api_url: str = ""  # real AgriTrack/gateway feed base URL; empty for mock
 
     # Gateway push (⚑ CONFIRM: provided by gateway team)
     gateway_push_url: str = ""

@@ -74,6 +74,8 @@ where = ["packages"]
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+# azure/ is a local, git-ignored full mirror of the repo (a deploy-prep copy); never lint it.
+extend-exclude = ["azure"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "ASYNC"]

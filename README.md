@@ -22,20 +22,21 @@ simplicity.
 |---|---|---|
 | L1 Ingestion & validation | `POST /ingest/farm`, PostGIS farm/field/analysis, geometry versioning, idempotent + concurrent-safe upsert | done |
 | L2 Collection pipeline | planning kernel, Redis-locked collection (R-1), live Celery backfill/forward-fill, daily scan beat, per-field cursor | done |
-| L3 Imagery access | `AccessPort` + `mock` adapter (the active adapter is a config switch); `server_compute` / `windowed_cog` parked on the raster stack | mock done |
+| L3 Imagery access | `AccessPort` + `mock` adapter (config switch); real `windowed_cog` (ADR 0002) and `server_compute` (ADR 0003) CDSE adapters built behind seams, logic tested offline | mock + 2 real adapters (live validation pending CDSE creds) |
 | L4 Analysis core | reflectance (per-scene −1000 offset, fail-fast guards on non-positive quantification and missing per-band BOA offset), per-AOI SCL masking, NDVI/EVI2/SAVI/NDRE/NDMI, zonal stats, validation matrix | done |
 | L4b Interpretation | grounded Claude-API reads per field/pass, never auto-published (agronomist review) | done |
 | L5 Preview & tiles | S-4 UTC/CAT time; the tiler renders colorized index tiles from stored COGs via rio-tiler (per field/scene/geometry version), fed by D1 COG emission + D7 store-and-discard | done (in-container) |
 | L6 Analyst workspace | RBAC'd BFF read endpoints (farms/fields/time-series/scenes/interpretations/audit); React + MapLibre workspace in `frontend/` (Vite, Tailwind v4, TanStack Query) with side-by-side pass comparison, saved views, field notes, and a provenance/audit panel | done |
-| L7 Outbound sync | CSV + JSON payload, `GatewayPort` + http/recording adapters, `publish_farm` + `sync_outbox` (additive, idempotent, geometry never returned); GeoTIFF/PDF parked | done |
-| Platform (Phase 7) | RBAC (view/annotate/run-analysis/publish), HS256 JWT auth + `require()` on endpoints, `GET /pipeline/health`; structlog + OTel | partial (load testing + alerting parked) |
+| L7 Outbound sync | CSV + JSON payload, `GatewayPort` + http/recording adapters, `publish_farm` + `sync_outbox` (additive, idempotent, geometry never returned); GeoTIFF export in-container, PDF parked | done |
+| Platform (Phase 7) | RBAC (view/annotate/run-analysis/publish), HS256 JWT auth + `require()` on endpoints, `GET /pipeline/health` + log-based health alerting; structlog + OTel | partial (load testing parked) |
 
-Migrations: Alembic `0001`-`0004`. The heavy raster libs (`rasterio` / `rio-tiler`) live in the
+Migrations: Alembic `0001`-`0005`. The heavy raster libs (`rasterio` / `rio-tiler`) live in the
 `geo` extra and run inside the container, not on the host; the COG object store uses `boto3` (the
 `storage` extra); the Anthropic SDK is the `interpret` extra. Compose builds each service with only
 the extras it needs through the `INSTALL_EXTRAS` build arg (the tiler with `geo`, the COG-emitting
 worker with `geo,storage`, the rest with none), so the base images stay lean. DB/broker/SDK/raster-gated
-tests skip locally and run in CI / `docker compose`.
+tests skip locally and run for real in CI: `.github/workflows/ci.yml` runs ruff plus the full suite
+against PostGIS + Redis service containers with the `geo` extra installed, on every push and PR.
 
 ## Documents
 
@@ -120,8 +121,10 @@ loads: set `RS_CORS_ALLOW_ORIGINS` (comma-separated; the dev default is the Vite
 Workspace features: a three-panel layout (farms/fields, map, field inspector); the field inspector
 tabs through the index time series, pass list, agronomic read, field notes, and the provenance/audit
 log. The map toggles the index raster overlay and a side-by-side comparison of two passes on a shared
-camera. Views (a field plus its index) can be bookmarked as saved AOIs. Notes and saved views persist
-to the browser today; the shared, write-backed annotation store is a parked backend decision.
+camera. Views (a field plus its index) can be bookmarked as saved AOIs. Field notes persist to the
+shared, write-backed annotation store (RBAC `annotate`-gated BFF endpoints, geometry-version pinned
+server-side); saved views and AOIs persist to the browser today, with a shared store for those a
+parked backend decision.
 
 ```bash
 cd frontend

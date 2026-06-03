@@ -1,35 +1,32 @@
-import { Info, Trash } from "@phosphor-icons/react";
+import { Trash } from "@phosphor-icons/react";
 import { useState } from "react";
 
-import { addAnnotation, removeAnnotation, useAnnotations, type Annotation } from "@/lib/annotations";
+import type { Annotation } from "@/lib/api";
 import { formatDate } from "@/lib/format";
-import { useFields } from "@/lib/queries";
+import { useAddAnnotation, useAnnotations, useFields, useRemoveAnnotation } from "@/lib/queries";
 import { useWorkspace } from "@/state/workspace";
 
-import { EmptyState } from "./states";
+import { EmptyState, ErrorState, LoadingRows } from "./states";
 import { Badge, Button, IconButton } from "./ui";
 
 export function AnnotationsPanel({ fieldId }: { fieldId: string }) {
   const { farmId, passDate } = useWorkspace();
   const fields = useFields(farmId);
   const field = fields.data?.find((f) => f.field_id === fieldId) ?? null;
-  const notes = useAnnotations(fieldId);
+  const notesQuery = useAnnotations(fieldId);
+  const addNote = useAddAnnotation(fieldId);
+  const removeNote = useRemoveAnnotation(fieldId);
   const [body, setBody] = useState("");
 
   const submit = () => {
     const trimmed = body.trim();
-    // Require the resolved field so the note is pinned to the real geometry version (invariant 5),
-    // never a guessed default while the field list is still loading.
-    if (!trimmed || !field) return;
-    addAnnotation({
-      fieldId,
-      geometryVersion: field.geometry_version,
-      passDate,
-      body: trimmed,
-      author: null,
-    });
-    setBody("");
+    if (!trimmed || addNote.isPending) return;
+    // The server pins the note to the field's current geometry version (invariant 5); the client
+    // only sends the body and the optional pass-date scope.
+    addNote.mutate({ body: trimmed, pass_date: passDate }, { onSuccess: () => setBody("") });
   };
+
+  const notes = notesQuery.data ?? [];
 
   return (
     <div className="flex flex-col">
@@ -59,21 +56,30 @@ export function AnnotationsPanel({ fieldId }: { fieldId: string }) {
             {passDate ? `Pinned to ${formatDate(passDate)}` : "Whole field"} · geometry v
             {field?.geometry_version ?? "?"}
           </span>
-          <Button type="submit" variant="primary" disabled={!body.trim() || !field}>
-            Save note
+          <Button type="submit" variant="primary" disabled={!body.trim() || addNote.isPending}>
+            {addNote.isPending ? "Saving…" : "Save note"}
           </Button>
         </div>
+        {addNote.isError ? (
+          <p className="text-[11px] text-muted">
+            Could not save the note (need the annotate permission). Try again.
+          </p>
+        ) : null}
       </form>
 
-      <p className="flex items-start gap-1.5 px-3 py-2 text-[11px] leading-relaxed text-muted">
-        <Info size={13} className="mt-0.5 shrink-0" />
-        Notes are saved to this browser only, pending the shared annotation store.
-      </p>
-
-      {notes.length ? (
+      {notesQuery.isLoading ? (
+        <LoadingRows />
+      ) : notesQuery.isError ? (
+        <ErrorState error={notesQuery.error} onRetry={() => notesQuery.refetch()} />
+      ) : notes.length ? (
         <ul className="divide-y divide-border">
           {notes.map((note) => (
-            <NoteRow key={note.id} note={note} />
+            <NoteRow
+              key={note.id}
+              note={note}
+              onDelete={() => removeNote.mutate(note.id)}
+              deleting={removeNote.isPending && removeNote.variables === note.id}
+            />
           ))}
         </ul>
       ) : (
@@ -83,25 +89,34 @@ export function AnnotationsPanel({ fieldId }: { fieldId: string }) {
   );
 }
 
-function NoteRow({ note }: { note: Annotation }) {
+function NoteRow({
+  note,
+  onDelete,
+  deleting,
+}: {
+  note: Annotation;
+  onDelete: () => void;
+  deleting: boolean;
+}) {
   return (
-    <li className="group flex gap-2 p-3">
+    <li className="group flex gap-2 p-3" aria-busy={deleting}>
       <div className="min-w-0 flex-1 space-y-1.5">
         <div className="flex flex-wrap items-center gap-1.5">
-          {note.passDate ? (
-            <Badge tone="accent">{formatDate(note.passDate)}</Badge>
+          {note.pass_date ? (
+            <Badge tone="accent">{formatDate(note.pass_date)}</Badge>
           ) : (
             <Badge tone="neutral">whole field</Badge>
           )}
           <span className="text-[10px] text-muted tnum">
-            {new Date(note.createdAt).toLocaleString()}
+            {new Date(note.created_at).toLocaleString()}
           </span>
+          {note.author ? <span className="text-[10px] text-muted">{`· ${note.author}`}</span> : null}
         </div>
         <p className="whitespace-pre-wrap text-sm leading-relaxed text-fg">{note.body}</p>
       </div>
       <IconButton
         label="Delete note"
-        onClick={() => removeAnnotation(note.id)}
+        onClick={onDelete}
         className="shrink-0 opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
       >
         <Trash size={14} />

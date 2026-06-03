@@ -9,12 +9,12 @@ import uuid
 from datetime import date, datetime
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, status
 from geoalchemy2.shape import to_shape
 from pydantic import BaseModel
 from rs_core import Permission, Principal
 from rs_core.db import get_session
-from rs_core.models import Analysis, Farm, Field, Interpretation
+from rs_core.models import Analysis, Annotation, Farm, Field, Interpretation
 from shapely.geometry import mapping
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -24,6 +24,7 @@ from services.api.auth import require
 router = APIRouter(tags=["workspace"])
 
 ViewPrincipal = Annotated[Principal, Depends(require(Permission.VIEW))]
+AnnotatePrincipal = Annotated[Principal, Depends(require(Permission.ANNOTATE))]
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
 
 
@@ -86,6 +87,21 @@ class AuditRecordOut(BaseModel):
     confidence: str | None
     cog_uri: str | None
     created_at: datetime
+
+
+class AnnotationOut(BaseModel):
+    id: str
+    field_id: str
+    geometry_version: int
+    pass_date: date | None
+    body: str
+    author: str | None
+    created_at: datetime
+
+
+class AnnotationIn(BaseModel):
+    body: str
+    pass_date: date | None = None
 
 
 async def list_farms(session: AsyncSession) -> list[FarmOut]:
@@ -230,6 +246,71 @@ async def field_audit(session: AsyncSession, field_id: uuid.UUID) -> list[AuditR
     ]
 
 
+async def list_annotations(session: AsyncSession, field_id: uuid.UUID) -> list[AnnotationOut]:
+    rows = (
+        (
+            await session.execute(
+                select(Annotation)
+                .where(Annotation.field_id == field_id)
+                .order_by(Annotation.created_at.desc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [
+        AnnotationOut(
+            id=str(a.id),
+            field_id=str(a.field_id),
+            geometry_version=a.geometry_version,
+            pass_date=a.pass_date,
+            body=a.body,
+            author=a.author,
+            created_at=a.created_at,
+        )
+        for a in rows
+    ]
+
+
+async def create_annotation(
+    session: AsyncSession, field_id: uuid.UUID, data: AnnotationIn, *, author: str
+) -> AnnotationOut:
+    """Pin a note to a field. The geometry_version is read from the field server-side (invariant 5),
+    never trusted from the client; an unknown field is a 404, an empty body a 422."""
+    body = data.body.strip()
+    if not body:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "note body is empty")
+    field = await session.get(Field, field_id)
+    if field is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown field")
+    note = Annotation(
+        field_id=field_id,
+        geometry_version=field.geometry_version,
+        pass_date=data.pass_date,
+        body=body,
+        author=author,
+    )
+    session.add(note)
+    await session.flush()
+    await session.refresh(note)
+    return AnnotationOut(
+        id=str(note.id),
+        field_id=str(note.field_id),
+        geometry_version=note.geometry_version,
+        pass_date=note.pass_date,
+        body=note.body,
+        author=note.author,
+        created_at=note.created_at,
+    )
+
+
+async def delete_annotation(session: AsyncSession, annotation_id: uuid.UUID) -> None:
+    note = await session.get(Annotation, annotation_id)
+    if note is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown annotation")
+    await session.delete(note)
+
+
 @router.get("/farms")
 async def list_farms_endpoint(principal: ViewPrincipal, session: SessionDep) -> list[FarmOut]:
     return await list_farms(session)
@@ -268,3 +349,27 @@ async def field_audit_endpoint(
     field_id: uuid.UUID, principal: ViewPrincipal, session: SessionDep
 ) -> list[AuditRecordOut]:
     return await field_audit(session, field_id)
+
+
+@router.get("/fields/{field_id}/annotations")
+async def list_annotations_endpoint(
+    field_id: uuid.UUID, principal: ViewPrincipal, session: SessionDep
+) -> list[AnnotationOut]:
+    return await list_annotations(session, field_id)
+
+
+@router.post("/fields/{field_id}/annotations", status_code=status.HTTP_201_CREATED)
+async def create_annotation_endpoint(
+    field_id: uuid.UUID,
+    data: AnnotationIn,
+    principal: AnnotatePrincipal,
+    session: SessionDep,
+) -> AnnotationOut:
+    return await create_annotation(session, field_id, data, author=principal.subject)
+
+
+@router.delete("/annotations/{annotation_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_annotation_endpoint(
+    annotation_id: uuid.UUID, principal: AnnotatePrincipal, session: SessionDep
+) -> None:
+    await delete_annotation(session, annotation_id)

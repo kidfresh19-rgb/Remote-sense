@@ -60,6 +60,16 @@ export interface AuditRecord {
   created_at: string;
 }
 
+export interface Annotation {
+  id: string;
+  field_id: string;
+  geometry_version: number;
+  pass_date: string | null;
+  body: string;
+  author: string | null;
+  created_at: string;
+}
+
 export class ApiError extends Error {
   readonly status: number;
   constructor(status: number, message: string) {
@@ -89,6 +99,44 @@ async function get<T>(path: string, token: string, signal?: AbortSignal): Promis
   return (await resp.json()) as T;
 }
 
+async function post<T>(path: string, body: unknown, token: string): Promise<T> {
+  let resp: Response;
+  try {
+    resp = await fetch(`${config.apiBaseUrl}${path}`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+  } catch {
+    throw new ApiError(0, `cannot reach the workspace API at ${config.apiBaseUrl}`);
+  }
+  if (!resp.ok) {
+    const detail = await resp.text().catch(() => "");
+    throw new ApiError(resp.status, detail || `request failed (${resp.status})`);
+  }
+  return (await resp.json()) as T;
+}
+
+async function del(path: string, token: string): Promise<void> {
+  let resp: Response;
+  try {
+    resp = await fetch(`${config.apiBaseUrl}${path}`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  } catch {
+    throw new ApiError(0, `cannot reach the workspace API at ${config.apiBaseUrl}`);
+  }
+  if (!resp.ok) {
+    const detail = await resp.text().catch(() => "");
+    throw new ApiError(resp.status, detail || `request failed (${resp.status})`);
+  }
+}
+
 export const api = {
   farms: (token: string, signal?: AbortSignal) => get<Farm[]>("/farms", token, signal),
   fields: (canonicalFarmId: string, token: string, signal?: AbortSignal) =>
@@ -105,6 +153,15 @@ export const api = {
     get<Interpretation[]>(`/fields/${fieldId}/interpretations`, token, signal),
   audit: (fieldId: string, token: string, signal?: AbortSignal) =>
     get<AuditRecord[]>(`/fields/${fieldId}/audit`, token, signal),
+  annotations: (fieldId: string, token: string, signal?: AbortSignal) =>
+    get<Annotation[]>(`/fields/${fieldId}/annotations`, token, signal),
+  addAnnotation: (
+    fieldId: string,
+    input: { body: string; pass_date: string | null },
+    token: string,
+  ) => post<Annotation>(`/fields/${fieldId}/annotations`, input, token),
+  removeAnnotation: (annotationId: string, token: string) =>
+    del(`/annotations/${annotationId}`, token),
 };
 
 /** XYZ template the MapLibre raster source points at, addressing one field/scene/geometry-version

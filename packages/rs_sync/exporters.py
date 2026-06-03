@@ -6,7 +6,9 @@ from __future__ import annotations
 
 import csv
 import io
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+
+import numpy as np
 
 from rs_sync.payload import IndexResult
 
@@ -50,3 +52,22 @@ def analyses_to_csv(results: Sequence[IndexResult]) -> str:
             ]
         )
     return buffer.getvalue()
+
+
+def index_geotiff(
+    array: np.ndarray,
+    *,
+    transform: tuple[float, float, float, float, float, float],
+    crs: str,
+    provenance: Mapping[str, str] | None = None,
+) -> bytes:
+    """A single index raster as a self-describing GeoTIFF for analyst download: the tiled COG layout
+    from `rs_analysis.write_cog`, plus provenance embedded as GDAL metadata tags (invariant 5, so a
+    downloaded raster stays reproducible). Needs the `geo` extra (rasterio), in-container only.
+
+    An analyst raster export is inherently georeferenced; the no-geometry rule (invariant 6) governs
+    the additive gateway push (see `payload.py`), not analyst downloads."""
+    from rs_analysis import write_cog  # lazy: the `geo` extra (rasterio), installed in-container
+
+    tags = {f"RS_{key.upper()}": str(value) for key, value in (provenance or {}).items()}
+    return write_cog(array, transform=transform, crs=crs, tags=tags or None)

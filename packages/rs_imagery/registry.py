@@ -6,6 +6,8 @@ from __future__ import annotations
 from rs_core.config import ImageryAdapter, Settings, get_settings
 
 from rs_imagery.adapters.mock import MockAdapter
+from rs_imagery.adapters.server_compute import ServerComputeAdapter
+from rs_imagery.adapters.windowed_cog import WindowedCogAdapter
 from rs_imagery.port import AccessPort
 
 
@@ -16,15 +18,14 @@ def get_access_adapter(settings: Settings | None = None) -> AccessPort:
     if adapter is ImageryAdapter.MOCK:
         return MockAdapter()
 
-    # Real adapters land in later phases. They live behind this same switch so nothing
-    # downstream changes when they arrive.
-    if adapter is ImageryAdapter.SERVER_COMPUTE:
-        raise NotImplementedError(
-            "server_compute adapter is implemented in Phase 4 (preview/live rendering)."
-        )
+    # windowed_cog: the real CDSE adapter for the stored pipeline (ADR 0002). Constructs without
+    # network or credentials; it validates config lazily on first search/fetch.
     if adapter is ImageryAdapter.WINDOWED_COG:
-        raise NotImplementedError(
-            "windowed_cog adapter is implemented in Phase 2/3 (analysis + collection)."
-        )
+        return WindowedCogAdapter(settings)
+
+    # server_compute: endpoint-side previews/live tiles via the CDSE Process API (ADR 0003).
+    # Constructs without network or credentials; it validates config lazily on first use.
+    if adapter is ImageryAdapter.SERVER_COMPUTE:
+        return ServerComputeAdapter(settings)
 
     raise ValueError(f"Unknown imagery adapter: {adapter!r}")

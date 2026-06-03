@@ -43,7 +43,29 @@ def test_tile_unknown_index_is_404() -> None:
         assert client.get("/tiles/bogus/1/FIELD-1/SCENE-1/0/0/0.png").status_code == 404
 
 
-def test_tile_without_raster_stack_is_503() -> None:
+def test_tile_without_raster_stack_is_503(monkeypatch) -> None:
+    # The 503 path is the host case (no geo extra). Force it deterministically by making the
+    # renderer raise RasterStackUnavailable, so the assertion holds whether or not rasterio is
+    # importable in the runner (it is in the geo container, now that libexpat is present).
+    import services.tiler.main as tiler_main
+    from services.tiler.render import RasterStackUnavailable
+
+    def _no_stack(*args: object, **kwargs: object) -> bytes:
+        raise RasterStackUnavailable("no raster stack")
+
+    monkeypatch.setattr(tiler_main, "render_tile", _no_stack)
     with TestClient(app) as client:
-        # rio-tiler (the geo extra) is not installed on the host -> the route degrades to 503.
         assert client.get("/tiles/ndvi/1/FIELD-1/SCENE-1/0/0/0.png").status_code == 503
+
+
+def test_tile_missing_cog_is_404(monkeypatch) -> None:
+    # With the raster stack present, a tile whose COG is absent or out of coverage is a 404.
+    import services.tiler.main as tiler_main
+    from services.tiler.render import TileUnavailable
+
+    def _missing(*args: object, **kwargs: object) -> bytes:
+        raise TileUnavailable("no COG at the source")
+
+    monkeypatch.setattr(tiler_main, "render_tile", _missing)
+    with TestClient(app) as client:
+        assert client.get("/tiles/ndvi/1/FIELD-1/SCENE-1/0/0/0.png").status_code == 404

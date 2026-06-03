@@ -47,11 +47,18 @@ the pass list with a shared timeline scrubber, and the agronomic reads.
 ## Wired to the BFF
 
 `/farms`, `/farms/{id}/fields` (geometry for the map), `/fields/{id}/timeseries`, `/fields/{id}/scenes`,
-`/fields/{id}/interpretations`. The index raster layer points at the tiler XYZ template; it stays empty
-until the raster stack is up in-container (the tiler 503s without rio-tiler, 501s until COG emission).
+`/fields/{id}/interpretations`, `/fields/{id}/audit`. The index raster layer points at the tiler XYZ
+template; it stays empty until the raster stack is up in-container (the tiler 503s without rio-tiler,
+404s until the COG is emitted).
 
 ## Deferred (frontend backlog)
 
-Built behind the existing layout, not yet implemented: side-by-side scene comparison, the annotation
-layer, audit history, and saved AOIs. The index display ranges and the interpretation status-to-tone
-map carry `⚑ CONFIRM` markers pending agronomy review.
+Side-by-side scene comparison, the annotation layer (field notes), audit history, and saved
+AOIs/views are built and wired into the layout. Field notes now persist to the shared, write-backed
+store (the BFF `/fields/{id}/annotations` endpoints, RBAC `annotate`-gated, geometry-version pinned
+server-side); the panel reads and writes through it. Still deferred is the persistence of saved
+views and custom AOIs: they live in the browser (`localStorage`) behind a small interface, so a
+shared, write-backed store for those is a `⚑ CONFIRM` backend decision. The index display
+ranges mirror the backend `rs_analysis/colormaps.py` defaults and the status-to-tone map follows
+the `rs_interpret` band labels; only the per-crop interpretation thresholds
+(`rs_interpret/thresholds.py`) remain `⚑ CONFIRM` pending agronomy review.

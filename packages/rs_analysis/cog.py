@@ -16,6 +16,12 @@ from rs_analysis.scl import clear_mask
 # A COG band carries reflectance-derived float values; NoData is NaN, never 0 (mirrors BandStack).
 NODATA = float("nan")
 
+# COG internal tile size: a fixed 256 (a multiple of 16, the GeoTIFF tiling rule). GDAL pads the
+# last tile for rasters smaller than this, so every COG stays genuinely tiled. Sizing the block to
+# the raster width instead makes a small raster read back as a single strip (tiled=False), which
+# breaks the COG layout the tiler relies on.
+COG_BLOCK_SIZE = 256
+
 
 def index_raster(
     reflectance: dict[str, np.ndarray],
@@ -40,21 +46,17 @@ def index_raster(
     return out
 
 
-def _block_size(height: int, width: int) -> int:
-    """An internal tile size that is a multiple of 16 and fits the raster (GeoTIFF tiling rule)."""
-    block = min(256, (min(height, width) // 16) * 16)
-    return block or 16
-
-
 def write_cog(
     array: np.ndarray,
     *,
     transform: tuple[float, float, float, float, float, float],
     crs: str,
     nodata: float = NODATA,
+    tags: dict[str, str] | None = None,
 ) -> bytes:
     """Encode a single-band float index raster as a tiled, overviewed GeoTIFF (COG layout) and
-    return its bytes. Needs `rasterio` (the `geo` extra, in-container only)."""
+    return its bytes. `tags` are written as GDAL metadata (e.g. provenance for an analyst export).
+    Needs `rasterio` (the `geo` extra, in-container only)."""
     try:
         from rasterio.enums import Resampling
         from rasterio.io import MemoryFile
@@ -68,7 +70,6 @@ def write_cog(
     if data.ndim != 2:
         raise ValueError(f"index raster must be 2-D, got shape {data.shape}")
     height, width = data.shape
-    block = _block_size(height, width)
     profile = {
         "driver": "GTiff",
         "dtype": "float32",
@@ -79,14 +80,16 @@ def write_cog(
         "transform": Affine(*transform),
         "nodata": nodata,
         "tiled": True,
-        "blockxsize": block,
-        "blockysize": block,
+        "blockxsize": COG_BLOCK_SIZE,
+        "blockysize": COG_BLOCK_SIZE,
         "compress": "deflate",
         "predictor": 3,  # floating-point predictor
     }
     with MemoryFile() as mem:
         with mem.open(**profile) as dst:
             dst.write(data, 1)
+            if tags:
+                dst.update_tags(**tags)
             factors = [f for f in (2, 4, 8) if min(height, width) // f >= 1]
             if factors:
                 dst.build_overviews(factors, Resampling.average)

@@ -27,10 +27,12 @@ class SCL(IntEnum):
     SNOW = 11
 
 
-# ⚑ CONFIRM (agronomy review): the classes considered usable for index statistics. Vegetation,
-# bare soil, water and unclassified are kept; nodata, saturated, dark/shadow, all cloud classes,
-# cirrus and snow are masked out. This is the standard Sen2Cor agricultural convention and is
-# the single domain knob most worth a second opinion from the agronomy-scientist.
+# Classes counted as a usable (cloud-free) observation, per the Sen2Cor L2A convention for
+# agriculture: vegetation, bare soil, water and unclassified are kept; nodata, saturated,
+# dark/shadow, all cloud classes, cirrus and snow are masked out. This drives both the
+# clear-pixel fraction (cloud confidence) and which pixels feed index statistics. Water is
+# rare inside a crop field and is a tiny share of any AOI; if a field ever sits on open water,
+# exclude SCL.WATER from index stats specifically without changing the cloud fraction.
 CLEAR_CLASSES: frozenset[int] = frozenset(
     {SCL.VEGETATION, SCL.NOT_VEGETATED, SCL.WATER, SCL.UNCLASSIFIED}
 )

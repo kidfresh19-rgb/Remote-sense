@@ -1,6 +1,6 @@
-"""DB-gated tests for the workspace BFF read queries (L6): farms, fields (with geometry), per-field
-time series, scenes, and interpretations. These need PostGIS, so they SKIP when no database is
-reachable and run for real in CI / `docker compose`."""
+"""DB-gated tests for the workspace BFF (L6): farms, fields (with geometry), per-field time series,
+scenes, interpretations, and the annotation store (read + create + delete). These need PostGIS, so
+they SKIP when no database is reachable and run for real in CI / `docker compose`."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from datetime import UTC, date, datetime
 
 import pytest
 import pytest_asyncio
+from fastapi import HTTPException
 from geoalchemy2.shape import from_shape
 from rs_core.db import Base
 from rs_core.models import Farm, Field
@@ -19,10 +20,14 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from services.api.workspace import (
+    AnnotationIn,
+    create_annotation,
+    delete_annotation,
     field_audit,
     field_interpretations,
     field_scenes,
     field_timeseries,
+    list_annotations,
     list_farms,
     list_fields,
 )
@@ -205,3 +210,49 @@ async def test_field_audit(maker_) -> None:
     assert record.geometry_version == 1
     assert record.resolution_m == 10.0
     assert record.clear_fraction == 0.9
+
+
+async def test_annotation_create_list_delete(maker_) -> None:
+    field_id = await _seed(maker_)
+    async with maker_() as session:
+        created = await create_annotation(
+            session,
+            field_id,
+            AnnotationIn(body="  scout the NW corner  ", pass_date=_PASS),
+            author="analyst-1",
+        )
+        await session.commit()
+    assert created.body == "scout the NW corner"  # trimmed server-side
+    assert created.geometry_version == 1  # read from the field, never trusted from the client
+    assert created.author == "analyst-1"
+    assert created.pass_date == _PASS
+
+    async with maker_() as session:
+        notes = await list_annotations(session, field_id)
+    assert [n.body for n in notes] == ["scout the NW corner"]
+
+    async with maker_() as session:
+        await delete_annotation(session, uuid.UUID(created.id))
+        await session.commit()
+    async with maker_() as session:
+        assert await list_annotations(session, field_id) == []
+
+
+async def test_create_annotation_unknown_field_is_404(maker_) -> None:
+    await _seed(maker_)
+    async with maker_() as session:
+        with pytest.raises(HTTPException) as excinfo:
+            await create_annotation(
+                session, uuid.uuid4(), AnnotationIn(body="orphan", pass_date=None), author="a"
+            )
+    assert excinfo.value.status_code == 404
+
+
+async def test_create_annotation_empty_body_is_422(maker_) -> None:
+    field_id = await _seed(maker_)
+    async with maker_() as session:
+        with pytest.raises(HTTPException) as excinfo:
+            await create_annotation(
+                session, field_id, AnnotationIn(body="   ", pass_date=None), author="a"
+            )
+    assert excinfo.value.status_code == 422

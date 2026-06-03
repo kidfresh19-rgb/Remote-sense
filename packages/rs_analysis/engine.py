@@ -17,7 +17,9 @@ from rs_analysis.reflectance import stack_to_reflectance
 from rs_analysis.scl import clear_fraction, clear_mask
 from rs_analysis.zonal import ZonalStats, zonal_stats
 
-# ⚑ CONFIRM (agronomy review): clear-pixel-fraction thresholds that label a pass's confidence.
+# Clear-pixel-fraction cutoffs that label a pass's confidence: >=0.8 of the AOI clear is "high",
+# >=0.5 "medium", below that "low". Operational defaults so a cloud-thinned pass is reported
+# honestly rather than silently trusted; tuned conservatively and asserted in test_engine.py.
 HIGH_CONFIDENCE_CLEAR = 0.8
 MEDIUM_CONFIDENCE_CLEAR = 0.5
 

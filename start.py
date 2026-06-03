@@ -75,9 +75,7 @@ def _ensure_docker_running(docker: str) -> None:
         return
 
     if sys.platform != "win32":
-        _fail(
-            "Docker daemon is not running. Start it with: sudo systemctl start docker"
-        )
+        _fail("Docker daemon is not running. Start it with: sudo systemctl start docker")
 
     if not _WINDOWS_DOCKER_DESKTOP.exists():
         _fail(
@@ -248,7 +246,7 @@ def print_targets(*, frontend: bool) -> None:
     print("\nOnce healthy:")
     print("  API health    http://localhost:8000/healthz")
     print("  API docs      http://localhost:8000/docs")
-    print("  Tiler health  http://localhost:8001/healthz")
+    print("  Tiler health  http://localhost:8000/tiler/healthz")
     print("  MinIO console http://localhost:9001  (minioadmin / minioadmin)")
     if frontend:
         print("  Workspace     http://localhost:5173")
