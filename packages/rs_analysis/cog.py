@@ -40,12 +40,6 @@ def index_raster(
     return out
 
 
-def _block_size(height: int, width: int) -> int:
-    """An internal tile size that is a multiple of 16 and fits the raster (GeoTIFF tiling rule)."""
-    block = min(256, (min(height, width) // 16) * 16)
-    return block or 16
-
-
 def write_cog(
     array: np.ndarray,
     *,
@@ -53,10 +47,12 @@ def write_cog(
     crs: str,
     nodata: float = NODATA,
 ) -> bytes:
-    """Encode a single-band float index raster as a tiled, overviewed GeoTIFF (COG layout) and
-    return its bytes. Needs `rasterio` (the `geo` extra, in-container only)."""
+    """Encode a single-band float index raster as a Cloud-Optimized GeoTIFF and return its bytes.
+    Uses GDAL's COG driver, which guarantees the cloud-optimized layout (internal tiling + built
+    overviews) the tiler relies on for windowed reads. A hand-assembled tiled GTiff silently
+    degrades to strips when a single tile spans the whole raster, which is not a valid COG. Needs
+    `rasterio` (the `geo` extra, in-container only)."""
     try:
-        from rasterio.enums import Resampling
         from rasterio.io import MemoryFile
         from rasterio.transform import Affine
     except ImportError as exc:  # pragma: no cover - the host has no raster stack
@@ -68,9 +64,8 @@ def write_cog(
     if data.ndim != 2:
         raise ValueError(f"index raster must be 2-D, got shape {data.shape}")
     height, width = data.shape
-    block = _block_size(height, width)
     profile = {
-        "driver": "GTiff",
+        "driver": "COG",
         "dtype": "float32",
         "count": 1,
         "height": height,
@@ -78,17 +73,10 @@ def write_cog(
         "crs": crs,
         "transform": Affine(*transform),
         "nodata": nodata,
-        "tiled": True,
-        "blockxsize": block,
-        "blockysize": block,
         "compress": "deflate",
-        "predictor": 3,  # floating-point predictor
+        "overview_resampling": "average",
     }
     with MemoryFile() as mem:
         with mem.open(**profile) as dst:
             dst.write(data, 1)
-            factors = [f for f in (2, 4, 8) if min(height, width) // f >= 1]
-            if factors:
-                dst.build_overviews(factors, Resampling.average)
-                dst.update_tags(ns="rio_overview", resampling="average")
         return bytes(mem.read())
