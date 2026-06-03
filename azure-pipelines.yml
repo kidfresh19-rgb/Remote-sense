@@ -1,0 +1,71 @@
+# Azure Pipelines mirror of .github/workflows/ci.yml. This is the config that actually runs on push:
+# origin is Azure DevOps (dev.azure.com/cai-hit/remote-sense), where GitHub Actions never execute. It
+# runs ruff plus the full suite (raster + DB-gated) so the ~20 gated suites stop depending on someone
+# bringing the stack up by hand. See docs/improvement-plan.md (Tier 0.4).
+#
+# The `trigger` below fires CI on pushes to develop/main. The `pr` block is honored only for GitHub/
+# Bitbucket repos; for Azure Repos Git, PR validation is wired up via a Build Validation branch policy
+# in the Azure DevOps UI (Project settings -> Repos -> Branch policies), pointing at this pipeline.
+
+trigger:
+  branches:
+    include:
+      - develop
+      - main
+
+pr:
+  branches:
+    include:
+      - develop
+      - main
+
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+  # An isolated test database: the DB fixtures drop_all/create_all, so they must never point at a real
+  # database (see the project's test-running notes). Pipeline variables are exposed to script steps as
+  # environment variables of the same name.
+  RS_TEST_DATABASE_URL: postgresql+psycopg://rs:rs@localhost:5432/remote_sense_test
+  RS_DATABASE_URL: postgresql+psycopg://rs:rs@localhost:5432/remote_sense_test
+  RS_REDIS_URL: redis://localhost:6379/0
+
+steps:
+  - task: UsePythonVersion@0
+    inputs:
+      versionSpec: "3.11"
+    displayName: Use Python 3.11
+
+  # Microsoft-hosted Ubuntu agents ship Docker and leave port 5432 free (their bundled Postgres is
+  # stopped), so we run PostGIS and Redis as plain containers rather than wiring service containers.
+  - script: |
+      docker run -d --name postgres \
+        -e POSTGRES_USER=rs -e POSTGRES_PASSWORD=rs -e POSTGRES_DB=remote_sense \
+        -p 5432:5432 postgis/postgis:16-3.4
+      docker run -d --name redis -p 6379:6379 redis:7
+    displayName: Start PostGIS and Redis
+
+  - script: |
+      for _ in $(seq 1 30); do
+        if docker exec postgres pg_isready -U rs -q; then exit 0; fi
+        sleep 2
+      done
+      echo "Postgres did not become ready in time" >&2
+      exit 1
+    displayName: Wait for PostGIS
+
+  - script: docker exec postgres createdb -U rs remote_sense_test
+    displayName: Create the isolated test database
+
+  # rasterio / rio-tiler / pyproj / shapely install from manylinux wheels, so the raster-gated suites
+  # run here without a host GDAL toolchain.
+  - script: pip install -e ".[geo,interpret,storage,dev]"
+    displayName: Install the package (raster + interpret + storage + dev extras)
+
+  - script: |
+      ruff check .
+      ruff format --check .
+    displayName: Ruff lint and format
+
+  - script: pytest tests -q
+    displayName: Run the full suite (no-infra + raster + DB-gated)

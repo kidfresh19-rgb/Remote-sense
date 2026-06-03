@@ -1,0 +1,75 @@
+name: CI
+
+# There was no CI before this: the ~20 DB-gated and raster-gated suites only ran when someone
+# brought up the stack by hand, which previously let a cascade of raster bugs slip through. This
+# runs ruff plus the full suite (raster + DB-gated) on every push and PR. See docs/improvement-plan.md
+# (Tier 0.4).
+
+on:
+  push:
+    branches: [develop, main]
+  pull_request:
+    branches: [develop, main]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install ruff
+        run: pip install "ruff>=0.5"
+      - name: Ruff lint
+        run: ruff check .
+      - name: Ruff format
+        run: ruff format --check .
+
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgis/postgis:16-3.4
+        env:
+          POSTGRES_USER: rs
+          POSTGRES_PASSWORD: rs
+          POSTGRES_DB: remote_sense
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U rs"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 15
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 15
+    env:
+      # An isolated test database: the DB fixtures drop_all/create_all, so they must never point at
+      # a real database (see the project's test-running notes).
+      RS_TEST_DATABASE_URL: postgresql+psycopg://rs:rs@localhost:5432/remote_sense_test
+      RS_DATABASE_URL: postgresql+psycopg://rs:rs@localhost:5432/remote_sense_test
+      RS_REDIS_URL: redis://localhost:6379/0
+      PGPASSWORD: rs
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install the PostgreSQL client
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      - name: Create the isolated test database
+        run: createdb -h localhost -U rs remote_sense_test
+      - name: Install the package (raster + interpret + storage + dev extras)
+        # rasterio / rio-tiler / pyproj / shapely install from manylinux wheels, so the raster-gated
+        # suites run here without a host GDAL toolchain.
+        run: pip install -e ".[geo,interpret,storage,dev]"
+      - name: Run the full suite (no-infra + raster + DB-gated)
+        run: pytest tests -q
