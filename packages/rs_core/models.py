@@ -291,6 +291,28 @@ class Interpretation(Base):
     )
 
 
+class Annotation(Base):
+    """A free-text note an analyst pins to a field, optionally to one pass - the shared,
+    team-visible replacement for the former browser-local store. Written behind the RBAC
+    `annotate` permission and read behind `view`. Pinned to a `geometry_version` (invariant 5)
+    so a note keeps its meaning across a boundary change, and `author` is the verified token
+    subject, never client input. Append-and-delete in v1; notes are not edited in place."""
+
+    __tablename__ = "annotation"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    field_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("field.id", ondelete="CASCADE"), index=True
+    )
+    geometry_version: Mapped[int] = mapped_column(Integer)
+    # Null = a whole-field note; a date pins it to one pass.
+    pass_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    body: Mapped[str] = mapped_column(Text)
+    author: Mapped[str | None] = mapped_column(String(128), nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class SyncOutbox(Base):
     """One outbound gateway push, keyed by its idempotency key (L7, Phase 6). Records whether a
     farm's additive payload was delivered (`published`) or failed and awaits retry (`dead_letter`),

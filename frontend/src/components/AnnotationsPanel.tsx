@@ -1,34 +1,33 @@
-import { Info, Trash } from "@phosphor-icons/react";
+import { Trash } from "@phosphor-icons/react";
 import { useState } from "react";
 
-import { addAnnotation, removeAnnotation, useAnnotations, type Annotation } from "@/lib/annotations";
+import { ApiError, type Annotation } from "@/lib/api";
 import { formatDate } from "@/lib/format";
-import { useFields } from "@/lib/queries";
+import { useAddAnnotation, useAnnotations, useDeleteAnnotation, useFields } from "@/lib/queries";
 import { useWorkspace } from "@/state/workspace";
 
-import { EmptyState } from "./states";
+import { EmptyState, ErrorState, LoadingRows } from "./states";
 import { Badge, Button, IconButton } from "./ui";
+
+function errorText(error: unknown, fallback: string): string {
+  return error instanceof ApiError ? error.message : fallback;
+}
 
 export function AnnotationsPanel({ fieldId }: { fieldId: string }) {
   const { farmId, passDate } = useWorkspace();
   const fields = useFields(farmId);
   const field = fields.data?.find((f) => f.field_id === fieldId) ?? null;
   const notes = useAnnotations(fieldId);
+  const addNote = useAddAnnotation(fieldId);
+  const deleteNote = useDeleteAnnotation(fieldId);
   const [body, setBody] = useState("");
 
   const submit = () => {
     const trimmed = body.trim();
-    // Require the resolved field so the note is pinned to the real geometry version (invariant 5),
-    // never a guessed default while the field list is still loading.
-    if (!trimmed || !field) return;
-    addAnnotation({
-      fieldId,
-      geometryVersion: field.geometry_version,
-      passDate,
-      body: trimmed,
-      author: null,
-    });
-    setBody("");
+    if (!trimmed || addNote.isPending) return;
+    // The geometry version is resolved server-side from the field (invariant 5), so the panel
+    // only needs the note text and the optional pass it is pinned to.
+    addNote.mutate({ body: trimmed, pass_date: passDate }, { onSuccess: () => setBody("") });
   };
 
   return (
@@ -51,29 +50,39 @@ export function AnnotationsPanel({ fieldId }: { fieldId: string }) {
             if ((e.metaKey || e.ctrlKey) && e.key === "Enter") submit();
           }}
           rows={3}
+          disabled={addNote.isPending}
           placeholder="Observation, follow-up, or context for this field."
-          className="w-full resize-y rounded-md border border-border bg-panel px-2 py-1.5 text-sm text-fg placeholder:text-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+          className="w-full resize-y rounded-md border border-border bg-panel px-2 py-1.5 text-sm text-fg placeholder:text-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-50"
         />
         <div className="flex items-center justify-between gap-2">
           <span className="text-[11px] text-muted">
-            {passDate ? `Pinned to ${formatDate(passDate)}` : "Whole field"} · geometry v
-            {field?.geometry_version ?? "?"}
+            {passDate ? `Pinned to ${formatDate(passDate)}` : "Whole field"}
+            {field ? ` · geometry v${field.geometry_version}` : ""}
           </span>
-          <Button type="submit" variant="primary" disabled={!body.trim() || !field}>
-            Save note
+          <Button type="submit" variant="primary" disabled={!body.trim() || addNote.isPending}>
+            {addNote.isPending ? "Saving..." : "Save note"}
           </Button>
         </div>
+        {addNote.isError && (
+          <p className="text-xs text-critical">
+            {errorText(addNote.error, "Could not save the note. Try again.")}
+          </p>
+        )}
       </form>
 
-      <p className="flex items-start gap-1.5 px-3 py-2 text-[11px] leading-relaxed text-muted">
-        <Info size={13} className="mt-0.5 shrink-0" />
-        Notes are saved to this browser only, pending the shared annotation store.
-      </p>
-
-      {notes.length ? (
+      {notes.isLoading ? (
+        <LoadingRows rows={3} />
+      ) : notes.isError ? (
+        <ErrorState error={notes.error} onRetry={() => void notes.refetch()} />
+      ) : notes.data && notes.data.length ? (
         <ul className="divide-y divide-border">
-          {notes.map((note) => (
-            <NoteRow key={note.id} note={note} />
+          {notes.data.map((note) => (
+            <NoteRow
+              key={note.id}
+              note={note}
+              deleting={deleteNote.isPending && deleteNote.variables === note.id}
+              onDelete={() => deleteNote.mutate(note.id)}
+            />
           ))}
         </ul>
       ) : (
@@ -83,25 +92,35 @@ export function AnnotationsPanel({ fieldId }: { fieldId: string }) {
   );
 }
 
-function NoteRow({ note }: { note: Annotation }) {
+function NoteRow({
+  note,
+  onDelete,
+  deleting,
+}: {
+  note: Annotation;
+  onDelete: () => void;
+  deleting: boolean;
+}) {
   return (
     <li className="group flex gap-2 p-3">
       <div className="min-w-0 flex-1 space-y-1.5">
         <div className="flex flex-wrap items-center gap-1.5">
-          {note.passDate ? (
-            <Badge tone="accent">{formatDate(note.passDate)}</Badge>
+          {note.pass_date ? (
+            <Badge tone="accent">{formatDate(note.pass_date)}</Badge>
           ) : (
             <Badge tone="neutral">whole field</Badge>
           )}
+          {note.author ? <span className="text-[10px] font-medium text-fg">{note.author}</span> : null}
           <span className="text-[10px] text-muted tnum">
-            {new Date(note.createdAt).toLocaleString()}
+            {new Date(note.created_at).toLocaleString()}
           </span>
         </div>
         <p className="whitespace-pre-wrap text-sm leading-relaxed text-fg">{note.body}</p>
       </div>
       <IconButton
         label="Delete note"
-        onClick={() => removeAnnotation(note.id)}
+        onClick={onDelete}
+        disabled={deleting}
         className="shrink-0 opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
       >
         <Trash size={14} />

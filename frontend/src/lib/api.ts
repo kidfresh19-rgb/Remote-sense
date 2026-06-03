@@ -60,6 +60,16 @@ export interface AuditRecord {
   created_at: string;
 }
 
+export interface Annotation {
+  id: string;
+  field_id: string;
+  geometry_version: number;
+  pass_date: string | null;
+  body: string;
+  author: string | null;
+  created_at: string;
+}
+
 export class ApiError extends Error {
   readonly status: number;
   constructor(status: number, message: string) {
@@ -89,6 +99,31 @@ async function get<T>(path: string, token: string, signal?: AbortSignal): Promis
   return (await resp.json()) as T;
 }
 
+/** Mutating request (POST/DELETE). 204 responses carry no body, so resolve to undefined. */
+async function send<T>(method: string, path: string, token: string, body?: unknown): Promise<T> {
+  const hasBody = body !== undefined;
+  let resp: Response;
+  try {
+    resp = await fetch(`${config.apiBaseUrl}${path}`, {
+      method,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/json",
+        ...(hasBody ? { "Content-Type": "application/json" } : {}),
+      },
+      body: hasBody ? JSON.stringify(body) : undefined,
+    });
+  } catch {
+    throw new ApiError(0, `cannot reach the workspace API at ${config.apiBaseUrl}`);
+  }
+  if (!resp.ok) {
+    const detail = await resp.text().catch(() => "");
+    throw new ApiError(resp.status, detail || `request failed (${resp.status})`);
+  }
+  if (resp.status === 204) return undefined as T;
+  return (await resp.json()) as T;
+}
+
 export const api = {
   farms: (token: string, signal?: AbortSignal) => get<Farm[]>("/farms", token, signal),
   fields: (canonicalFarmId: string, token: string, signal?: AbortSignal) =>
@@ -105,6 +140,19 @@ export const api = {
     get<Interpretation[]>(`/fields/${fieldId}/interpretations`, token, signal),
   audit: (fieldId: string, token: string, signal?: AbortSignal) =>
     get<AuditRecord[]>(`/fields/${fieldId}/audit`, token, signal),
+  annotations: (fieldId: string, token: string, signal?: AbortSignal) =>
+    get<Annotation[]>(`/fields/${fieldId}/annotations`, token, signal),
+  addAnnotation: (
+    fieldId: string,
+    input: { body: string; pass_date: string | null },
+    token: string,
+  ) => send<Annotation>("POST", `/fields/${fieldId}/annotations`, token, input),
+  deleteAnnotation: (fieldId: string, annotationId: string, token: string) =>
+    send<void>(
+      "DELETE",
+      `/fields/${fieldId}/annotations/${encodeURIComponent(annotationId)}`,
+      token,
+    ),
 };
 
 /** XYZ template the MapLibre raster source points at, addressing one field/scene/geometry-version
