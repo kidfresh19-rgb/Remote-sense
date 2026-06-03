@@ -43,11 +43,9 @@ export async function geocodeSearch(
   try {
     const res = await fetch(`${BASE}?${params.toString()}`, {
       signal,
-      headers: {
-        Accept: "application/json",
-        // Nominatim ToS requires a descriptive User-Agent identifying the application.
-        "User-Agent": "remote-sense-workspace/1.0",
-      },
+      // Nominatim identifies a browser caller by the Referer/Origin the browser sends
+      // automatically. User-Agent is a forbidden fetch header and cannot be set here.
+      headers: { Accept: "application/json" },
     });
     if (!res.ok) return [];
     const raw = (await res.json()) as NominatimItem[];
