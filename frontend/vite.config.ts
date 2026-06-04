@@ -11,5 +11,13 @@ export default defineConfig({
       "@": fileURLToPath(new URL("./src", import.meta.url)),
     },
   },
-  server: { port: 5173 },
+  server: {
+    port: 5173,
+    // ngrok tunnels for remote access. Vite 6 blocks requests whose Host header is not listed
+    // here (localhost and 127.0.0.1 are always allowed), so the tunnel hostnames must be added.
+    allowedHosts: [
+      "faceted-proofing-occultist.ngrok-free.dev",
+      "wasp-drastic-nursery.ngrok-free.dev",
+    ],
+  },
 });
