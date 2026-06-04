@@ -125,12 +125,24 @@ interface FieldMapParams {
   ) => void;
 }
 
-function safeRemoveLayer(map: MaplibreMap, id: string): void {
-  if (map.getLayer(id)) map.removeLayer(id);
+function safeRemoveLayer(map: MaplibreMap | null, id: string): void {
+  if (!map) return;
+  try {
+    const layer = map.getLayer(id);
+    if (layer) map.removeLayer(id);
+  } catch {
+    // Map may have been destroyed; ignore errors
+  }
 }
 
-function safeRemoveSource(map: MaplibreMap, id: string): void {
-  if (map.getSource(id)) map.removeSource(id);
+function safeRemoveSource(map: MaplibreMap | null, id: string): void {
+  if (!map) return;
+  try {
+    const source = map.getSource(id);
+    if (source) map.removeSource(id);
+  } catch {
+    // Map may have been destroyed; ignore errors
+  }
 }
 
 function updateDrawLayers(map: MaplibreMap, verts: [number, number][]): void {
