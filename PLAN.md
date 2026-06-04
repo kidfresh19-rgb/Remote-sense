@@ -317,3 +317,31 @@ thresholds + per-crop overrides (`rs_interpret/thresholds.py`). The static agron
 only supplied numbers), so it carries no marker. The thresholds carry generic defaults until an
 agronomist tunes them; the interpretation layer never auto-publishes (risk #6), so a human reviews
 every read.
+
+**Recommended path to Copernicus parity (assessment 2026-06-04, owner-blocked — TODO).** Verdict:
+the index values are built to match the Copernicus Browser exactly. The reflectance offset
+(ρ = (DN − 1000) / 10000, read per scene) and the locked formulas match its definitions — proven
+against hand-computed references plus the with/without −1000-offset check in
+`test_validation_matrix.py`; `server_compute` renders via the CDSE Process API (Copernicus's own
+engine, identical by construction); and `windowed_cog` is asserted to agree with it offline
+(`test_adapter_parity.py`, risk #5). On *capability* it already exceeds the Browser (per-AOI SCL
+masking vs scene-level cloud %, stored zonal stats + clear-fraction + confidence + full provenance,
+the historical/live timeline, the agronomic interpretation layer, productivity zones, weather +
+activity correlation). The one unproven thing is the **live numeric diff against the real Browser** —
+purely credential-gated, not a code gap. Steps, in order:
+
+1. **Obtain CDSE credentials** (Copernicus Data Space): OAuth2 client id/secret + S3 `eodata` keys;
+   set `RS_CDSE_*` in `.env`. The keystone — unblocks 2–4. An operator registration, not engineering.
+2. **Land D2:** add 2–3 real Browser scenes/AOIs as `VALIDATION_MATRIX` rows (all five indices),
+   asserting both real adapters match the Browser within ~0.01 on the AOI mean. The framework already
+   iterates a table, so each is one row.
+3. **Live adapter parity:** run the `test_adapter_parity` check against real scenes (today it is
+   offline with fakes) to confirm `windowed_cog` == `server_compute` on live data.
+4. **Agronomist sign-off** on the interpretation index-band thresholds + per-crop overrides
+   (`rs_interpret/thresholds.py`, still `# ⚑ CONFIRM`).
+5. **Finish D6:** add windowed-read 429/transient backoff in `RasterioWindowSource` (the STAC client
+   already retries; the per-read path does not yet).
+
+Status (2026-06-04): the full suite runs **285 passed / 0 skipped** CI-equivalent in-container (all
+extras + real PostGIS + Redis); frontend builds, serves, and authenticates against the live BFF; the
+stack boots healthy. The app is functionally complete short of the credential-gated live diff above.
