@@ -339,12 +339,11 @@ purely credential-gated, not a code gap. Steps, in order:
    holds 2 real AOI rows on a near-cloudless 2026-05-17 scene (T36KTF) where windowed_cog matches the
    CDSE Process API (the Browser engine) within 0.01 on all five indices (worst observed 0.006). Opt
    in with `RS_LIVE_VALIDATION=1`. A different-date row finishes it.
-3. **Live adapter parity:** run the `test_adapter_parity` check against real scenes (today it is
-   offline with fakes) to confirm `windowed_cog` == `server_compute` on live data. NOTE 2026-06-04:
-   `server_compute` is not live yet. The registry does not inject OAuth into it (the Process API would
-   401) and `_bounds` omits the Process API output dimensions. A correct request (Bearer token plus
-   `output.width/height`) renders fine, verified while capturing the D2 reference, so wiring OAuth
-   into the registry and adding output dimensions unblocks this.
+3. **Live adapter parity:** DONE 2026-06-04. `server_compute` now builds its CDSE OAuth client
+   lazily from settings (the registry stays creds-free) and `_bounds` renders on the AOI grid
+   (output width/height from the bbox + `leastCC` mosaicking). `tests/test_adapter_parity_live.py`
+   confirms `windowed_cog` == `server_compute` on a real scene across all five indices (observed
+   NDVI diff ~0.006). Opt in with `RS_LIVE_VALIDATION=1`.
 4. **Agronomist sign-off** on the interpretation index-band thresholds + per-crop overrides
    (`rs_interpret/thresholds.py`, still `# ⚑ CONFIRM`).
 5. **Finish D6:** DONE 2026-06-04. `read_window` already retried `RasterioIOError` with backoff; the

@@ -11,6 +11,7 @@ evalscripts are CDSE-specific and marked `# ⚑ CONFIRM`."""
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -202,14 +203,23 @@ class ServerComputeAdapter(AccessPort):
         self._oauth = oauth
         self._items: dict[str, StacItem] = {}
 
+    def _oauth_or_default(self) -> CdseOAuth2Client | None:
+        """The CDSE OAuth client the Process API requires. Built lazily from settings when none was
+        injected and credentials are configured: the registry constructs the adapter creds-free, so
+        the client is created on first real use, not at construction. Stays None in offline/mock use
+        where collaborators are injected and never reach the network."""
+        if self._oauth is None and self._settings.cdse_token_url:
+            self._oauth = CdseOAuth2Client(self._settings)
+        return self._oauth
+
     def _stac(self) -> CdseStacClient:
         if self._stac_client is None:
-            self._stac_client = CdseStacClient(self._settings, oauth=self._oauth)
+            self._stac_client = CdseStacClient(self._settings, oauth=self._oauth_or_default())
         return self._stac_client
 
     def _process(self) -> ProcessClient:
         if self._process_client is None:
-            self._process_client = ProcessClient(self._settings, oauth=self._oauth)
+            self._process_client = ProcessClient(self._settings, oauth=self._oauth_or_default())
         return self._process_client
 
     def _decode(self) -> RasterDecoder:
@@ -236,21 +246,43 @@ class ServerComputeAdapter(AccessPort):
                 f"scene {scene_id!r} is not cached; call search() before metadata()/fetch()"
             ) from exc
 
-    def _bounds(self, aoi: AOI, datetime_iso: str, evalscript: str, *, fmt: str) -> dict:
-        """The Process API request body for the AOI and one scene's date.
+    @staticmethod
+    def _output_dims(aoi: AOI, resolution_m: float) -> tuple[int, int]:
+        """The output pixel grid for the AOI bbox at resolution_m. The bounds are WGS84, so the
+        degree extent is converted to metres with a cos(lat) factor, then capped to the Process
+        API's 2500 px limit per side. Verified against the live API 2026-06-04."""
+        from shapely.geometry import shape
 
-        # ⚑ CONFIRM: CDSE Process API request schema (input.bounds/data, output responses)."""
+        minx, miny, maxx, maxy = shape(aoi.geometry).bounds
+        mid = math.radians((miny + maxy) / 2.0)
+        width = round((maxx - minx) * 111320.0 * math.cos(mid) / resolution_m)
+        height = round((maxy - miny) * 111320.0 / resolution_m)
+        return max(1, min(2500, width)), max(1, min(2500, height))
+
+    def _bounds(
+        self, aoi: AOI, datetime_iso: str, evalscript: str, *, fmt: str, resolution_m: float
+    ) -> dict:
+        """The Process API request body for the AOI and one scene's date, rendered on the AOI grid
+        at resolution_m. Verified against the live CDSE Process API 2026-06-04 (ADR 0003)."""
+        width, height = self._output_dims(aoi, resolution_m)
         return {
             "input": {
                 "bounds": {"geometry": aoi.geometry},
                 "data": [
                     {
                         "type": "sentinel-2-l2a",
-                        "dataFilter": {"timeRange": {"from": datetime_iso, "to": datetime_iso}},
+                        "dataFilter": {
+                            "timeRange": {"from": datetime_iso, "to": datetime_iso},
+                            "mosaickingOrder": "leastCC",
+                        },
                     }
                 ],
             },
-            "output": {"responses": [{"identifier": "default", "format": {"type": fmt}}]},
+            "output": {
+                "width": width,
+                "height": height,
+                "responses": [{"identifier": "default", "format": {"type": fmt}}],
+            },
             "evalscript": evalscript,
         }
 
@@ -298,7 +330,9 @@ class ServerComputeAdapter(AccessPort):
             "from": sensing.strftime("%Y-%m-%dT00:00:00Z"),
             "to": (sensing + timedelta(days=1)).strftime("%Y-%m-%dT00:00:00Z"),
         }
-        body = self._bounds(aoi, window["from"], _bands_evalscript(requested), fmt="image/tiff")
+        body = self._bounds(
+            aoi, window["from"], _bands_evalscript(requested), fmt="image/tiff", resolution_m=res
+        )
         body["input"]["data"][0]["dataFilter"]["timeRange"] = window
         tiff = await self._process().render(body, accept="image/tiff")
 
@@ -338,7 +372,11 @@ class ServerComputeAdapter(AccessPort):
         cmap = get_colormap(index)  # validates the index; raises KeyError if unknown
         sensing = scene_ref.sensing_datetime
         body = self._bounds(
-            aoi, sensing.strftime("%Y-%m-%dT00:00:00Z"), _index_evalscript(index), fmt="image/png"
+            aoi,
+            sensing.strftime("%Y-%m-%dT00:00:00Z"),
+            _index_evalscript(index),
+            fmt="image/png",
+            resolution_m=10.0,
         )
         body["input"]["data"][0]["dataFilter"]["timeRange"] = {
             "from": sensing.strftime("%Y-%m-%dT00:00:00Z"),
