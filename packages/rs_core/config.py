@@ -74,7 +74,7 @@ class Settings(BaseSettings):
     # windowed_cog adapter: the STAC collection to search and the eodata S3 store the product
     # rasters live in (reached over GDAL /vsis3/). S3 keys are issued from the CDSE dashboard and
     # are distinct from the OAuth2 client credentials above.
-    cdse_stac_collection: str = "SENTINEL-2"
+    cdse_stac_collection: str = "sentinel-2-l2a"  # CDSE STAC v1 L2A collection id
     cdse_s3_endpoint: str = ""  # e.g. eodata.dataspace.copernicus.eu
     cdse_s3_access_key: str = ""
     cdse_s3_secret_key: str = ""

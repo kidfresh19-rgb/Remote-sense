@@ -31,7 +31,7 @@ _RANGE = TimeRange(start=datetime(2023, 1, 1, tzinfo=UTC), end=datetime(2023, 3,
 
 
 def _settings() -> Settings:
-    return Settings(cdse_stac_url=_STAC_URL, cdse_stac_collection="SENTINEL-2")
+    return Settings(cdse_stac_url=_STAC_URL, cdse_stac_collection="sentinel-2-l2a")
 
 
 def _feature(scene_id: str, dt: str, cloud: float) -> dict:
@@ -90,16 +90,35 @@ async def test_search_returns_scenes_sorted_chronologically():
     assert scenes[0].to_scene_ref().provider == "cdse"
 
 
-async def test_search_body_has_collection_datetime_intersects_and_cloud_filter():
+def test_default_stac_collection_is_l2a():
+    # The CDSE STAC v1 API keys the Sentinel-2 L2A collection `sentinel-2-l2a`, not the older
+    # OData `SENTINEL-2` product-type name; a wrong default queries the wrong collection.
+    # _env_file=None so this asserts the code default, not a developer's populated local .env.
+    assert Settings(_env_file=None).cdse_stac_collection == "sentinel-2-l2a"
+
+
+async def test_search_body_uses_collection_datetime_intersects_and_cql2_cloud_filter():
     fc = {"type": "FeatureCollection", "features": []}
     client, bodies = _client([httpx.Response(200, json=fc)])
     await client.search_items(_AOI, _RANGE, max_scene_cloud_pct=60.0)
     body = bodies[0]
-    assert body["collections"] == ["SENTINEL-2"]
+    assert body["collections"] == ["sentinel-2-l2a"]
     assert body["datetime"] == "2023-01-01T00:00:00Z/2023-03-01T00:00:00Z"
     assert body["intersects"]["type"] == "Polygon"
-    assert body["query"]["productType"] == {"eq": "S2MSI2A"}
-    assert body["query"]["eo:cloud_cover"] == {"lte": 60.0}
+    # No OData productType filter (it returns nothing against the STAC API); the collection already
+    # restricts to L2A. Cloud cover is a coarse CQL2 pre-filter only (per-AOI SCL is authoritative).
+    assert "query" not in body
+    assert body["filter-lang"] == "cql2-json"
+    assert body["filter"] == {"op": "<=", "args": [{"property": "eo:cloud_cover"}, 60.0]}
+
+
+async def test_search_body_omits_cloud_filter_when_unset():
+    fc = {"type": "FeatureCollection", "features": []}
+    client, bodies = _client([httpx.Response(200, json=fc)])
+    await client.search_items(_AOI, _RANGE)
+    body = bodies[0]
+    assert "filter" not in body
+    assert "query" not in body
 
 
 async def test_search_retries_transient_then_succeeds():

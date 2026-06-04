@@ -240,6 +240,7 @@ class RasterioWindowSource:
         if not settings.cdse_s3_endpoint:
             raise ValueError("RS_CDSE_S3_ENDPOINT is not configured; cannot read CDSE rasters.")
         self._settings = settings
+        self._s3_client = None  # boto3 S3 client for the eodata store, built once on first use
 
     def _gdal_env(self) -> dict[str, str]:
         s = self._settings
@@ -350,26 +351,66 @@ class RasterioWindowSource:
         return ~outside
 
     def read_bytes(self, href: str) -> bytes:
-        path = self._to_vsis3(href)
-        try:
-            from osgeo import gdal
-        except ImportError:
-            gdal = None
-        if gdal is not None and path.startswith("/vsi"):
-            self._gdal_env()  # creds into the environment for GDAL VSI
-            handle = gdal.VSIFOpenL(path, "rb")
-            if handle is None:
-                raise FileNotFoundError(f"cannot open {path}")
-            try:
-                gdal.VSIFSeekL(handle, 0, 2)  # SEEK_END
-                size = gdal.VSIFTellL(handle)
-                gdal.VSIFSeekL(handle, 0, 0)
-                return bytes(gdal.VSIFReadL(1, size, handle))
-            finally:
-                gdal.VSIFCloseL(handle)
-        # Fallback for an http(s) metadata href when the GDAL bindings are unavailable.
-        import httpx
+        """The raw bytes of a file asset (the product metadata XML). CDSE serves these as `s3://`
+        objects in the eodata store, read with boto3 whose adaptive retry absorbs 429 throttling and
+        transient S3 faults with backoff (R-3, the metadata-read analogue of the windowed-read
+        retry). A plain http(s) href falls back to a retrying GET. boto3 is the `storage` extra,
+        installed alongside `geo` on the COG-emitting worker where this adapter runs."""
+        if href.startswith("s3://"):
+            return self._read_s3_bytes(href)
+        return self._read_http_bytes(href)
 
-        resp = httpx.get(href, timeout=60.0)
-        resp.raise_for_status()
-        return resp.content
+    def _s3(self):
+        """The boto3 S3 client for the CDSE eodata store, built once. Caching it preserves
+        botocore's adaptive-retry token state across reads (R-3) and avoids per-read client setup,
+        the way rs_core.storage.S3CogStore caches its client."""
+        if self._s3_client is None:
+            import boto3
+            from botocore.config import Config
+
+            s = self._settings
+            self._s3_client = boto3.client(
+                "s3",
+                endpoint_url=f"https://{s.cdse_s3_endpoint}",
+                aws_access_key_id=s.cdse_s3_access_key,
+                aws_secret_access_key=s.cdse_s3_secret_key,
+                region_name=s.cdse_s3_region,
+                config=Config(
+                    signature_version="s3v4",
+                    retries={"max_attempts": 4, "mode": "adaptive"},
+                ),
+            )
+        return self._s3_client
+
+    def _read_s3_bytes(self, href: str) -> bytes:
+        bucket, _, key = href[len("s3://") :].partition("/")
+        return self._s3().get_object(Bucket=bucket, Key=key)["Body"].read()
+
+    def _read_http_bytes(self, href: str) -> bytes:
+        import httpx
+        from tenacity import (
+            Retrying,
+            retry_if_exception,
+            stop_after_attempt,
+            wait_exponential,
+        )
+
+        def _transient(exc: BaseException) -> bool:
+            if isinstance(exc, httpx.TransportError):
+                return True
+            if isinstance(exc, httpx.HTTPStatusError):
+                return exc.response.status_code in (429, 500, 502, 503, 504)
+            return False
+
+        def _get() -> bytes:
+            resp = httpx.get(href, timeout=60.0)
+            resp.raise_for_status()
+            return resp.content
+
+        retrying = Retrying(
+            retry=retry_if_exception(_transient),
+            wait=wait_exponential(multiplier=1, min=1, max=20),
+            stop=stop_after_attempt(4),
+            reraise=True,
+        )
+        return retrying(_get)

@@ -184,12 +184,17 @@ class CdseStacClient:
             "intersects": aoi.geometry,
             "limit": limit,
         }
-        # ⚑ CONFIRM: CDSE STAC query-extension syntax. Restrict to L2A; add the cloud-cover filter
-        # only as a coarse pre-filter (per-AOI SCL masking is authoritative, invariant 3).
-        query: dict[str, Any] = {"productType": {"eq": "S2MSI2A"}}
+        # The collection id (sentinel-2-l2a) already restricts to S2 L2A, so no product-type filter
+        # is needed; an OData-style `productType` filter is not a STAC queryable and returns nothing
+        # against the CDSE STAC API. Cloud cover is a coarse pre-filter only (per-AOI SCL masking is
+        # authoritative, invariant 3), expressed with the CQL2 filter extension that CDSE STAC v1
+        # uses. Verified against the live catalogue 2026-06-04.
         if max_scene_cloud_pct is not None:
-            query["eo:cloud_cover"] = {"lte": max_scene_cloud_pct}
-        body["query"] = query
+            body["filter-lang"] = "cql2-json"
+            body["filter"] = {
+                "op": "<=",
+                "args": [{"property": "eo:cloud_cover"}, max_scene_cloud_pct],
+            }
         return body
 
     async def _post_search(self, body: dict[str, Any]) -> dict[str, Any]:

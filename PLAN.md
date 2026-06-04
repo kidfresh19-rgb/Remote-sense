@@ -331,16 +331,35 @@ activity correlation). The one unproven thing is the **live numeric diff against
 purely credential-gated, not a code gap. Steps, in order:
 
 1. **Obtain CDSE credentials** (Copernicus Data Space): OAuth2 client id/secret + S3 `eodata` keys;
-   set `RS_CDSE_*` in `.env`. The keystone — unblocks 2–4. An operator registration, not engineering.
+   set `RS_CDSE_*` in `.env`. DONE 2026-06-04: OAuth client + S3 keys configured and verified live
+   (token fetch, STAC search, signed S3 read); `RS_IMAGERY_ADAPTER` switched to `windowed_cog`.
 2. **Land D2:** add 2–3 real Browser scenes/AOIs as `VALIDATION_MATRIX` rows (all five indices),
    asserting both real adapters match the Browser within ~0.01 on the AOI mean. The framework already
-   iterates a table, so each is one row.
+   iterates a table, so each is one row. STARTED 2026-06-04: `tests/test_validation_matrix_live.py`
+   holds 2 real AOI rows on a near-cloudless 2026-05-17 scene (T36KTF) where windowed_cog matches the
+   CDSE Process API (the Browser engine) within 0.01 on all five indices (worst observed 0.006). Opt
+   in with `RS_LIVE_VALIDATION=1`. A different-date row finishes it.
 3. **Live adapter parity:** run the `test_adapter_parity` check against real scenes (today it is
-   offline with fakes) to confirm `windowed_cog` == `server_compute` on live data.
+   offline with fakes) to confirm `windowed_cog` == `server_compute` on live data. NOTE 2026-06-04:
+   `server_compute` is not live yet. The registry does not inject OAuth into it (the Process API would
+   401) and `_bounds` omits the Process API output dimensions. A correct request (Bearer token plus
+   `output.width/height`) renders fine, verified while capturing the D2 reference, so wiring OAuth
+   into the registry and adding output dimensions unblocks this.
 4. **Agronomist sign-off** on the interpretation index-band thresholds + per-crop overrides
    (`rs_interpret/thresholds.py`, still `# ⚑ CONFIRM`).
-5. **Finish D6:** add windowed-read 429/transient backoff in `RasterioWindowSource` (the STAC client
-   already retries; the per-read path does not yet).
+5. **Finish D6:** DONE 2026-06-04. `read_window` already retried `RasterioIOError` with backoff; the
+   real gap was the metadata read. `read_bytes` now fetches the `s3://` MTD XML via boto3 with
+   botocore adaptive retries (429/transient). The prior osgeo VSI path was never installed anywhere
+   and the httpx fallback could not read an `s3://` href, so metadata was broken in production.
+
+Go-live (2026-06-04): credentials verified end to end. A real `windowed_cog` fetch over a Harare AOI
+returned reflectance in 0..1 with the -1000 offset applied per scene, EPSG:32736 at 10 m, per-AOI SCL
+clear-fraction 0.96, NDVI mean ~0.38. Two wire bugs were found against the live catalogue and fixed
+with tests: the STAC collection default was `SENTINEL-2` (now `sentinel-2-l2a`), and the search sent
+an OData `productType` filter that returned zero features (now a CQL2 cloud pre-filter; the collection
+already restricts to L2A). The asset-key `⚑ CONFIRM` (bands keyed `B04_10m`, metadata
+`product_metadata`) is confirmed correct against live data. Remaining: D2 validation-matrix rows, live
+`server_compute` parity, and agronomist sign-off (steps 2 to 4).
 
 Status (2026-06-04): the full suite runs **285 passed / 0 skipped** CI-equivalent in-container (all
 extras + real PostGIS + Redis); frontend builds, serves, and authenticates against the live BFF; the

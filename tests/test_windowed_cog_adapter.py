@@ -13,7 +13,11 @@ import numpy as np
 import pytest
 from rs_core.config import Settings
 from rs_imagery.adapters.cdse_stac import StacItem
-from rs_imagery.adapters.windowed_cog import ReadWindow, WindowedCogAdapter
+from rs_imagery.adapters.windowed_cog import (
+    RasterioWindowSource,
+    ReadWindow,
+    WindowedCogAdapter,
+)
 from rs_imagery.types import AOI, ProcessingMode, SceneRef, TimeRange
 
 _TRANSFORM = (10.0, 0.0, 500000.0, 0.0, -10.0, 8000000.0)
@@ -159,3 +163,37 @@ async def test_fetch_without_prior_search_raises_lookup():
     )
     with pytest.raises(LookupError):
         await adapter.fetch(ref, _AOI, bands=["B04", "B08"], resolution_m=10.0)
+
+
+def test_rasterio_source_read_bytes_reads_s3_via_boto3(monkeypatch):
+    """The metadata XML is an s3:// object read with boto3 against the CDSE eodata endpoint; the
+    href's bucket/key are parsed and the call is signed for the configured endpoint. Zero network:
+    boto3.client is faked."""
+    pytest.importorskip("boto3")
+    captured: dict[str, object] = {}
+
+    class _Body:
+        def read(self) -> bytes:
+            return b"<L2A/>"
+
+    class _Client:
+        def get_object(self, *, Bucket: str, Key: str):  # noqa: N803
+            captured["bucket"] = Bucket
+            captured["key"] = Key
+            return {"Body": _Body()}
+
+    def _fake_client(service: str, **kwargs: object) -> _Client:
+        captured["service"] = service
+        captured["endpoint"] = kwargs.get("endpoint_url")
+        return _Client()
+
+    monkeypatch.setattr("boto3.client", _fake_client)
+    source = RasterioWindowSource(
+        Settings(cdse_s3_endpoint="eodata.example", cdse_s3_access_key="a", cdse_s3_secret_key="b")
+    )
+    data = source.read_bytes("s3://eodata/Sentinel-2/MSI/L2A/scene.SAFE/MTD_MSIL2A.xml")
+    assert data == b"<L2A/>"
+    assert captured["service"] == "s3"
+    assert captured["bucket"] == "eodata"
+    assert captured["key"] == "Sentinel-2/MSI/L2A/scene.SAFE/MTD_MSIL2A.xml"
+    assert captured["endpoint"] == "https://eodata.example"

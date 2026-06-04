@@ -6,7 +6,7 @@ is the analysis backbone behind the **AgriTrack** farmer-facing mobile app; the 
 a gateway. Expert-facing tool: optimized for analytical density and precision, not consumer
 simplicity.
 
-> Status (2026-06-03): the backend spine is built through interpretation. Ingestion + the PostGIS
+> Status (2026-06-04): the backend spine is built through interpretation. Ingestion + the PostGIS
 > data model (L1), the collection pipeline with live Celery backfill/forward-fill + a daily scan
 > beat (L2), the imagery access port + `mock` adapter (L3), the analysis core (L4), the
 > plain-language interpretation layer (L4b), outbound sync (L7), and Phase 7 RBAC/auth are in and
@@ -14,9 +14,11 @@ simplicity.
 > stored COGs. The React + MapLibre analyst workspace (L6) is built in `frontend/` (Vite, Tailwind
 > v4, MapLibre), including side-by-side pass comparison, saved views, a shared team-visible
 > field-notes store, and a provenance/audit panel. Index thresholds, colormaps, and the
-> interpretation prompt carry v1 Zimbabwe-tuned defaults pending an agronomist's sign-off. Remaining
-> work is owner-blocked (live CDSE, agronomist sign-off, the gateway wire format, ingestion-endpoint
-> auth).
+> interpretation prompt carry v1 Zimbabwe-tuned defaults pending an agronomist's sign-off. The
+> `windowed_cog` CDSE adapter is now live (2026-06-04): real credentials are configured and its
+> index values validate against the Copernicus Browser within 0.01 on real Zimbabwe scenes
+> (`tests/test_validation_matrix_live.py`). Remaining work is owner-blocked (live `server_compute`
+> parity, agronomist sign-off, the gateway wire format, ingestion-endpoint auth).
 
 ## Build status
 
@@ -24,7 +26,7 @@ simplicity.
 |---|---|---|
 | L1 Ingestion & validation | `POST /ingest/farm`, PostGIS farm/field/analysis, geometry versioning, idempotent + concurrent-safe upsert | done |
 | L2 Collection pipeline | planning kernel, Redis-locked collection (R-1), live Celery backfill/forward-fill, daily scan beat, per-field cursor | done |
-| L3 Imagery access | `AccessPort` + `mock` adapter (config switch); real `windowed_cog` (ADR 0002) and `server_compute` (ADR 0003) CDSE adapters built behind seams, logic tested offline | mock + 2 real adapters (live validation pending CDSE creds) |
+| L3 Imagery access | `AccessPort` + `mock` adapter (config switch); real `windowed_cog` (ADR 0002) and `server_compute` (ADR 0003) CDSE adapters built behind seams | `windowed_cog` live + validated vs Copernicus Browser (≤0.01); `server_compute` built, live parity pending |
 | L4 Analysis core | reflectance (per-scene −1000 offset, fail-fast guards on non-positive quantification and missing per-band BOA offset), per-AOI SCL masking, NDVI/EVI2/SAVI/NDRE/NDMI, zonal stats, validation matrix | done |
 | L4b Interpretation | grounded Claude-API reads per field/pass, never auto-published (agronomist review) | done |
 | L5 Preview & tiles | S-4 UTC/CAT time; the tiler renders colorized index tiles from stored COGs via rio-tiler (per field/scene/geometry version), fed by D1 COG emission + D7 store-and-discard | done (in-container) |
@@ -58,12 +60,15 @@ tests/       unit + the index validation matrix
 
 ## Quickstart (local)
 
-One command brings the whole backend up. `start.py` resolves the Docker CLI and Node (both are
-commonly installed off PATH on Windows), seeds `.env` from the contract, frees the host DB port if
-a stray test container holds it, then runs compose:
+One command brings the whole system up: the compose stack (postgres+postgis, redis, minio, api,
+worker, beat, tiler, nginx) plus the Vite analyst workspace. `start.py` resolves the Docker CLI and
+Node (both are commonly installed off PATH on Windows), seeds `.env` from the contract, frees the
+host DB port if a stray test container holds it, then runs compose and starts the workspace:
 
 ```bash
-python start.py               # --frontend also starts the Vite workspace; --build forces a rebuild
+python start.py                 # backend (detached) + workspace in the foreground (Ctrl+C stops the UI)
+python start.py --no-frontend   # only the docker stack (streams its logs); --no-build skips the rebuild
+python start.py -d              # background everything; `python start.py --down` stops it all
 ```
 
 Or drive compose directly:
@@ -77,6 +82,16 @@ docker compose up             # postgres+postgis, redis, minio, nginx, api, work
 - API docs: <http://localhost:8000/docs>
 - Tiler health: <http://localhost:8000/tiler/healthz> (nginx fronts the tiler; tiles serve at `/tiles/`)
 - MinIO console: <http://localhost:9001> (minioadmin / minioadmin)
+
+### Live imagery (CDSE)
+
+The `mock` adapter needs no credentials. To process real Sentinel-2, register at the Copernicus Data
+Space Ecosystem and set the `RS_CDSE_*` values in `.env` (see `.env.example`): an OAuth2 client from
+the Sentinel Hub dashboard (Process API) and S3 `eodata` keys (windowed COG reads, distinct from the
+OAuth client). Then set `RS_IMAGERY_ADAPTER=windowed_cog`. The STAC collection is `sentinel-2-l2a`.
+The `windowed_cog` path is live and validated against the Copernicus Browser; `server_compute`
+(Process API previews) is built but its live parity is pending. The OAuth2 client expires after
+90 days; the S3 keys do not.
 
 ## Develop without Docker
 

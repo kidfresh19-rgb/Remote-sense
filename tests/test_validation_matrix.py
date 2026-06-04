@@ -6,8 +6,9 @@ Two layers:
   1. Exact synthetic reference: known DN + scene metadata -> hand-computed reflectance ->
      hand-computed index. Proves the formulas and, critically, that the -1000 Baseline-04.00
      offset is actually applied end to end (a with-offset vs without-offset assertion).
-  2. ⚑ Real Copernicus Browser scenes: to be added once the real CDSE adapter lands and we can
-     pull live values. The framework below iterates a table, so adding a real entry is one row.
+  2. Real Copernicus Browser scenes: live-gated in `test_validation_matrix_live.py` (added
+     2026-06-04 once windowed_cog went live), asserting windowed_cog's AOI-mean index values match
+     the CDSE Process API (the Browser's own engine) within 0.01 on real Zimbabwe scenes.
 """
 
 from __future__ import annotations
