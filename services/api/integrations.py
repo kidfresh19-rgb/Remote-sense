@@ -16,7 +16,11 @@ from pydantic import BaseModel, ConfigDict
 from rs_core.config import Settings, get_settings
 from rs_core.db import get_session
 from rs_core.logging import get_logger
+from rs_core.models import Analysis, Farm, Field
 from rs_core.schemas import FarmIn, FarmIngestReport, FieldIn
+from rs_sync import SatelliteResult, build_payload, to_satellite_results
+from rs_sync.payload import IndexResult
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from services.api.ingestion import IngestionError, ingest_farm
@@ -144,3 +148,42 @@ async def mobile_sync(
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     log.info("agritrack.sync", farms=len(reports))
     return SyncResponse(synced=len(reports), farms=reports)
+
+
+async def farm_satellite_results(
+    session: AsyncSession, canonical_farm_id: str
+) -> list[SatelliteResult]:
+    """A farm's stored analyses as AgriTrack /results records, shaped by the same
+    `to_satellite_results` the outbound push uses (so push and pull never diverge). Selects
+    canonical ids + stats only; geometry is never read (invariant 6). Raises ValueError if the farm
+    id is not an AgriTrack integer id."""
+    rows = (
+        await session.execute(
+            select(Analysis, Field.canonical_field_id)
+            .join(Field, Analysis.field_id == Field.id)
+            .join(Farm, Field.farm_id == Farm.id)
+            .where(Farm.canonical_farm_id == canonical_farm_id)
+            .order_by(Analysis.pass_date, Analysis.index_name)
+        )
+    ).all()
+    results = [
+        IndexResult.from_analysis(analysis, canonical_field_id=cfid) for analysis, cfid in rows
+    ]
+    if not results:
+        return []
+    return to_satellite_results(build_payload(canonical_farm_id, results))
+
+
+@router.get("/data", response_model=list[SatelliteResult])
+async def mobile_data(
+    farm_id: str,
+    session: AsyncSession = Depends(get_session),
+    _: None = Depends(require_agritrack_key),
+) -> list[SatelliteResult]:
+    """Pull a farm's stored satellite results in the AgriTrack contract shape (ADR 0006 section 4);
+    AgriTrack triggers this per farm when a push could not be delivered. Geometry is never returned
+    (invariant 6)."""
+    try:
+        return await farm_satellite_results(session, farm_id)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
