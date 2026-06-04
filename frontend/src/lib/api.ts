@@ -36,12 +36,41 @@ export interface Scene {
 }
 
 export interface Interpretation {
+  id: string;
   pass_date: string;
   status: string;
   confidence: string;
   narrative: string;
   published: boolean;
   needs_review: boolean;
+  reviewed_by: string | null;
+  reviewed_at: string | null;
+}
+
+/** An agronomist's review action: publish/withhold and optionally correct the narrative. A null or
+ *  omitted narrative keeps the drafted text; status/confidence are grounded in the numbers and are
+ *  not editable. Mirrors InterpretationReview in services/api/workspace.py. */
+export interface ReviewInput {
+  publish: boolean;
+  narrative?: string | null;
+}
+
+/** A row of the cross-field review queue (GET /interpretations/review-queue). Geometry-free. */
+export interface ReviewQueueItem {
+  id: string;
+  field_id: string;
+  canonical_field_id: string | null;
+  canonical_farm_id: string;
+  field_name: string | null;
+  crop: string | null;
+  pass_date: string;
+  status: string;
+  confidence: string;
+  narrative: string;
+  published: boolean;
+  needs_review: boolean;
+  reviewed_by: string | null;
+  reviewed_at: string | null;
 }
 
 export interface AuditRecord {
@@ -138,6 +167,24 @@ export const api = {
     get<Scene[]>(`/fields/${fieldId}/scenes`, token, signal),
   interpretations: (fieldId: string, token: string, signal?: AbortSignal) =>
     get<Interpretation[]>(`/fields/${fieldId}/interpretations`, token, signal),
+  reviewInterpretation: (
+    fieldId: string,
+    interpretationId: string,
+    input: ReviewInput,
+    token: string,
+  ) =>
+    send<Interpretation>(
+      "PATCH",
+      `/fields/${fieldId}/interpretations/${encodeURIComponent(interpretationId)}`,
+      token,
+      input,
+    ),
+  reviewQueue: (needsReview: boolean | undefined, token: string, signal?: AbortSignal) =>
+    get<ReviewQueueItem[]>(
+      `/interpretations/review-queue${needsReview ? "?needs_review=true" : ""}`,
+      token,
+      signal,
+    ),
   audit: (fieldId: string, token: string, signal?: AbortSignal) =>
     get<AuditRecord[]>(`/fields/${fieldId}/audit`, token, signal),
   annotations: (fieldId: string, token: string, signal?: AbortSignal) =>

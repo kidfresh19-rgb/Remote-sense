@@ -54,9 +54,22 @@ are pushed at both `field` and `sub_plot` scope.
 
 `ndvi_*`←NDVI, `evi_mean`←EVI2, **`ndwi_mean`←NDMI** (our B08/B11 moisture index; named `ndwi` on
 their side), `cloud_cover_pct`←`(1 - clear_fraction) * 100`. `health_score` and `classification`
-(healthy|moderate|stressed|critical) derive from the `rs_interpret` index bands; `interpretation`
-(`stress_level`, `anomalies`) comes from the stored `Interpretation` and `rs_core/alerts.py`. All of
-this AgriTrack-specific shaping lives in the outbound adapter, not in the engine.
+(healthy|moderate|stressed|critical) derive from the `rs_interpret` index bands. The `interpretation`
+block carries `stress_level` (from the NDVI vigour band), `notes` (the agronomist's reviewed
+narrative), and `anomalies` (reserved for `rs_core/alerts.py`). All of this AgriTrack-specific
+shaping lives in the outbound adapter, not in the engine.
+
+### 3a. The published narrative is gated on review (risk #6 extended to the wire)
+
+`interpretation.notes` carries an agronomic read **only when it has been published** by an
+agronomist (`Interpretation.published`, set through `PATCH /fields/{id}/interpretations/{iid}`,
+`publish` permission). An unreviewed or withheld draft never leaves — the same never-auto-publish
+rule that governs the workspace now governs the gateway. The published narratives travel on the
+canonical `GatewayPayload` (`interpretations: [PublishedNarrative]`, geometry-free) for both the
+push and the `/api/v1/mobile/data` pull, so the two never diverge. Publishing or editing a narrative
+changes the payload's idempotency key (a narrative signature is folded in), so a read published
+after its analyses were already pushed is re-delivered additively; `extId` dedupes on AgriTrack's
+side and the `SyncOutbox` on ours (R-2).
 
 ### 4. One API key, both directions; everything behind the two ports
 

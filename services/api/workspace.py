@@ -18,6 +18,8 @@ from rs_core import (
     delete_annotation,
     insert_annotation,
     list_annotations,
+    list_review_queue,
+    review_interpretation,
 )
 from rs_core.db import get_session
 from rs_core.models import Analysis, Farm, Field, Interpretation
@@ -31,6 +33,7 @@ router = APIRouter(tags=["workspace"])
 
 ViewPrincipal = Annotated[Principal, Depends(require(Permission.VIEW))]
 AnnotatePrincipal = Annotated[Principal, Depends(require(Permission.ANNOTATE))]
+PublishPrincipal = Annotated[Principal, Depends(require(Permission.PUBLISH))]
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
 
 
@@ -67,12 +70,47 @@ class SceneOut(BaseModel):
 
 
 class InterpretationOut(BaseModel):
+    id: str
     pass_date: date
     status: str
     confidence: str
     narrative: str
     published: bool
     needs_review: bool
+    reviewed_by: str | None
+    reviewed_at: datetime | None
+
+
+class InterpretationReview(BaseModel):
+    """An agronomist's review action on a drafted read (risk #6): publish or withhold it, and
+    optionally correct the narrative. `status`/`confidence` are grounded in the numbers and are not
+    accepted here. `narrative=None` keeps the existing text; an empty string is rejected."""
+
+    publish: bool
+    narrative: (
+        Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=8000)]
+        | None
+    ) = None
+
+
+class ReviewQueueItem(BaseModel):
+    """One row of the cross-field review surface: a drafted/published read plus the canonical ids
+    needed to open its field. Geometry-free (this is a triage list, not a map view)."""
+
+    id: str
+    field_id: str
+    canonical_field_id: str | None
+    canonical_farm_id: str
+    field_name: str | None
+    crop: str | None
+    pass_date: date
+    status: str
+    confidence: str
+    narrative: str
+    published: bool
+    needs_review: bool
+    reviewed_by: str | None
+    reviewed_at: datetime | None
 
 
 class AuditRecordOut(BaseModel):
@@ -214,16 +252,46 @@ async def field_interpretations(
         .scalars()
         .all()
     )
+    return [_interpretation_out(i) for i in rows]
+
+
+def _interpretation_out(i: Interpretation) -> InterpretationOut:
+    return InterpretationOut(
+        id=str(i.id),
+        pass_date=i.pass_date,
+        status=i.status,
+        confidence=i.confidence,
+        narrative=i.narrative,
+        published=i.published,
+        needs_review=i.needs_review,
+        reviewed_by=i.reviewed_by,
+        reviewed_at=i.reviewed_at,
+    )
+
+
+async def review_queue(
+    session: AsyncSession, *, needs_review: bool | None
+) -> list[ReviewQueueItem]:
+    """The cross-field agronomist review list, shaped from the geometry-free repo query."""
+    rows = await list_review_queue(session, needs_review=needs_review)
     return [
-        InterpretationOut(
-            pass_date=i.pass_date,
-            status=i.status,
-            confidence=i.confidence,
-            narrative=i.narrative,
-            published=i.published,
-            needs_review=i.needs_review,
+        ReviewQueueItem(
+            id=str(r.id),
+            field_id=str(r.field_id),
+            canonical_field_id=r.canonical_field_id,
+            canonical_farm_id=r.canonical_farm_id,
+            field_name=r.field_name,
+            crop=r.crop,
+            pass_date=r.pass_date,
+            status=r.status,
+            confidence=r.confidence,
+            narrative=r.narrative,
+            published=r.published,
+            needs_review=r.needs_review,
+            reviewed_by=r.reviewed_by,
+            reviewed_at=r.reviewed_at,
         )
-        for i in rows
+        for r in rows
     ]
 
 
@@ -298,6 +366,42 @@ async def field_interpretations_endpoint(
     field_id: uuid.UUID, principal: ViewPrincipal, session: SessionDep
 ) -> list[InterpretationOut]:
     return await field_interpretations(session, field_id)
+
+
+@router.patch("/fields/{field_id}/interpretations/{interpretation_id}")
+async def review_interpretation_endpoint(
+    field_id: uuid.UUID,
+    interpretation_id: uuid.UUID,
+    payload: InterpretationReview,
+    principal: PublishPrincipal,
+    session: SessionDep,
+) -> InterpretationOut:
+    """Review a drafted agronomic read: publish/withhold it and optionally correct its narrative.
+    The only path that can publish one (risk #6, never auto-published). Gated on `publish`; the
+    reviewer is the verified token subject, never client input. 404 if the read is not on this
+    field. status/confidence stay immutable - they are grounded in the numbers, not the model."""
+    row = await review_interpretation(
+        session,
+        interpretation_id=interpretation_id,
+        field_id=field_id,
+        reviewer=principal.subject,
+        publish=payload.publish,
+        narrative=payload.narrative,
+    )
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "interpretation not found")
+    return _interpretation_out(row)
+
+
+@router.get("/interpretations/review-queue")
+async def review_queue_endpoint(
+    principal: PublishPrincipal,
+    session: SessionDep,
+    needs_review: bool | None = None,
+) -> list[ReviewQueueItem]:
+    """The cross-field review backlog for an agronomist (gated on `publish`): every read with the
+    canonical ids to open its field. `?needs_review=true` narrows to the unreviewed ones."""
+    return await review_queue(session, needs_review=needs_review)
 
 
 @router.get("/fields/{field_id}/audit")

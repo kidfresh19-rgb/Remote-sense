@@ -54,11 +54,13 @@ class SatelliteMetrics(BaseModel):
 
 
 class SatelliteInterpretation(BaseModel):
-    """The optional interpretation block: none|low|moderate|high stress plus free-text
-    anomalies."""
+    """The optional interpretation block: none|low|moderate|high stress, free-text anomalies, and
+    `notes` - the agronomist's reviewed, published narrative (ADR 0006). `notes` is present only
+    when the read was published; an unreviewed draft never reaches the wire (risk #6)."""
 
     stress_level: str | None = None
     anomalies: list[str] = []
+    notes: str | None = None
 
 
 class SatelliteResult(BaseModel):
@@ -99,11 +101,16 @@ def _clamp01(value: float) -> float:
 
 
 def _build_record(
-    farm_id: int, canonical_field_id: str | None, pass_date: date, rows: list[IndexResult]
+    farm_id: int,
+    canonical_field_id: str | None,
+    pass_date: date,
+    rows: list[IndexResult],
+    narrative: str | None = None,
 ) -> SatelliteResult:
     """Aggregate one (field, date)'s per-index rows into a contract record. NDMI fills `ndwi_mean`
     (ADR 0006); `classification`/`health_score` come from the NDVI vigour band; `cloud_cover_pct`
-    is the AOI's non-clear fraction."""
+    is the AOI's non-clear fraction. `narrative` is the published agronomist read, attached as
+    `interpretation.notes` (only published reads are passed in, risk #6)."""
     from rs_interpret import classify  # pure agronomy bands; lazy so rs_sync stays import-light
 
     by_index = {r.index_name.lower(): r for r in rows}
@@ -118,13 +125,19 @@ def _build_record(
         ndwi_mean=ndmi.mean if ndmi else None,
         cloud_cover_pct=round((1.0 - rows[0].clear_fraction) * 100.0, 1),
     )
-    interpretation: SatelliteInterpretation | None = None
+    stress_level: str | None = None
     if ndvi is not None and ndvi.mean is not None:
         classification = _CLASSIFICATION.get(classify("ndvi", ndvi.mean).label)
         metrics.classification = classification
         metrics.health_score = round(_clamp01(ndvi.mean), 2)
         if classification is not None:
-            interpretation = SatelliteInterpretation(stress_level=_STRESS.get(classification))
+            stress_level = _STRESS.get(classification)
+    # Build the block when there is either a derived stress level or a published narrative to carry.
+    interpretation = (
+        SatelliteInterpretation(stress_level=stress_level, notes=narrative)
+        if stress_level is not None or narrative is not None
+        else None
+    )
 
     field_id, sub_plot_id, scope = _decode_field(canonical_field_id)
     return SatelliteResult(
@@ -140,8 +153,10 @@ def _build_record(
 
 
 def to_satellite_results(payload: GatewayPayload) -> list[SatelliteResult]:
-    """Aggregate a farm's per-index results into AgriTrack records, one per (field, analysis date).
-    Pure and order-stable, so a re-push is byte-identical. Unit-tested with synthetic results."""
+    """Aggregate a farm's per-index results into AgriTrack records, one per (field, analysis date),
+    attaching each field/pass's published narrative (payload.interpretations) as the record's
+    `interpretation.notes`. Pure and order-stable, so a re-push is byte-identical. Unit-tested with
+    synthetic results."""
     try:
         farm_id = int(payload.canonical_farm_id)
     except ValueError as exc:
@@ -150,12 +165,13 @@ def to_satellite_results(payload: GatewayPayload) -> list[SatelliteResult]:
             f"{payload.canonical_farm_id!r}"
         ) from exc
 
+    narratives = {(n.canonical_field_id, n.pass_date): n.narrative for n in payload.interpretations}
     groups: dict[tuple[str | None, date], list[IndexResult]] = defaultdict(list)
     for result in payload.results:
         groups[(result.canonical_field_id, result.pass_date)].append(result)
 
     records = [
-        _build_record(farm_id, field_id, pass_date, rows)
+        _build_record(farm_id, field_id, pass_date, rows, narratives.get((field_id, pass_date)))
         for (field_id, pass_date), rows in groups.items()
     ]
     records.sort(key=lambda s: (s.fieldId or -1, s.subPlotId or -1, s.analysisDate))

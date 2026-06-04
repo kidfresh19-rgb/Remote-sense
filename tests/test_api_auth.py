@@ -73,6 +73,37 @@ def test_annotation_read_requires_auth() -> None:
     assert resp.status_code == 401
 
 
+def test_review_interpretation_forbidden_for_viewer() -> None:
+    # Publishing/withholding a read needs `publish`; a viewer is gated out (403) before any DB.
+    _as(Principal(subject="viewer", roles=frozenset({Role.VIEWER})))
+    field_id = "00000000-0000-0000-0000-000000000001"
+    interp_id = "00000000-0000-0000-0000-000000000002"
+    try:
+        with TestClient(app) as client:
+            resp = client.patch(
+                f"/fields/{field_id}/interpretations/{interp_id}", json={"publish": True}
+            )
+    finally:
+        app.dependency_overrides.clear()
+    assert resp.status_code == 403
+
+
+def test_review_queue_forbidden_for_viewer() -> None:
+    _as(Principal(subject="viewer", roles=frozenset({Role.VIEWER})))
+    try:
+        with TestClient(app) as client:
+            resp = client.get("/interpretations/review-queue")
+    finally:
+        app.dependency_overrides.clear()
+    assert resp.status_code == 403
+
+
+def test_review_queue_requires_auth() -> None:
+    with TestClient(app) as client:  # no override, no bearer -> 401 before any DB access
+        resp = client.get("/interpretations/review-queue")
+    assert resp.status_code == 401
+
+
 def test_cors_preflight_allows_workspace_origin() -> None:
     # The browser SPA preflights cross-origin calls; without CORS this OPTIONS is a 405 and the
     # browser blocks the real request. Expect the middleware to allow the configured origin.

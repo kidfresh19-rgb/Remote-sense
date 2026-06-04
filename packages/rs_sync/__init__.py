@@ -15,8 +15,10 @@ from rs_sync.payload import (
     AnalysisRow,
     GatewayPayload,
     IndexResult,
+    PublishedNarrative,
     build_payload,
     compute_idempotency_key,
+    narrative_signature,
 )
 from rs_sync.port import GatewayPort, PushResult
 
@@ -32,8 +34,10 @@ __all__ = [
     "AnalysisRow",
     "GatewayPayload",
     "IndexResult",
+    "PublishedNarrative",
     "build_payload",
     "compute_idempotency_key",
+    "narrative_signature",
     "GatewayPort",
     "PushResult",
 ]

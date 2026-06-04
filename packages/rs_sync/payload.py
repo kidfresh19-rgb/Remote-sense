@@ -88,14 +88,27 @@ class IndexResult(BaseModel):
         )
 
 
+class PublishedNarrative(BaseModel):
+    """One agronomist-reviewed, published interpretation carried alongside the analyses so the
+    adapter can attach it to the AgriTrack record. Only published reads travel (risk #6 extended to
+    the wire); keyed by the same (canonical_field_id, pass_date) the records group on. No geometry
+    (invariant 6)."""
+
+    canonical_field_id: str | None
+    pass_date: date
+    narrative: str
+
+
 class GatewayPayload(BaseModel):
-    """The additive push for one farm: canonical id + its index results, versioned, with a
-    deterministic idempotency key so a retried push is a safe no-op on the gateway (R-2)."""
+    """The additive push for one farm: canonical id + its index results, the published agronomic
+    narratives, versioned, with a deterministic idempotency key so a retried push is a safe no-op on
+    the gateway (R-2)."""
 
     payload_version: str = PAYLOAD_VERSION
     canonical_farm_id: str
     generated_at: datetime
     results: list[IndexResult]
+    interpretations: list[PublishedNarrative] = []
     idempotency_key: str
 
 
@@ -111,10 +124,31 @@ def _identity(result: IndexResult) -> str:
     )
 
 
-def compute_idempotency_key(canonical_farm_id: str, results: list[IndexResult]) -> str:
-    """A stable key for (farm, this set of result identities). Re-building the same results yields
-    the same key regardless of order, so the gateway can dedupe a retried push (R-2)."""
+def narrative_signature(narratives: list[PublishedNarrative]) -> str | None:
+    """A stable digest of the published narratives in a payload, or None when there are none.
+    Folded into the idempotency key so re-publishing after a read is reviewed or edited yields a
+    fresh key (and thus a fresh additive push), while an analyses-only payload keeps the exact
+    pre-Phase-C key (None -> unchanged), so existing dedup behaviour is preserved (R-2)."""
+    if not narratives:
+        return None
+    parts = sorted(
+        f"{n.canonical_field_id or ''}|{n.pass_date.isoformat()}|{n.narrative}" for n in narratives
+    )
+    return hashlib.sha256("\n".join(parts).encode()).hexdigest()[:16]
+
+
+def compute_idempotency_key(
+    canonical_farm_id: str,
+    results: list[IndexResult],
+    *,
+    narrative_signature: str | None = None,
+) -> str:
+    """A stable key for (farm, this set of result identities, the published narratives). Re-building
+    the same results + narratives yields the same key regardless of order, so the gateway can dedupe
+    a retried push (R-2); a newly published or edited narrative changes the key so it re-pushes."""
     parts = [canonical_farm_id, PAYLOAD_VERSION, *sorted(_identity(r) for r in results)]
+    if narrative_signature:
+        parts.append(f"narr:{narrative_signature}")
     digest = hashlib.sha256("\n".join(parts).encode()).hexdigest()
     return f"{canonical_farm_id}:{digest[:32]}"
 
@@ -124,11 +158,17 @@ def build_payload(
     results: list[IndexResult],
     *,
     generated_at: datetime | None = None,
+    narratives: list[PublishedNarrative] | None = None,
 ) -> GatewayPayload:
-    """Assemble the additive gateway payload for a farm. Geometry never enters (invariant 6)."""
+    """Assemble the additive gateway payload for a farm, optionally carrying the published
+    narratives. Geometry never enters (invariant 6); only published reads are passed in (#6)."""
+    narratives = narratives or []
     return GatewayPayload(
         canonical_farm_id=canonical_farm_id,
         generated_at=generated_at or datetime.now(UTC),
         results=results,
-        idempotency_key=compute_idempotency_key(canonical_farm_id, results),
+        interpretations=narratives,
+        idempotency_key=compute_idempotency_key(
+            canonical_farm_id, results, narrative_signature=narrative_signature(narratives)
+        ),
     )

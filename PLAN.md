@@ -318,6 +318,26 @@ only supplied numbers), so it carries no marker. The thresholds carry generic de
 agronomist tunes them; the interpretation layer never auto-publishes (risk #6), so a human reviews
 every read.
 
+**Interpretation review/publish spine landed 2026-06-04.** The agronomist surface was draft-only;
+the review half is now built (Phases A/B/C/E of the review plan). Backend (A): `review_interpretation`
++ `get_interpretation_by_id` (`repositories.py`) stamp `reviewed_by`/`reviewed_at`, clear
+`needs_review`, and set `published` - the single human-triggered path that can publish a read;
+`status`/`confidence` stay immutable (grounded in the numbers), the narrative is editable to correct
+a draft, and the call is scoped to the field. `PATCH /fields/{id}/interpretations/{iid}` exposes it
+behind `require(Permission.PUBLISH)` (`workspace.py`), with `reviewed_by`/`reviewed_at` added to
+`InterpretationOut`. Frontend (B): the `InterpretationPanel` gained Edit / Approve & publish /
+Unpublish actions (gated by a cosmetic `useCanPublish` token-role peek; the server is authoritative,
+a 403 surfaces inline). Outbound (C, ADR 0006 §3a): the **published** narrative now reaches AgriTrack
+as `interpretation.notes`, carried on the geometry-free `GatewayPayload.interpretations` for both the
+push and the `/api/v1/mobile/data` pull (so they never diverge); an unreviewed draft never leaves
+(risk #6 extended to the wire), and a narrative signature folded into the idempotency key re-pushes a
+read published after its analyses (R-2 preserved). Cross-field queue (E):
+`GET /interpretations/review-queue?needs_review=` + a `ReviewQueue` modal let an agronomist triage
+across fields, not field-by-field. DB-gated review tests + the PUBLISH-gate API tests + the outbound
+unit tests are in; ruff + the full suite (281 passed / 50 infra-gated-skip locally) are green. Step 4
+below (agronomist threshold sign-off) is the only remaining piece of the interpretation track, and it
+stays human-blocked.
+
 **Recommended path to Copernicus parity (assessment 2026-06-04, owner-blocked — TODO).** Verdict:
 the index values are built to match the Copernicus Browser exactly. The reflectance offset
 (ρ = (DN − 1000) / 10000, read per scene) and the locked formulas match its definitions — proven

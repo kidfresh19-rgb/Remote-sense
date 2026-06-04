@@ -17,9 +17,10 @@ from rs_core.config import Settings, get_settings
 from rs_core.db import get_session
 from rs_core.logging import get_logger
 from rs_core.models import Analysis, Farm, Field
+from rs_core.repositories import published_narratives_for_farm
 from rs_core.schemas import FarmIn, FarmIngestReport, FieldIn
 from rs_sync import SatelliteResult, build_payload, to_satellite_results
-from rs_sync.payload import IndexResult
+from rs_sync.payload import IndexResult, PublishedNarrative
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -154,9 +155,10 @@ async def farm_satellite_results(
     session: AsyncSession, canonical_farm_id: str
 ) -> list[SatelliteResult]:
     """A farm's stored analyses as AgriTrack /results records, shaped by the same
-    `to_satellite_results` the outbound push uses (so push and pull never diverge). Selects
-    canonical ids + stats only; geometry is never read (invariant 6). Raises ValueError if the farm
-    id is not an AgriTrack integer id."""
+    `to_satellite_results` the outbound push uses (so push and pull never diverge), with each
+    field/pass's published agronomic narrative attached (only published reads, risk #6). Selects
+    canonical ids + stats + published narratives only; geometry is never read (invariant 6). Raises
+    ValueError if the farm id is not an AgriTrack integer id."""
     rows = (
         await session.execute(
             select(Analysis, Field.canonical_field_id)
@@ -171,7 +173,13 @@ async def farm_satellite_results(
     ]
     if not results:
         return []
-    return to_satellite_results(build_payload(canonical_farm_id, results))
+    narratives = [
+        PublishedNarrative(canonical_field_id=cfid, pass_date=pass_date, narrative=narrative)
+        for cfid, pass_date, narrative in await published_narratives_for_farm(
+            session, canonical_farm_id
+        )
+    ]
+    return to_satellite_results(build_payload(canonical_farm_id, results, narratives=narratives))
 
 
 @router.get("/data", response_model=list[SatelliteResult])

@@ -1,16 +1,21 @@
-import { MapTrifold, Moon, SignOut, Sun } from "@phosphor-icons/react";
+import { ClipboardText, MapTrifold, Moon, SignOut, Sun } from "@phosphor-icons/react";
+import { useState } from "react";
 
+import { useCanPublish } from "@/auth/permissions";
 import { useToken } from "@/auth/TokenProvider";
 import { INDICES, type IndexKey } from "@/lib/indices";
 import { useTheme } from "@/lib/theme";
 import { useWorkspace } from "@/state/workspace";
 
+import { ReviewQueue } from "./ReviewQueue";
 import { IconButton, SegmentedControl } from "./ui";
 
 export function Header() {
   const { token, clear } = useToken();
   const { theme, toggle } = useTheme();
   const { index, setIndex } = useWorkspace();
+  const canPublish = useCanPublish();
+  const [queueOpen, setQueueOpen] = useState(false);
 
   return (
     <header className="flex h-14 items-center justify-between gap-4 border-b border-border bg-panel px-4">
@@ -31,6 +36,15 @@ export function Header() {
             />
           </div>
         ) : null}
+        {token && canPublish ? (
+          <IconButton
+            label="Review queue"
+            active={queueOpen}
+            onClick={() => setQueueOpen((open) => !open)}
+          >
+            <ClipboardText size={18} />
+          </IconButton>
+        ) : null}
         <IconButton
           label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
           onClick={toggle}
@@ -43,6 +57,7 @@ export function Header() {
           </IconButton>
         ) : null}
       </div>
+      {queueOpen ? <ReviewQueue onClose={() => setQueueOpen(false)} /> : null}
     </header>
   );
 }

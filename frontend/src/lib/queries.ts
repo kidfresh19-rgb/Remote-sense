@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { useToken } from "@/auth/TokenProvider";
 
-import { api } from "./api";
+import { api, type ReviewInput } from "./api";
 import type { IndexKey } from "./indices";
 
 export function useFarms() {
@@ -47,6 +47,43 @@ export function useInterpretations(fieldId: string | null) {
     queryKey: ["interpretations", fieldId],
     queryFn: ({ signal }) => api.interpretations(fieldId!, token!, signal),
     enabled: !!token && !!fieldId,
+  });
+}
+
+export function useReviewInterpretation(fieldId: string | null) {
+  const { token } = useToken();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, input }: { id: string; input: ReviewInput }) =>
+      api.reviewInterpretation(fieldId!, id, input, token!),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["interpretations", fieldId] });
+      qc.invalidateQueries({ queryKey: ["review-queue"] });
+    },
+  });
+}
+
+export function useReviewQueue(needsReview: boolean, enabled: boolean) {
+  const { token } = useToken();
+  return useQuery({
+    queryKey: ["review-queue", needsReview],
+    queryFn: ({ signal }) => api.reviewQueue(needsReview, token!, signal),
+    enabled: !!token && enabled,
+  });
+}
+
+/** Review action issued from the cross-field queue, where each row carries its own field id.
+ *  Invalidates both the queue and the affected field's interpretations. */
+export function useReviewFromQueue() {
+  const { token } = useToken();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ fieldId, id, input }: { fieldId: string; id: string; input: ReviewInput }) =>
+      api.reviewInterpretation(fieldId, id, input, token!),
+    onSuccess: (_data, { fieldId }) => {
+      qc.invalidateQueries({ queryKey: ["interpretations", fieldId] });
+      qc.invalidateQueries({ queryKey: ["review-queue"] });
+    },
   });
 }
 
