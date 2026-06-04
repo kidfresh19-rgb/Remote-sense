@@ -45,7 +45,8 @@ class HttpGatewayPort(GatewayPort):
     retrying transient failures with exponential backoff. URL/auth/wire format are the only
     gateway-specific knowledge in the system and come from config.
 
-    # ⚑ CONFIRM: endpoint + auth + payload shape pending the gateway team."""
+    The confirmed AgriTrack contract is in AgriTrackGatewayPort (ADR 0006); this generic Bearer
+    push stays for any other gateway selected by RS_GATEWAY_ADAPTER=http."""
 
     def __init__(
         self,

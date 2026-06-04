@@ -32,8 +32,9 @@ from rs_core import (
     record_forward_fill_poll,
     upsert_scene_metadata,
 )
+from rs_core.config import GatewayAdapter
 from rs_imagery import AOI, AccessPort, TimeRange, get_access_adapter
-from rs_sync import GatewayPort, HttpGatewayPort, RecordingGatewayPort
+from rs_sync import AgriTrackGatewayPort, GatewayPort, HttpGatewayPort, RecordingGatewayPort
 from shapely.geometry import mapping
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -535,9 +536,11 @@ def interpret_field_pass_task(field_id: str, scene_id: str) -> dict[str, object]
 
 
 def _gateway_from_settings(settings: Settings) -> GatewayPort:
-    """The active GatewayPort: the HTTP push when a URL is configured, else a recording dry-run
-    sink. ⚑ CONFIRM: the gateway contract is parked, so the default destination is a no-op."""
-    if settings.gateway_push_url:
+    """The active GatewayPort, selected by RS_GATEWAY_ADAPTER (ADR 0006): the AgriTrack push to
+    /integrations/satellite/results, a generic HTTP push, or a recording dry-run sink (default)."""
+    if settings.gateway_adapter is GatewayAdapter.AGRITRACK:
+        return AgriTrackGatewayPort(settings.agritrack_base_url, settings.agritrack_api_key)
+    if settings.gateway_adapter is GatewayAdapter.HTTP and settings.gateway_push_url:
         return HttpGatewayPort(settings.gateway_push_url, settings.gateway_auth_token)
     return RecordingGatewayPort()
 

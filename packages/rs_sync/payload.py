@@ -1,9 +1,10 @@
 """Versioned outbound payload for the gateway (L7, Phase 6).
 
-# ⚑ CONFIRM (gateway team): the wire format below is a sensible default behind GatewayPort -
-canonical farm id, per-field per-pass index results with full provenance, a payload version, and a
-deterministic idempotency key. Built + tested now so the push path is ready; the only unknown is
-the exact shape the gateway accepts (a change here plus the GatewayPort adapter).
+GatewayPayload is our internal canonical push shape (confirmed behind the port, ADR 0006): canonical
+farm id, per-field per-pass index results with full provenance, a payload version, and a
+deterministic idempotency key. The AgriTrack wire record (POST /integrations/satellite/results) is
+derived from this by the AgriTrackGatewayPort adapter (rs_sync.agritrack), so vendor specifics never
+leak into the payload.
 
 Split-ownership invariant (CLAUDE.md §1.6): results are pushed ADDITIVELY keyed on the canonical
 farm id, and GEOMETRY IS NEVER RETURNED - there is deliberately no boundary/geometry field on any

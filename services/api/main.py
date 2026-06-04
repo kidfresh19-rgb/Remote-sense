@@ -18,6 +18,7 @@ from rs_core import (
 )
 
 from services.api.ingestion import router as ingestion_router
+from services.api.integrations import router as integrations_router
 from services.api.operations import router as operations_router
 from services.api.workspace import router as workspace_router
 
@@ -56,6 +57,7 @@ if _cors_origins:
     )
 
 app.include_router(ingestion_router)
+app.include_router(integrations_router)
 app.include_router(operations_router)
 app.include_router(workspace_router)
 

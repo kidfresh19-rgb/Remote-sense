@@ -3,10 +3,12 @@ additively, robustly, and idempotently. The gateway push goes through `GatewayPo
 (CLAUDE.md §1.1); results are keyed to the canonical farm id and **geometry is never returned**
 (§1.6). GeoTIFF/PDF exports are parked on the raster/PDF stacks; CSV + the JSON gateway payload
 are in place. PDF export is parked on the PDF stack; CSV, GeoTIFF (in-container, the `geo` extra),
-and the JSON gateway payload are in place. The gateway URL/auth/wire format is the open
-`⚑ CONFIRM` item, defaulted behind the port."""
+and the JSON gateway payload are in place. The gateway wire format is confirmed (ADR 0006): the
+AgriTrack adapter delivers to /integrations/satellite/results; a generic HTTP push and a recording
+sink remain behind the port."""
 
 from rs_sync.adapters import HttpGatewayPort, RecordingGatewayPort
+from rs_sync.agritrack import AgriTrackGatewayPort, SatelliteResult, to_satellite_results
 from rs_sync.exporters import analyses_to_csv, index_geotiff
 from rs_sync.payload import (
     PAYLOAD_VERSION,
@@ -21,6 +23,9 @@ from rs_sync.port import GatewayPort, PushResult
 __all__ = [
     "HttpGatewayPort",
     "RecordingGatewayPort",
+    "AgriTrackGatewayPort",
+    "SatelliteResult",
+    "to_satellite_results",
     "analyses_to_csv",
     "index_geotiff",
     "PAYLOAD_VERSION",

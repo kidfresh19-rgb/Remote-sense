@@ -25,6 +25,14 @@ class ActivityAdapter(StrEnum):
     GATEWAY = "gateway"
 
 
+class GatewayAdapter(StrEnum):
+    """Outbound results push target. Confirmed 2026-06-04 (ADR 0006): the AgriTrack contract."""
+
+    RECORDING = "recording"
+    HTTP = "http"
+    AGRITRACK = "agritrack"
+
+
 class ArrivalSource(StrEnum):
     # Confirmed 2026-06-03: DB polling is the locked default. The interface stays so webhook /
     # LISTEN-NOTIFY can swap in later without touching ingestion, but no longer a parked decision.
@@ -91,9 +99,14 @@ class Settings(BaseSettings):
     activity_adapter: ActivityAdapter = ActivityAdapter.MOCK
     activity_api_url: str = ""  # real AgriTrack/gateway feed base URL; empty for mock
 
-    # Gateway push (⚑ CONFIRM: provided by gateway team)
+    # Gateway push. Confirmed 2026-06-04 (ADR 0006): the AgriTrack contract.
+    gateway_adapter: GatewayAdapter = GatewayAdapter.RECORDING
     gateway_push_url: str = ""
     gateway_auth_token: str = ""
+    # AgriTrack integration (ADR 0006). One key both ways: presented as X-Api-Key to their
+    # /integrations/satellite/results, and required on inbound /api/v1/mobile/* calls.
+    agritrack_base_url: str = ""
+    agritrack_api_key: str = ""
 
     # Arrival notification (confirmed 2026-06-03: DB polling; webhook/LISTEN-NOTIFY swap in later).
     arrival_source: ArrivalSource = ArrivalSource.DB_POLL

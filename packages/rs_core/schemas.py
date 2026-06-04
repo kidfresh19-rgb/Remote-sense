@@ -1,10 +1,10 @@
 """Pydantic v2 boundary schemas for ingestion (L1).
 
-⚑ CONFIRM (DI-1): this is the *assumed* gateway onboarding contract. The shape below is a
-sensible default - canonical ids, polygonal geometry, optional inner fields - chosen so
-Phase 1 can be built and tested before the gateway team pins the wire format. Treat field
-names as provisional; the validation + storage logic does not depend on the exact spelling,
-only on (a) a stable canonical farm id and (b) polygonal geometry with a declared CRS."""
+DI-1 (confirmed 2026-06-04, ADR 0006): FarmIn is our vendor-neutral ingestion schema. The AgriTrack
+onboarding contract (POST /api/v1/mobile/sync) maps onto it in the inbound adapter
+(services/api/integrations.py), so the validation + storage logic depends only on (a) a stable
+canonical farm id and (b) polygonal geometry with a declared CRS, never on the vendor's
+field names."""
 
 from __future__ import annotations
 
