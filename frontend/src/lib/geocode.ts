@@ -23,7 +23,8 @@ interface NominatimItem {
 
 const BASE = "https://nominatim.openstreetmap.org/search";
 
-/** Query Nominatim for place suggestions. Returns [] for empty queries or on network errors.
+/** Query Nominatim for place suggestions. Returns [] for an empty query or a cancelled request;
+ *  throws on a real network/HTTP failure so the caller can tell "no matches" from "search failed".
  *  Always pass an AbortSignal so the caller can cancel in-flight requests on new keystrokes. */
 export async function geocodeSearch(
   query: string,
@@ -47,7 +48,7 @@ export async function geocodeSearch(
       // automatically. User-Agent is a forbidden fetch header and cannot be set here.
       headers: { Accept: "application/json" },
     });
-    if (!res.ok) return [];
+    if (!res.ok) throw new Error(`geocoding request failed (${res.status})`);
     const raw = (await res.json()) as NominatimItem[];
     return raw.map((item) => ({
       place_id: item.place_id,
@@ -65,6 +66,6 @@ export async function geocodeSearch(
   } catch (err) {
     // AbortError is a normal cancellation — do not surface it as a failure.
     if (err instanceof DOMException && err.name === "AbortError") return [];
-    return [];
+    throw err instanceof Error ? err : new Error("geocoding failed");
   }
 }

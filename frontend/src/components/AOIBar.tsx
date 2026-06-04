@@ -7,6 +7,13 @@ import { geocodeSearch, type GeocodingResult } from "@/lib/geocode";
 
 import { IconButton } from "./ui";
 
+/** A result carries a usable AOI boundary only when its geometry is an (Multi)Polygon; a point/node
+ *  result just recenters the map. The badge in the dropdown surfaces this so the analyst knows which
+ *  results set an AOI before clicking. */
+function resultHasBoundary(r: GeocodingResult): boolean {
+  return !!r.geojson && (r.geojson.type === "Polygon" || r.geojson.type === "MultiPolygon");
+}
+
 interface AOIBarProps {
   onDrawToggle: () => void;
   drawActive: boolean;
@@ -30,6 +37,7 @@ export function AOIBar({
   const [results, setResults] = useState<GeocodingResult[]>([]);
   const [loading, setLoading] = useState(false);
   const [open, setOpen] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -42,17 +50,29 @@ export function AOIBar({
       setResults([]);
       setOpen(false);
       setLoading(false);
+      setError(null);
       return;
     }
 
     debounceRef.current = setTimeout(async () => {
       abortRef.current?.abort();
-      abortRef.current = new AbortController();
+      const controller = new AbortController();
+      abortRef.current = controller;
       setLoading(true);
-      const hits = await geocodeSearch(query, abortRef.current.signal);
-      setLoading(false);
-      setResults(hits);
-      setOpen(hits.length > 0);
+      setError(null);
+      try {
+        const hits = await geocodeSearch(query, controller.signal);
+        if (controller.signal.aborted) return; // a newer keystroke superseded this run
+        setResults(hits);
+        setOpen(true); // open even with no hits so the empty-state message shows
+      } catch {
+        if (controller.signal.aborted) return;
+        setResults([]);
+        setError("Search failed. Check your connection and try again.");
+        setOpen(true);
+      } finally {
+        if (!controller.signal.aborted) setLoading(false);
+      }
     }, 400);
 
     return () => {
@@ -94,6 +114,7 @@ export function AOIBar({
     setQuery("");
     setResults([]);
     setOpen(false);
+    setError(null);
     inputRef.current?.focus();
   }
 
@@ -180,35 +201,53 @@ export function AOIBar({
       {/* Draw hint */}
       {drawActive && (
         <p className="mt-1 text-center text-[11px] text-accent">
-          Click to add vertices — double-click to finish the polygon
+          Click to add vertices. Double-click or Enter to finish, Backspace to undo, Esc to cancel.
         </p>
       )}
 
-      {/* Geocoder results dropdown */}
-      {open && results.length > 0 && (
-        <ul
-          role="listbox"
-          aria-label="Location suggestions"
-          className="absolute inset-x-0 top-full z-50 mt-1 overflow-hidden rounded-b-lg border border-border bg-panel shadow-lg"
-        >
-          {results.map((result) => (
-            <li key={result.place_id} role="option" aria-selected={false}>
-              <button
-                onMouseDown={(e) => {
-                  // Use mousedown so it fires before the input's blur event.
-                  e.preventDefault();
-                  handleSelect(result);
-                }}
-                className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors hover:bg-panel-2 focus:bg-panel-2 focus:outline-none"
-              >
-                <span className="min-w-0 flex-1 truncate text-fg">{result.display_name}</span>
-                <span className="shrink-0 rounded-full bg-panel-2 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-muted">
-                  {result.type}
-                </span>
-              </button>
-            </li>
-          ))}
-        </ul>
+      {/* Geocoder results dropdown — results, a no-matches note, or a failure message. */}
+      {open && (
+        <div className="absolute inset-x-0 top-full z-50 mt-1 overflow-hidden rounded-b-lg border border-border bg-panel shadow-lg">
+          {error ? (
+            <p className="px-3 py-2 text-sm text-critical">{error}</p>
+          ) : results.length > 0 ? (
+            <ul role="listbox" aria-label="Location suggestions">
+              {results.map((result) => {
+                const boundary = resultHasBoundary(result);
+                return (
+                  <li key={result.place_id} role="option" aria-selected={false}>
+                    <button
+                      onMouseDown={(e) => {
+                        // Use mousedown so it fires before the input's blur event.
+                        e.preventDefault();
+                        handleSelect(result);
+                      }}
+                      className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors hover:bg-panel-2 focus:bg-panel-2 focus:outline-none"
+                    >
+                      <span className="min-w-0 flex-1 truncate text-fg">{result.display_name}</span>
+                      <span className="shrink-0 rounded-full bg-panel-2 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-muted">
+                        {result.type}
+                      </span>
+                      <span
+                        title={boundary ? "Sets a custom AOI boundary" : "Recenters the map only"}
+                        className={cn(
+                          "shrink-0 rounded-full px-1.5 py-0.5 text-[10px] uppercase tracking-wide",
+                          boundary ? "bg-accent/15 text-accent" : "bg-panel-2 text-muted",
+                        )}
+                      >
+                        {boundary ? "area" : "point"}
+                      </span>
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          ) : !loading ? (
+            <p className="px-3 py-2 text-sm text-muted">
+              No matches for <span className="text-fg">{query}</span>
+            </p>
+          ) : null}
+        </div>
       )}
     </div>
   );

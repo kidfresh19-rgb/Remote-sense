@@ -1,3 +1,4 @@
+import type { Geometry, Polygon } from "geojson";
 import type { Map as MaplibreMap } from "maplibre-gl";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
@@ -10,9 +11,30 @@ import { useWorkspace } from "@/state/workspace";
 
 import { useFieldMap } from "./useFieldMap";
 
+interface SceneCompareProps {
+  field: Field;
+  /** Custom AOI overlay, drawn on both panes for visual parity with the single map. */
+  customAOI?: Geometry | null;
+  /** Draw mode and its callbacks are wired to the primary (left) pane only. */
+  drawMode?: boolean;
+  onDrawComplete?: (polygon: Polygon) => void;
+  onDrawCancel?: () => void;
+  onMapReady?: (
+    flyTo: (center: [number, number], zoom?: number) => void,
+    fitBounds: (sw: [number, number], ne: [number, number]) => void,
+  ) => void;
+}
+
 /** Side-by-side comparison of two passes of the same field, on a shared (synced) camera. The left
  *  pane tracks the primary pass (the timeline selection), the right pane the compare pass. */
-export function SceneCompare({ field }: { field: Field }) {
+export function SceneCompare({
+  field,
+  customAOI,
+  drawMode,
+  onDrawComplete,
+  onDrawCancel,
+  onMapReady,
+}: SceneCompareProps) {
   const { index, showRaster, passDate, compareDate, setPassDate, setCompareDate } = useWorkspace();
   const scenes = useScenes(field.field_id);
   const list = useMemo(() => scenes.data ?? [], [scenes.data]);
@@ -46,6 +68,11 @@ export function SceneCompare({ field }: { field: Field }) {
         fit
         controls
         onMap={setLeftMap}
+        customAOI={customAOI}
+        drawMode={drawMode}
+        onDrawComplete={onDrawComplete}
+        onDrawCancel={onDrawCancel}
+        onMapReady={onMapReady}
       >
         <PassPicker
           side="A"
@@ -63,6 +90,7 @@ export function SceneCompare({ field }: { field: Field }) {
         fit={false}
         controls={false}
         onMap={setRightMap}
+        customAOI={customAOI}
       >
         <PassPicker
           side="B"
@@ -83,6 +111,11 @@ function CompareCell({
   fit,
   controls,
   onMap,
+  customAOI,
+  drawMode,
+  onDrawComplete,
+  onDrawCancel,
+  onMapReady,
   children,
 }: {
   field: Field;
@@ -92,10 +125,31 @@ function CompareCell({
   fit: boolean;
   controls: boolean;
   onMap: (map: MaplibreMap | null) => void;
+  customAOI?: Geometry | null;
+  drawMode?: boolean;
+  onDrawComplete?: (polygon: Polygon) => void;
+  onDrawCancel?: () => void;
+  onMapReady?: (
+    flyTo: (center: [number, number], zoom?: number) => void,
+    fitBounds: (sw: [number, number], ne: [number, number]) => void,
+  ) => void;
   children: ReactNode;
 }) {
   const ref = useRef<HTMLDivElement | null>(null);
-  useFieldMap(ref, { field, index, sceneId, showRaster, fit, controls, onMap });
+  useFieldMap(ref, {
+    field,
+    index,
+    sceneId,
+    showRaster,
+    fit,
+    controls,
+    onMap,
+    customAOI,
+    drawMode,
+    onDrawComplete,
+    onDrawCancel,
+    onMapReady,
+  });
   return (
     <div className="relative min-h-0">
       <div ref={ref} className="absolute inset-0" />

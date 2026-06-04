@@ -76,12 +76,34 @@ export function MapPanel({
     if (candidates.length) setCompareDate(candidates[candidates.length - 1].pass_date);
   };
 
+  // AOI tool handlers shared by the single map and the side-by-side comparison so search,
+  // coordinate entry, and drawing behave the same in both modes.
+  const handleDrawComplete = (polygon: import("geojson").Polygon) => {
+    setCustomAOI(polygon);
+    setDrawMode(false);
+  };
+  const handleDrawCancel = () => setDrawMode(false);
+  const handleMapReady = (
+    flyTo: (center: [number, number], zoom?: number) => void,
+    fitBounds: (sw: [number, number], ne: [number, number]) => void,
+  ) => {
+    flyToRef.current = flyTo;
+    fitBoundsRef.current = fitBounds;
+  };
+
   return (
     <section className="relative min-h-[55vh] bg-bg lg:min-h-0">
       {/* Map — always mounted so the AOI toolbar and coordinate/geocoder callbacks have a
            live map regardless of field selection state. */}
       {comparing && selectedField ? (
-        <SceneCompare field={selectedField} />
+        <SceneCompare
+          field={selectedField}
+          customAOI={customAOI}
+          drawMode={drawMode}
+          onDrawComplete={handleDrawComplete}
+          onDrawCancel={handleDrawCancel}
+          onMapReady={handleMapReady}
+        />
       ) : (
         <SingleSceneMap
           field={selectedField}
@@ -90,14 +112,9 @@ export function MapPanel({
           showRaster={showRaster}
           customAOI={customAOI}
           drawMode={drawMode}
-          onDrawComplete={(polygon) => {
-            setCustomAOI(polygon);
-            setDrawMode(false);
-          }}
-          onMapReady={(flyTo, fitBounds) => {
-            flyToRef.current = flyTo;
-            fitBoundsRef.current = fitBounds;
-          }}
+          onDrawComplete={handleDrawComplete}
+          onDrawCancel={handleDrawCancel}
+          onMapReady={handleMapReady}
         />
       )}
 
@@ -229,6 +246,7 @@ function SingleSceneMap({
   customAOI,
   drawMode,
   onDrawComplete,
+  onDrawCancel,
   onMapReady,
 }: {
   field: Field | null;
@@ -238,6 +256,7 @@ function SingleSceneMap({
   customAOI: import("geojson").Geometry | null;
   drawMode: boolean;
   onDrawComplete: (polygon: import("geojson").Polygon) => void;
+  onDrawCancel: () => void;
   onMapReady: (
     flyTo: (center: [number, number], zoom?: number) => void,
     fitBounds: (sw: [number, number], ne: [number, number]) => void,
@@ -252,6 +271,7 @@ function SingleSceneMap({
     customAOI,
     drawMode,
     onDrawComplete,
+    onDrawCancel,
     onMapReady,
   });
   return <div ref={ref} className="absolute inset-0" />;

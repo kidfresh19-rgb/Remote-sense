@@ -116,8 +116,10 @@ interface FieldMapParams {
   customAOI?: Geometry | null;
   /** When true, the map enters polygon draw mode. */
   drawMode?: boolean;
-  /** Called with the completed polygon when the user double-clicks to close the ring. */
+  /** Called with the completed polygon when the user closes the ring (double-click or Enter). */
   onDrawComplete?: (polygon: Polygon) => void;
+  /** Called when the user cancels an in-progress draw (Escape) so the parent can exit draw mode. */
+  onDrawCancel?: () => void;
   /** Called once after the map is ready, providing navigation helpers the caller can invoke. */
   onMapReady?: (
     flyTo: (center: [number, number], zoom?: number) => void,
@@ -215,23 +217,30 @@ function stopDraw(
   map: MaplibreMap | null,
   clickHandlerRef: React.MutableRefObject<((e: maplibregl.MapMouseEvent) => void) | null>,
   dblclickHandlerRef: React.MutableRefObject<((e: maplibregl.MapMouseEvent) => void) | null>,
+  keyHandlerRef: React.MutableRefObject<((e: KeyboardEvent) => void) | null>,
   drawVerticesRef: React.MutableRefObject<[number, number][]>,
   isDrawingRef: React.MutableRefObject<boolean>,
 ): void {
-  if (!map) return;
-  if (clickHandlerRef.current) {
-    map.off("click", clickHandlerRef.current);
-    clickHandlerRef.current = null;
+  // The key listener lives on window, so detach it even if the map is already gone.
+  if (keyHandlerRef.current) {
+    window.removeEventListener("keydown", keyHandlerRef.current);
+    keyHandlerRef.current = null;
   }
-  if (dblclickHandlerRef.current) {
-    map.off("dblclick", dblclickHandlerRef.current);
-    dblclickHandlerRef.current = null;
+  if (map) {
+    if (clickHandlerRef.current) {
+      map.off("click", clickHandlerRef.current);
+      clickHandlerRef.current = null;
+    }
+    if (dblclickHandlerRef.current) {
+      map.off("dblclick", dblclickHandlerRef.current);
+      dblclickHandlerRef.current = null;
+    }
+    safeRemoveLayer(map, DRAW_VERTS_LAYER);
+    safeRemoveLayer(map, DRAW_LINE_LAYER);
+    safeRemoveSource(map, DRAW_VERTS_SOURCE);
+    safeRemoveSource(map, DRAW_LINE_SOURCE);
+    map.getCanvas().style.cursor = "";
   }
-  safeRemoveLayer(map, DRAW_VERTS_LAYER);
-  safeRemoveLayer(map, DRAW_LINE_LAYER);
-  safeRemoveSource(map, DRAW_VERTS_SOURCE);
-  safeRemoveSource(map, DRAW_LINE_SOURCE);
-  map.getCanvas().style.cursor = "";
   isDrawingRef.current = false;
   drawVerticesRef.current = [];
 }
@@ -252,6 +261,7 @@ export function useFieldMap(
     customAOI,
     drawMode,
     onDrawComplete,
+    onDrawCancel,
     onMapReady,
   }: FieldMapParams,
 ): { cancelDraw: () => void } {
@@ -265,6 +275,8 @@ export function useFieldMap(
   onMapReadyRef.current = onMapReady;
   const onDrawCompleteRef = useRef(onDrawComplete);
   onDrawCompleteRef.current = onDrawComplete;
+  const onDrawCancelRef = useRef(onDrawCancel);
+  onDrawCancelRef.current = onDrawCancel;
 
   // Draw mode refs — kept as refs (not state) so event handlers always see fresh values without
   // needing to be recreated on every vertex addition.
@@ -272,6 +284,7 @@ export function useFieldMap(
   const isDrawingRef = useRef(false);
   const clickHandlerRef = useRef<((e: maplibregl.MapMouseEvent) => void) | null>(null);
   const dblclickHandlerRef = useRef<((e: maplibregl.MapMouseEvent) => void) | null>(null);
+  const keyHandlerRef = useRef<((e: KeyboardEvent) => void) | null>(null);
 
   // Create the map once. onMap is read through a ref so changing it never re-creates the map.
   useEffect(() => {
@@ -452,40 +465,62 @@ export function useFieldMap(
         updateDrawLayers(map, drawVerticesRef.current);
       };
 
+      const finishRing = (verts: [number, number][]) => {
+        if (verts.length < 3) return;
+        // Close the ring by duplicating the first vertex at the end.
+        const ring: [number, number][] = [...verts, verts[0]];
+        onDrawCompleteRef.current?.({ type: "Polygon", coordinates: [ring] });
+        stopDraw(map, clickHandlerRef, dblclickHandlerRef, keyHandlerRef, drawVerticesRef, isDrawingRef);
+      };
+
       const onDblclick = (e: maplibregl.MapMouseEvent) => {
         // Prevent the map's default zoom-on-dblclick behaviour.
         e.preventDefault();
         if (!isDrawingRef.current) return;
         // The click handler fires before dblclick on the final point — pop that extra vertex.
-        const verts = drawVerticesRef.current.slice(0, -1);
-        if (verts.length < 3) return;
-        // Close the ring by duplicating the first vertex at the end.
-        const ring: [number, number][] = [...verts, verts[0]];
-        const polygon: Polygon = { type: "Polygon", coordinates: [ring] };
-        onDrawCompleteRef.current?.(polygon);
-        stopDraw(map, clickHandlerRef, dblclickHandlerRef, drawVerticesRef, isDrawingRef);
+        finishRing(drawVerticesRef.current.slice(0, -1));
+      };
+
+      const onKeyDown = (e: KeyboardEvent) => {
+        if (!isDrawingRef.current) return;
+        if (e.key === "Enter") {
+          // Finish on Enter: unlike dblclick there is no trailing click vertex to drop.
+          e.preventDefault();
+          finishRing(drawVerticesRef.current);
+        } else if (e.key === "Escape") {
+          e.preventDefault();
+          stopDraw(map, clickHandlerRef, dblclickHandlerRef, keyHandlerRef, drawVerticesRef, isDrawingRef);
+          onDrawCancelRef.current?.();
+        } else if (e.key === "Backspace" || e.key === "Delete") {
+          // Undo the last placed vertex.
+          e.preventDefault();
+          drawVerticesRef.current = drawVerticesRef.current.slice(0, -1);
+          updateDrawLayers(map, drawVerticesRef.current);
+        }
       };
 
       clickHandlerRef.current = onClick;
       dblclickHandlerRef.current = onDblclick;
+      keyHandlerRef.current = onKeyDown;
       map.on("click", onClick);
       map.on("dblclick", onDblclick);
+      window.addEventListener("keydown", onKeyDown);
     };
 
     if (drawMode) {
       if (readyRef.current) startDraw();
       else map.once("load", startDraw);
     } else {
-      stopDraw(map, clickHandlerRef, dblclickHandlerRef, drawVerticesRef, isDrawingRef);
+      stopDraw(map, clickHandlerRef, dblclickHandlerRef, keyHandlerRef, drawVerticesRef, isDrawingRef);
     }
 
     return () => {
-      stopDraw(map, clickHandlerRef, dblclickHandlerRef, drawVerticesRef, isDrawingRef);
+      stopDraw(map, clickHandlerRef, dblclickHandlerRef, keyHandlerRef, drawVerticesRef, isDrawingRef);
     };
   }, [drawMode]);
 
   const cancelDraw = () => {
-    stopDraw(mapRef.current, clickHandlerRef, dblclickHandlerRef, drawVerticesRef, isDrawingRef);
+    stopDraw(mapRef.current, clickHandlerRef, dblclickHandlerRef, keyHandlerRef, drawVerticesRef, isDrawingRef);
   };
 
   return { cancelDraw };
