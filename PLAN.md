@@ -335,10 +335,10 @@ purely credential-gated, not a code gap. Steps, in order:
    (token fetch, STAC search, signed S3 read); `RS_IMAGERY_ADAPTER` switched to `windowed_cog`.
 2. **Land D2:** add 2–3 real Browser scenes/AOIs as `VALIDATION_MATRIX` rows (all five indices),
    asserting both real adapters match the Browser within ~0.01 on the AOI mean. The framework already
-   iterates a table, so each is one row. STARTED 2026-06-04: `tests/test_validation_matrix_live.py`
-   holds 2 real AOI rows on a near-cloudless 2026-05-17 scene (T36KTF) where windowed_cog matches the
-   CDSE Process API (the Browser engine) within 0.01 on all five indices (worst observed 0.006). Opt
-   in with `RS_LIVE_VALIDATION=1`. A different-date row finishes it.
+   iterates a table, so each is one row. DONE 2026-06-04: `tests/test_validation_matrix_live.py`
+   holds 3 real AOI rows across two acquisitions (S2A 2026-05-17 and S2C 2026-05-05, T36KTF) where
+   windowed_cog matches the CDSE Process API (the Browser engine) within 0.01 on all five indices
+   (worst observed 0.006). Opt in with `RS_LIVE_VALIDATION=1`.
 3. **Live adapter parity:** DONE 2026-06-04. `server_compute` now builds its CDSE OAuth client
    lazily from settings (the registry stays creds-free) and `_bounds` renders on the AOI grid
    (output width/height from the bbox + `leastCC` mosaicking). `tests/test_adapter_parity_live.py`

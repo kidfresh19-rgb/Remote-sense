@@ -82,6 +82,29 @@ LIVE_VALIDATION_MATRIX = [
             "ndmi": -0.1463,
         },
     },
+    {
+        "label": "harare_cropland_2026-05-05",
+        "scene_id": "S2C_MSIL2A_20260505T080601_N0512_R135_T36KTF_20260505T125413",
+        "aoi": {
+            "type": "Polygon",
+            "coordinates": [
+                [
+                    [31.00, -17.85],
+                    [31.06, -17.85],
+                    [31.06, -17.79],
+                    [31.00, -17.79],
+                    [31.00, -17.85],
+                ]
+            ],
+        },
+        "browser_ref": {  # a different acquisition (S2C, 2026-05-05); windowed_cog within 0.006
+            "ndvi": 0.4083,
+            "evi2": 0.2079,
+            "savi": 0.2189,
+            "ndre": 0.2488,
+            "ndmi": -0.0076,
+        },
+    },
 ]
 
 _RESOLUTION_M = 20.0  # one fetch at the coarsest band's native resolution for all five indices
