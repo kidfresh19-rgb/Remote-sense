@@ -249,13 +249,53 @@ def _ensure_frontend_deps(npm: str) -> int:
     return subprocess.run([npm, "install"], cwd=FRONTEND_DIR, check=False).returncode
 
 
+def _frontend_pid() -> int | None:
+    """The PID recorded for a backgrounded frontend, or None if there is no valid pidfile. A
+    malformed pidfile is treated as absent and removed."""
+    if not FRONTEND_PIDFILE.exists():
+        return None
+    try:
+        return int(FRONTEND_PIDFILE.read_text(encoding="utf-8").strip())
+    except (ValueError, OSError):
+        FRONTEND_PIDFILE.unlink(missing_ok=True)
+        return None
+
+
+def _looks_like_frontend(pid: int) -> bool:
+    """Best-effort check that `pid` is alive AND is our Vite/node dev server, so a recorded PID that
+    has died and been reused by an unrelated process is never force-killed. Uses tasklist (Windows)
+    / ps (POSIX); on any uncertainty it returns False (better to skip a kill than hit the wrong
+    process)."""
+    try:
+        if sys.platform == "win32":
+            out = subprocess.run(
+                ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+                capture_output=True,
+                text=True,
+                check=False,
+            ).stdout.lower()
+            return str(pid) in out and any(n in out for n in ("node", "npm", "cmd.exe"))
+        out = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "args="],
+            capture_output=True,
+            text=True,
+            check=False,
+        ).stdout.lower()
+        return any(token in out for token in ("vite", "node", "npm"))
+    except OSError:
+        return False
+
+
 def start_frontend_foreground() -> int:
     """Run the Vite analyst workspace in the foreground, installing deps on first use. Ctrl+C
-    stops it; the detached backend keeps running, so `--down` is how you stop everything."""
+    stops it; the detached backend keeps running, so `--down` is how you stop everything. Any
+    previously-backgrounded frontend is stopped first, so the two never fight over port 5173 and no
+    stale pidfile is left behind."""
     npm = find_npm()
     code = _ensure_frontend_deps(npm)
     if code != 0:
         return code
+    stop_frontend()
     print("Starting the analyst workspace at http://localhost:5173 (Ctrl+C to stop).")
     print("The backend stays up; run `python start.py --down` to stop the whole stack.")
     return subprocess.run([npm, "run", "dev"], cwd=FRONTEND_DIR, check=False).returncode
@@ -263,11 +303,13 @@ def start_frontend_foreground() -> int:
 
 def start_frontend_detached() -> int:
     """Launch the Vite dev server in the background and record its PID so `--down` can stop it.
-    Detaches from this console (its own process group) so it outlives the launcher."""
+    Detaches from this console (its own process group) so it outlives the launcher. Stops any
+    already-backgrounded frontend first, so a repeated `-d` never orphans the earlier one."""
     npm = find_npm()
     code = _ensure_frontend_deps(npm)
     if code != 0:
         return code
+    stop_frontend()
     if sys.platform == "win32":
         creationflags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
         proc = subprocess.Popen(
@@ -291,29 +333,44 @@ def start_frontend_detached() -> int:
 
 
 def stop_frontend() -> None:
-    """Stop a backgrounded Vite dev server recorded by `start_frontend_detached`. No-op if none
-    was started. The npm shim spawns a node child, so the whole tree must be killed: `taskkill /T`
-    on Windows, the process group on POSIX (the server was started in its own session)."""
-    if not FRONTEND_PIDFILE.exists():
+    """Stop a backgrounded Vite dev server recorded by `start_frontend_detached`. No-op if none was
+    started, the process already exited, or the recorded PID was reused by another process (it is
+    identity-checked before any kill). The npm shim spawns a node child, so the whole tree is
+    killed: `taskkill /T` on Windows; on POSIX the process group, escalating SIGTERM to SIGKILL if
+    it does not exit promptly. (A docker compose service would avoid this hand-rolled PID tracking;
+    kept lightweight because the dev server is a developer convenience, not a deployed service.)"""
+    pid = _frontend_pid()
+    if pid is None:
         return
-    try:
-        pid = int(FRONTEND_PIDFILE.read_text(encoding="utf-8").strip())
-    except (ValueError, OSError):
-        FRONTEND_PIDFILE.unlink(missing_ok=True)
+    if not _looks_like_frontend(pid):
+        FRONTEND_PIDFILE.unlink(missing_ok=True)  # dead or recycled: drop the stale record
         return
     print(f"Stopping the analyst workspace (pid {pid}).")
     if sys.platform == "win32":
         subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, check=False)
     else:
         import signal
+        import time
 
         try:
             os.killpg(os.getpgid(pid), signal.SIGTERM)
         except ProcessLookupError:
-            pass
+            FRONTEND_PIDFILE.unlink(missing_ok=True)
+            return
         except OSError:
             try:
                 os.kill(pid, signal.SIGTERM)
+            except OSError:
+                pass
+        for _ in range(20):  # up to ~2s for a graceful exit, then SIGKILL the group
+            time.sleep(0.1)
+            try:
+                os.kill(pid, 0)
+            except OSError:
+                break
+        else:
+            try:
+                os.killpg(os.getpgid(pid), signal.SIGKILL)
             except OSError:
                 pass
     FRONTEND_PIDFILE.unlink(missing_ok=True)
