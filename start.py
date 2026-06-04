@@ -1,14 +1,20 @@
 """One-command launcher for the remote-sense local stack.
 
-`python start.py` brings the backend up with `docker compose`, smoothing over the frictions
-this dev box has: the Docker CLI is installed but not always on PATH, Docker Desktop may not
-be running yet, `.env` may be missing, and a throwaway `rs-testpg` test container can be
-holding host port 5432 that compose's own postgres needs to publish. The app images bake source
-in at build time with no bind-mount, so by default this rebuilds them before start to pick up new
-code and migrations (skipping the rebuild is the classic way to boot a stale image whose baked-in
-Alembic history lags the database). Flags: `--no-build` skips that rebuild, `--frontend` also
-starts the Vite analyst workspace, `-d/--detach` runs the backend in the background, `--down`
-stops the stack, `--logs` follows logs.
+`python start.py` brings the **whole system** up: the `docker compose` stack (postgres, redis and
+minio as the external services, plus the api, worker, beat, tiler and nginx) and the Vite analyst
+workspace. The compose stack does not include the frontend, so without this the UI at
+http://localhost:5173 never comes up. It also smooths over the frictions this dev box has: the
+Docker CLI is installed but not always on PATH, Docker Desktop may not be running yet, `.env` may
+be missing, and a throwaway `rs-testpg` test container can be holding host port 5432 that compose's
+own postgres needs to publish. The app images bake source in at build time with no bind-mount, so by
+default this rebuilds them before start to pick up new code and migrations (skipping the rebuild is
+the classic way to boot a stale image whose baked-in Alembic history lags the database).
+
+Default run: the backend is brought up detached and the frontend dev server runs in the foreground,
+so Ctrl+C stops the workspace while the backend keeps serving. Flags: `--no-frontend` brings up only
+the docker stack (streaming its logs); `--no-build` skips the image rebuild; `-d/--detach` runs
+everything (backend and frontend) in the background; `--down` stops everything, including a
+backgrounded frontend; `--logs` follows the stack's logs.
 
 This is a developer convenience, not part of the deployed app: production runs the same
 `docker compose` (or the per-service containers) directly.
@@ -29,6 +35,11 @@ REPO_ROOT = Path(__file__).resolve().parent
 ENV_FILE = REPO_ROOT / ".env"
 ENV_EXAMPLE = REPO_ROOT / ".env.example"
 FRONTEND_DIR = REPO_ROOT / "frontend"
+
+# Records the PID of a detached (`-d`) Vite dev server so `--down` can stop it. The frontend is
+# not a docker service, so compose cannot track it for us. Absent when the frontend runs in the
+# foreground (it dies with this process) or was never started.
+FRONTEND_PIDFILE = REPO_ROOT / ".frontend.pid"
 
 # Docker Desktop installs the CLI here but does not reliably put it on PATH on Windows.
 _WINDOWS_DOCKER_BIN = Path(r"C:\Program Files\Docker\Docker\resources\bin")
@@ -230,26 +241,92 @@ def compose(docker: str, *args: str) -> int:
     return subprocess.run([docker, "compose", *args], cwd=REPO_ROOT, check=False).returncode
 
 
-def start_frontend() -> int:
-    """Run the Vite analyst workspace in the foreground, installing deps on first use."""
+def _ensure_frontend_deps(npm: str) -> int:
+    """Install node_modules on first use. Returns the install exit code (0 if already present)."""
+    if (FRONTEND_DIR / "node_modules").exists():
+        return 0
+    print("Installing frontend dependencies (npm install)...")
+    return subprocess.run([npm, "install"], cwd=FRONTEND_DIR, check=False).returncode
+
+
+def start_frontend_foreground() -> int:
+    """Run the Vite analyst workspace in the foreground, installing deps on first use. Ctrl+C
+    stops it; the detached backend keeps running, so `--down` is how you stop everything."""
     npm = find_npm()
-    if not (FRONTEND_DIR / "node_modules").exists():
-        print("Installing frontend dependencies (npm install)...")
-        code = subprocess.run([npm, "install"], cwd=FRONTEND_DIR, check=False).returncode
-        if code != 0:
-            return code
+    code = _ensure_frontend_deps(npm)
+    if code != 0:
+        return code
     print("Starting the analyst workspace at http://localhost:5173 (Ctrl+C to stop).")
+    print("The backend stays up; run `python start.py --down` to stop the whole stack.")
     return subprocess.run([npm, "run", "dev"], cwd=FRONTEND_DIR, check=False).returncode
+
+
+def start_frontend_detached() -> int:
+    """Launch the Vite dev server in the background and record its PID so `--down` can stop it.
+    Detaches from this console (its own process group) so it outlives the launcher."""
+    npm = find_npm()
+    code = _ensure_frontend_deps(npm)
+    if code != 0:
+        return code
+    if sys.platform == "win32":
+        creationflags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
+        proc = subprocess.Popen(
+            [npm, "run", "dev"],
+            cwd=FRONTEND_DIR,
+            creationflags=creationflags,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    else:
+        proc = subprocess.Popen(
+            [npm, "run", "dev"],
+            cwd=FRONTEND_DIR,
+            start_new_session=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    FRONTEND_PIDFILE.write_text(str(proc.pid), encoding="utf-8")
+    print("Started the analyst workspace in the background at http://localhost:5173.")
+    return 0
+
+
+def stop_frontend() -> None:
+    """Stop a backgrounded Vite dev server recorded by `start_frontend_detached`. No-op if none
+    was started. The npm shim spawns a node child, so the whole tree must be killed: `taskkill /T`
+    on Windows, the process group on POSIX (the server was started in its own session)."""
+    if not FRONTEND_PIDFILE.exists():
+        return
+    try:
+        pid = int(FRONTEND_PIDFILE.read_text(encoding="utf-8").strip())
+    except (ValueError, OSError):
+        FRONTEND_PIDFILE.unlink(missing_ok=True)
+        return
+    print(f"Stopping the analyst workspace (pid {pid}).")
+    if sys.platform == "win32":
+        subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, check=False)
+    else:
+        import signal
+
+        try:
+            os.killpg(os.getpgid(pid), signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        except OSError:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except OSError:
+                pass
+    FRONTEND_PIDFILE.unlink(missing_ok=True)
 
 
 def print_targets(*, frontend: bool) -> None:
     print("\nOnce healthy:")
+    if frontend:
+        print("  Workspace     http://localhost:5173   <- the analyst UI")
     print("  API health    http://localhost:8000/healthz")
     print("  API docs      http://localhost:8000/docs")
     print("  Tiler health  http://localhost:8000/tiler/healthz")
     print("  MinIO console http://localhost:9001  (minioadmin / minioadmin)")
-    if frontend:
-        print("  Workspace     http://localhost:5173")
     print()
 
 
@@ -261,12 +338,13 @@ def main(argv: list[str] | None = None) -> int:
         "-d",
         "--detach",
         action="store_true",
-        help="run the backend in the background instead of streaming its logs",
+        help="run everything (backend and frontend) in the background and return immediately",
     )
     parser.add_argument(
         "--frontend",
-        action="store_true",
-        help="also start the Vite analyst workspace (implies a detached backend)",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="start the Vite analyst workspace (default: on; use --no-frontend for the stack only)",
     )
     parser.add_argument(
         "--build",
@@ -274,7 +352,11 @@ def main(argv: list[str] | None = None) -> int:
         default=True,
         help="rebuild the app image before start (default: on; use --no-build to skip)",
     )
-    parser.add_argument("--down", action="store_true", help="stop the stack and remove containers")
+    parser.add_argument(
+        "--down",
+        action="store_true",
+        help="stop everything: remove the compose containers and any backgrounded frontend",
+    )
     parser.add_argument("--logs", action="store_true", help="follow the running stack's logs")
     args = parser.parse_args(argv)
 
@@ -282,6 +364,7 @@ def main(argv: list[str] | None = None) -> int:
     _ensure_docker_running(docker)
 
     if args.down:
+        stop_frontend()
         return compose(docker, "down")
     if args.logs:
         return compose(docker, "logs", "-f")
@@ -290,19 +373,27 @@ def main(argv: list[str] | None = None) -> int:
     clear_stale_containers(docker)
     free_db_port(docker)
 
-    detach = args.detach or args.frontend
+    # The backend must run detached whenever we also start the frontend, otherwise the two fight
+    # for the foreground. So the default (frontend on) detaches the backend; --no-frontend without
+    # -d keeps the old behavior of streaming the stack's logs in the foreground.
+    backend_detached = args.detach or args.frontend
     print_targets(frontend=args.frontend)
 
     up_args = ["up"]
     if args.build:
         up_args.append("--build")
-    if detach:
+    if backend_detached:
         up_args.append("-d")
 
     code = compose(docker, *up_args)
     if code != 0 or not args.frontend:
         return code
-    return start_frontend()
+
+    # Backend is up (detached). Bring up the frontend: in the foreground by default so its logs
+    # stream and Ctrl+C stops it, or in the background under -d for a fully detached stack.
+    if args.detach:
+        return start_frontend_detached()
+    return start_frontend_foreground()
 
 
 if __name__ == "__main__":

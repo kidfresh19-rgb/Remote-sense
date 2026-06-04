@@ -28,6 +28,9 @@ node_modules/
 frontend/dist/
 frontend/.vite/
 
+# Launcher runtime state (start.py records the detached Vite dev-server PID here)
+.frontend.pid
+
 # Claude Code local (machine-specific permissions/settings)
 .claude/settings.local.json
 
