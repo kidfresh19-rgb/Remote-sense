@@ -345,7 +345,9 @@ purely credential-gated, not a code gap. Steps, in order:
    confirms `windowed_cog` == `server_compute` on a real scene across all five indices (observed
    NDVI diff ~0.006). Opt in with `RS_LIVE_VALIDATION=1`.
 4. **Agronomist sign-off** on the interpretation index-band thresholds + per-crop overrides
-   (`rs_interpret/thresholds.py`, still `# ⚑ CONFIRM`).
+   (`rs_interpret/thresholds.py`, still `# ⚑ CONFIRM`). A consolidated draft proposal for review is
+   in `docs/agronomy-thresholds-v1-review.md` (v1 bands, per-crop overrides, colormaps, SCL clear
+   set, confidence cutoffs, with sources and the open questions). Sign-off remains human/agronomist.
 5. **Finish D6:** DONE 2026-06-04. `read_window` already retried `RasterioIOError` with backoff; the
    real gap was the metadata read. `read_bytes` now fetches the `s3://` MTD XML via boto3 with
    botocore adaptive retries (429/transient). The prior osgeo VSI path was never installed anywhere
