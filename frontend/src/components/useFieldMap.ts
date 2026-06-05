@@ -42,19 +42,29 @@ function minimalStyle(): StyleSpecification {
   };
 }
 
-function streetBasemapStyle(): StyleSpecification {
-  // Default key-free basemap so entered coordinates / drawn AOIs land on a real map. Carto raster
-  // tiles carry OSM data and are built for app basemaps. Dark theme matches the cockpit; swap the
-  // path to "rastertiles/voyager" or "light_all" for a light street map. MapLibre's raster `tiles`
-  // does not expand {s}, so the subdomains are listed explicitly.
-  const path = "dark_all";
+function satelliteBasemapStyle(): StyleSpecification {
+  // Default key-free basemap for a satellite-agri product: flying to a field has to show the actual
+  // land, not a near-black street map. Esri World Imagery supplies the imagery; a Carto label-only
+  // raster sits on top for town/road names so the analyst can orient. Esri imagery tiles are
+  // addressed {z}/{y}/{x} (note the y/x order); Carto tiles are {z}/{x}/{y} with no {s} expansion in
+  // MapLibre, so the subdomains are listed explicitly. Override with VITE_BASEMAP_URL, or set it to
+  // "none" for an offline blank style.
   return {
     version: 8,
     sources: {
-      basemap: {
+      satellite: {
+        type: "raster",
+        tiles: [
+          "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+        ],
+        tileSize: 256,
+        maxzoom: 19,
+        attribution: "Imagery © Esri, Maxar, Earthstar Geographics",
+      },
+      labels: {
         type: "raster",
         tiles: ["a", "b", "c", "d"].map(
-          (sub) => `https://${sub}.basemaps.cartocdn.com/${path}/{z}/{x}/{y}.png`,
+          (sub) => `https://${sub}.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}.png`,
         ),
         tileSize: 256,
         maxzoom: 20,
@@ -62,9 +72,10 @@ function streetBasemapStyle(): StyleSpecification {
       },
     },
     layers: [
-      // Background shows the panel color while tiles load; the basemap raster sits on top of it.
+      // Background shows the panel color while imagery loads; imagery then labels sit on top.
       { id: "bg", type: "background", paint: { "background-color": cssVar("--bg", "#0b0b0d") } },
-      { id: "basemap", type: "raster", source: "basemap" },
+      { id: "satellite", type: "raster", source: "satellite" },
+      { id: "labels", type: "raster", source: "labels", paint: { "raster-opacity": 0.9 } },
     ],
   };
 }
@@ -75,8 +86,8 @@ function resolveStyle(): string | StyleSpecification {
   if (url === "none") return minimalStyle();
   // A configured style URL (vector or raster) always wins.
   if (url) return url;
-  // Default: the built-in key-free street basemap.
-  return streetBasemapStyle();
+  // Default: the built-in key-free satellite basemap with place labels.
+  return satelliteBasemapStyle();
 }
 
 export function bboxOf(geometry: Geometry): [number, number, number, number] | null {
@@ -114,6 +125,9 @@ interface FieldMapParams {
   onMap?: (map: MaplibreMap | null) => void;
   /** Custom AOI geometry to render as a dashed overlay. */
   customAOI?: Geometry | null;
+  /** A point pin ([lng, lat]) for a searched place that has no boundary, so "fly to" lands on a
+   *  visible target. Cleared by the caller once a field or AOI boundary takes over. */
+  marker?: [number, number] | null;
   /** When true, the map enters polygon draw mode. */
   drawMode?: boolean;
   /** Called with the completed polygon when the user closes the ring (double-click or Enter). */
@@ -259,6 +273,7 @@ export function useFieldMap(
     controls = true,
     onMap,
     customAOI,
+    marker,
     drawMode,
     onDrawComplete,
     onDrawCancel,
@@ -266,6 +281,7 @@ export function useFieldMap(
   }: FieldMapParams,
 ): { cancelDraw: () => void } {
   const mapRef = useRef<MaplibreMap | null>(null);
+  const markerRef = useRef<maplibregl.Marker | null>(null);
   const readyRef = useRef(false);
   const onMapRef = useRef(onMap);
   onMapRef.current = onMap;
@@ -311,10 +327,31 @@ export function useFieldMap(
     return () => {
       readyRef.current = false;
       onMapRef.current?.(null);
+      markerRef.current?.remove();
+      markerRef.current = null;
       map.remove();
       mapRef.current = null;
     };
   }, [containerRef]);
+
+  // Search pin for a point result (a place with no polygon boundary). Lives outside the style, so it
+  // survives basemap changes and needs no add/remove of sources or layers.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    if (!marker) {
+      markerRef.current?.remove();
+      markerRef.current = null;
+      return;
+    }
+    if (markerRef.current) {
+      markerRef.current.setLngLat(marker);
+    } else {
+      markerRef.current = new maplibregl.Marker({ color: cssVar("--accent", "#5a86e0") })
+        .setLngLat(marker)
+        .addTo(map);
+    }
+  }, [marker]);
 
   // The selected field's geometry as a GeoJSON layer, optionally fitted into view.
   useEffect(() => {

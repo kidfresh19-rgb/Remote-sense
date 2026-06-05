@@ -1,5 +1,5 @@
 import { CaretLeft, CaretRight, Columns, Stack, X } from "@phosphor-icons/react";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { Field } from "@/lib/api";
 import { saveCustomAOI } from "@/lib/customAOIs";
@@ -48,6 +48,10 @@ export function MapPanel({
   const [drawMode, setDrawMode] = useState(false);
   const [showCoords, setShowCoords] = useState(false);
   const [showUpload, setShowUpload] = useState(false);
+  // A pin for a searched place that has no boundary, and a sticky flag that retires the "select a
+  // field" prompt once the analyst has navigated anywhere (so it never sits over a flown-to view).
+  const [searchMarker, setSearchMarker] = useState<[number, number] | null>(null);
+  const [hasNavigated, setHasNavigated] = useState(false);
   const flyToRef = useRef<((center: [number, number], zoom?: number) => void) | null>(null);
   const fitBoundsRef = useRef<((sw: [number, number], ne: [number, number]) => void) | null>(null);
 
@@ -56,6 +60,15 @@ export function MapPanel({
     [fields.data, fieldId],
   );
   const list = useMemo(() => scenes.data ?? [], [scenes.data]);
+
+  // A selected field or a drawn/entered AOI is a stronger target than a search pin, so retire the
+  // pin (and the empty-state prompt) when either takes over.
+  useEffect(() => {
+    if (selectedField || customAOI) {
+      setSearchMarker(null);
+      setHasNavigated(true);
+    }
+  }, [selectedField, customAOI]);
 
   const activeSceneId = useMemo(() => {
     if (!list.length) return null;
@@ -111,6 +124,7 @@ export function MapPanel({
           sceneId={activeSceneId}
           showRaster={showRaster}
           customAOI={customAOI}
+          marker={searchMarker}
           drawMode={drawMode}
           onDrawComplete={handleDrawComplete}
           onDrawCancel={handleDrawCancel}
@@ -118,9 +132,10 @@ export function MapPanel({
         />
       )}
 
-      {/* Empty-state overlay — shown over the map when no field is selected and no custom AOI is
-           set, so entering coordinates / drawing an AOI clears the prompt. */}
-      {!selectedField && !customAOI && (
+      {/* Empty-state overlay — shown over the map only until the analyst navigates anywhere
+           (selecting a field, drawing/entering an AOI, or searching a place), so it never sits on
+           top of a flown-to view. */}
+      {!selectedField && !customAOI && !hasNavigated && (
         <div className="pointer-events-none absolute inset-0 grid place-items-center">
           <EmptyState
             title="Select a field"
@@ -140,12 +155,22 @@ export function MapPanel({
           onOpenCoords={() => setShowCoords(true)}
           onOpenUpload={() => setShowUpload(true)}
           onAOISet={(geometry, label) => {
+            // A boundary result supersedes the search pin; the field/AOI effect clears it, but do it
+            // here too so a polygon pick never flashes a stray pin.
+            setSearchMarker(null);
             setCustomAOI(geometry);
+            setHasNavigated(true);
             // Note: geocoder results are not auto-saved — the analyst saves explicitly via the
             // CustomAOIPanel if they want to keep it.
             void label;
           }}
-          onFlyTo={(center, zoom) => flyToRef.current?.(center, zoom)}
+          onFlyTo={(center, zoom) => {
+            flyToRef.current?.(center, zoom);
+            // Drop a pin on the searched point so the fly-to has a visible target. A boundary result
+            // calls onAOISet right after, which clears it again.
+            setSearchMarker(center);
+            setHasNavigated(true);
+          }}
         />
       </div>
 
@@ -213,13 +238,17 @@ export function MapPanel({
         <CoordinateEntryModal
           onClose={() => setShowCoords(false)}
           onApply={(geometry) => {
+            setSearchMarker(null);
             setCustomAOI(geometry);
+            setHasNavigated(true);
             const bbox = bboxOf(geometry);
             if (bbox) fitBoundsRef.current?.([bbox[0], bbox[1]], [bbox[2], bbox[3]]);
             setShowCoords(false);
           }}
           onFitBounds={(sw, ne) => {
             fitBoundsRef.current?.(sw, ne);
+            setSearchMarker(null);
+            setHasNavigated(true);
             setShowCoords(false);
           }}
         />
@@ -228,8 +257,10 @@ export function MapPanel({
         <FileUploadPanel
           onClose={() => setShowUpload(false)}
           onApply={(geometry, label) => {
+            setSearchMarker(null);
             setCustomAOI(geometry);
             saveCustomAOI({ label, geometry });
+            setHasNavigated(true);
             setShowUpload(false);
           }}
         />
@@ -244,6 +275,7 @@ function SingleSceneMap({
   sceneId,
   showRaster,
   customAOI,
+  marker,
   drawMode,
   onDrawComplete,
   onDrawCancel,
@@ -254,6 +286,7 @@ function SingleSceneMap({
   sceneId: string | null;
   showRaster: boolean;
   customAOI: import("geojson").Geometry | null;
+  marker: [number, number] | null;
   drawMode: boolean;
   onDrawComplete: (polygon: import("geojson").Polygon) => void;
   onDrawCancel: () => void;
@@ -269,6 +302,7 @@ function SingleSceneMap({
     sceneId,
     showRaster,
     customAOI,
+    marker,
     drawMode,
     onDrawComplete,
     onDrawCancel,
