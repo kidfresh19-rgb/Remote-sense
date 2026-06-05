@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import type { Geometry } from "geojson";
 
 import { useToken } from "@/auth/TokenProvider";
 
@@ -121,5 +122,20 @@ export function useDeleteAnnotation(fieldId: string | null) {
   return useMutation({
     mutationFn: (annotationId: string) => api.deleteAnnotation(fieldId!, annotationId, token!),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["annotations", fieldId] }),
+  });
+}
+
+export function usePublishFarm() {
+  const { token } = useToken();
+  return useMutation({
+    mutationFn: (canonicalFarmId: string) => api.publishFarm(canonicalFarmId, token!),
+  });
+}
+
+export function useAnalyseAOI() {
+  const { token } = useToken();
+  return useMutation({
+    mutationFn: ({ geometry, index }: { geometry: Geometry; index: string }) =>
+      api.analyseAOI(geometry, index, token!),
   });
 }

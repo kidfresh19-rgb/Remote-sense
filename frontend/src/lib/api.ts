@@ -99,6 +99,25 @@ export interface Annotation {
   created_at: string;
 }
 
+/** Result of an ad-hoc AOI preview analysis (POST /analyse/aoi). `status` is "ok" or "no_scenes";
+ *  on "ok" the index stats for the most recent usable pass are present. Mirrors the worker task
+ *  `analysis.analyse_aoi` return shape. Nothing is persisted - this is a quick look, not a field. */
+export interface AOIAnalysisResult {
+  status: "ok" | "no_scenes" | string;
+  index?: string;
+  pass_date?: string;
+  scene_id?: string;
+  mean?: number | null;
+  min?: number | null;
+  max?: number | null;
+  p10?: number | null;
+  p90?: number | null;
+  clear_fraction?: number;
+  confidence?: string;
+  resolution_m?: number;
+  pixels?: number;
+}
+
 export class ApiError extends Error {
   readonly status: number;
   constructor(status: number, message: string) {
@@ -198,6 +217,14 @@ export const api = {
     send<void>(
       "DELETE",
       `/fields/${fieldId}/annotations/${encodeURIComponent(annotationId)}`,
+      token,
+    ),
+  analyseAOI: (geometry: Geometry, index: string, token: string) =>
+    send<AOIAnalysisResult>("POST", "/analyse/aoi", token, { geometry, index }),
+  publishFarm: (canonicalFarmId: string, token: string) =>
+    send<{ status: string; canonical_farm_id: string }>(
+      "POST",
+      `/publish/farm/${encodeURIComponent(canonicalFarmId)}`,
       token,
     ),
 };

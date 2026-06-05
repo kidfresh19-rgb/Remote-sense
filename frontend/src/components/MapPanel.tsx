@@ -1,10 +1,10 @@
-import { CaretLeft, CaretRight, Columns, Stack, X } from "@phosphor-icons/react";
+import { CaretLeft, CaretRight, Columns, Stack, X, Lightning } from "@phosphor-icons/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { Field } from "@/lib/api";
 import { saveCustomAOI } from "@/lib/customAOIs";
 import { indexMeta, type IndexKey } from "@/lib/indices";
-import { useFields, useScenes } from "@/lib/queries";
+import { useFields, useScenes, useAnalyseAOI } from "@/lib/queries";
 import { useWorkspace } from "@/state/workspace";
 
 import { AOIBar } from "./AOIBar";
@@ -48,6 +48,9 @@ export function MapPanel({
   const [drawMode, setDrawMode] = useState(false);
   const [showCoords, setShowCoords] = useState(false);
   const [showUpload, setShowUpload] = useState(false);
+  const [analysingAOI, setAnalysingAOI] = useState(false);
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const analyseAOIMutation = useAnalyseAOI();
   // A pin for a searched place that has no boundary, and a sticky flag that retires the "select a
   // field" prompt once the analyst has navigated anywhere (so it never sits over a flown-to view).
   const [searchMarker, setSearchMarker] = useState<[number, number] | null>(null);
@@ -96,6 +99,39 @@ export function MapPanel({
     setDrawMode(false);
   };
   const handleDrawCancel = () => setDrawMode(false);
+
+  const handleAnalyseAOI = () => {
+    if (!customAOI) return;
+    setAnalysingAOI(true);
+    analyseAOIMutation.mutate(
+      { geometry: customAOI, index },
+      {
+        onSuccess: (result) => {
+          setAnalysingAOI(false);
+          if (result.status === "no_scenes") {
+            setToastMessage("No recent clear imagery for this area.");
+          } else {
+            const v = result.mean != null ? result.mean.toFixed(3) : "n/a";
+            const clear =
+              result.clear_fraction != null ? `${Math.round(result.clear_fraction * 100)}% clear` : "";
+            const parts = [
+              `${(result.index ?? index).toUpperCase()} ${v}`,
+              clear,
+              result.confidence,
+              result.pass_date,
+            ].filter(Boolean);
+            setToastMessage(parts.join(" · "));
+          }
+          setTimeout(() => setToastMessage(null), 7000);
+        },
+        onError: (err) => {
+          setAnalysingAOI(false);
+          setToastMessage(`Failed: ${err instanceof Error ? err.message : String(err)}`);
+          setTimeout(() => setToastMessage(null), 5000);
+        },
+      }
+    );
+  };
   const handleMapReady = (
     flyTo: (center: [number, number], zoom?: number) => void,
     fitBounds: (sw: [number, number], ne: [number, number]) => void,
@@ -198,12 +234,31 @@ export function MapPanel({
 
       {/* Clear AOI badge — centered below the toolbar */}
       {customAOI && !drawMode && (
-        <div className="absolute inset-x-0 top-[72px] z-20 flex justify-center pointer-events-none">
+        <div className="absolute inset-x-0 top-[72px] z-20 flex justify-center pointer-events-none gap-2">
+          <button
+            onClick={handleAnalyseAOI}
+            disabled={analysingAOI}
+            className="pointer-events-auto flex items-center gap-1.5 rounded-full bg-accent text-accent-fg border border-accent/20 px-4 py-1.5 text-xs font-medium hover:opacity-90 transition-opacity backdrop-blur-sm disabled:opacity-50"
+          >
+            <Lightning size={14} weight="fill" />
+            {analysingAOI ? "Queueing..." : "Analyse this AOI"}
+          </button>
           <button
             onClick={() => setCustomAOI(null)}
             className="pointer-events-auto flex items-center gap-1.5 rounded-full bg-panel/90 border border-border px-3 py-1 text-xs text-muted hover:text-fg transition-colors backdrop-blur-sm"
           >
             <X size={12} /> Clear custom AOI
+          </button>
+        </div>
+      )}
+
+      {/* Toast message overlay */}
+      {toastMessage && (
+        <div className="absolute bottom-4 right-4 z-50 bg-panel border border-border px-4 py-2.5 rounded-lg shadow-lg text-sm text-fg flex items-center gap-2 animate-in fade-in slide-in-from-bottom-2 duration-200">
+          <Lightning size={16} className="text-accent animate-pulse" />
+          <span>{toastMessage}</span>
+          <button onClick={() => setToastMessage(null)} className="text-muted hover:text-fg ml-2 pointer-events-auto">
+            <X size={14} />
           </button>
         </div>
       )}

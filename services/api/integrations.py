@@ -40,7 +40,7 @@ class _SubPlotIn(BaseModel):
     plot_id: str | int
     name: str | None = None
     crop: str | None = None
-    boundary: dict[str, Any]
+    boundary: dict[str, Any] | None = None
 
 
 class _FieldSyncIn(BaseModel):
@@ -48,7 +48,7 @@ class _FieldSyncIn(BaseModel):
     field_id: str | int
     name: str | None = None
     crop: str | None = None
-    boundary: dict[str, Any]
+    boundary: dict[str, Any] | None = None
     sub_plots: list[_SubPlotIn] = []
 
 
@@ -87,18 +87,25 @@ def to_farm_ins(sync: AgriTrackSyncIn) -> list[FarmIn]:
         fields: list[FieldIn] = []
         for f in farm.fields:
             field_key = str(f.field_id)
-            fields.append(
-                FieldIn(canonical_field_id=field_key, name=f.name, crop=f.crop, geometry=f.boundary)
-            )
-            for plot in f.sub_plots:
+            if f.boundary is not None:
                 fields.append(
                     FieldIn(
-                        canonical_field_id=f"{field_key}.{plot.plot_id}",
-                        name=plot.name,
-                        crop=plot.crop,
-                        geometry=plot.boundary,
+                        canonical_field_id=field_key,
+                        name=f.name,
+                        crop=f.crop,
+                        geometry=f.boundary,
                     )
                 )
+            for plot in f.sub_plots:
+                if plot.boundary is not None:
+                    fields.append(
+                        FieldIn(
+                            canonical_field_id=f"{field_key}.{plot.plot_id}",
+                            name=plot.name,
+                            crop=plot.crop,
+                            geometry=plot.boundary,
+                        )
+                    )
         farms.append(
             FarmIn(
                 canonical_farm_id=str(farm.farm_id),

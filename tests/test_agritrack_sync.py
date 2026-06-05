@@ -118,6 +118,45 @@ def test_to_farm_ins_accepts_integer_ids():
     assert [f.canonical_field_id for f in farm.fields] == ["4", "4.1"]
 
 
+def test_to_farm_ins_handles_null_boundaries():
+    sync = AgriTrackSyncIn.model_validate(
+        {
+            "farms": [
+                {
+                    "farm_id": "9",
+                    "boundary": _GEOM,
+                    "fields": [
+                        {
+                            "field_id": "7",
+                            "boundary": None,
+                            "sub_plots": [
+                                {
+                                    "plot_id": "1",
+                                    "name": "Subfield 01",
+                                    "boundary": None,
+                                },
+                                {
+                                    "plot_id": "2",
+                                    "name": "Subfield 02",
+                                    "boundary": _GEOM,
+                                }
+                            ]
+                        }
+                    ],
+                }
+            ]
+        }
+    )
+    farms = to_farm_ins(sync)
+    assert len(farms) == 1
+    farm = farms[0]
+    # Both the field and subplot 1 should be skipped because they lack a boundary.
+    # Only subplot 2 should be mapped as a FieldIn (with canonical_field_id="7.2")
+    assert [f.canonical_field_id for f in farm.fields] == ["7.2"]
+    assert farm.fields[0].name == "Subfield 02"
+    assert farm.fields[0].geometry == _GEOM
+
+
 async def test_require_agritrack_key_rejects_wrong_and_missing():
     settings = Settings(agritrack_api_key=_KEY)
     with pytest.raises(HTTPException) as wrong:
