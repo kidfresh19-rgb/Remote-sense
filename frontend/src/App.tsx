@@ -39,7 +39,7 @@ function Shell() {
       {token ? (
         // Three-column layout on desktop; panels slide in/out via max-width transitions.
         // The map column is always present and fills the remaining space.
-        <main className="grid min-h-0 grid-cols-1 lg:grid-cols-[auto_minmax(0,1fr)_auto]">
+        <main className="grid min-h-0 grid-cols-1 lg:grid-cols-[auto_minmax(0,1fr)_auto] lg:grid-rows-[minmax(0,1fr)]">
           {/* Sidebar — collapses horizontally on desktop, vertically on mobile */}
           <div
             className={cn(

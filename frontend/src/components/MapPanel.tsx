@@ -308,5 +308,8 @@ function SingleSceneMap({
     onDrawCancel,
     onMapReady,
   });
-  return <div ref={ref} className="absolute inset-0" />;
+  // size-full (not absolute inset-0): MapLibre's stylesheet sets `.maplibregl-map { position:
+  // relative }` unlayered, which beats Tailwind v4's layered `absolute` utility — so inset-0 would
+  // collapse the container to 0 height. An explicit 100% width/height is immune to that.
+  return <div ref={ref} className="size-full" />;
 }
