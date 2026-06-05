@@ -26,6 +26,7 @@ import argparse
 import json
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -182,6 +183,101 @@ def free_db_port(docker: str) -> None:
             "compose postgres may fail to start.",
             file=sys.stderr,
         )
+
+
+# MinIO publishes two host ports purely for dev access (the S3 API and the web console);
+# containers always reach MinIO at minio:9000 over the compose network, so start.py is free to
+# republish these elsewhere when the default is unbindable. compose interpolates the chosen values
+# from these env vars (see docker-compose.yml). The container-side ports stay 9000/9001.
+_MINIO_API_PORT_ENV = "RS_MINIO_API_PORT"
+_MINIO_CONSOLE_PORT_ENV = "RS_MINIO_CONSOLE_PORT"
+_DEFAULT_MINIO_API_PORT = 9000
+_DEFAULT_MINIO_CONSOLE_PORT = 9001
+
+# Other host ports the compose stack publishes. These are fixed (nginx config, the printed URLs and
+# host tooling assume them), so a Windows reservation here can't be transparently moved; it is
+# surfaced early with the one-line fix instead. 5432 also has free_db_port for the container-clash
+# case; it is listed here only for the separate reserved-range check.
+_FIXED_HOST_PORTS = (("PostgreSQL", 5432), ("Redis", 6379), ("API/nginx", 8000))
+
+
+def _probe_host_port(port: int) -> str:
+    """Classify a host port the way docker's port proxy will see it: 'free', 'reserved' (Windows
+    Hyper-V/WinNAT excluded range -> WSAEACCES, the cryptic 'forbidden by its access permissions'
+    bind failure) or 'in-use' (held by another listener). A plain bind reproduces docker's own
+    attempt; the socket is closed immediately and, never having listened, leaves no TIME_WAIT."""
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        probe.bind(("", port))
+    except PermissionError:
+        return "reserved"
+    except OSError:
+        return "in-use"
+    else:
+        return "free"
+    finally:
+        probe.close()
+
+
+def _candidate_ports(default: int):
+    """Host ports to try when `default` is reserved: two round offsets first (so the stack lands on
+    memorable numbers like 9100/9101), then a linear sweep as a last resort."""
+    yield default + 100
+    yield default + 200
+    yield from range(default + 1, 65536)
+
+
+def _resolve_minio_port(env_var: str, default: int, *, avoid: set[int]) -> int:
+    """Pick a bindable host port for one MinIO endpoint and export it for compose to interpolate.
+    An explicit override (env or .env) is honored as-is. Otherwise the default is kept unless
+    Windows has *reserved* it, in which case the first non-reserved candidate is chosen. Transient
+    in-use is deliberately ignored so a re-run while the stack is up reuses the same port (compose
+    rebinds its own service) and the choice stays idempotent."""
+    override = os.environ.get(env_var)
+    if override:
+        return int(override)
+    if _probe_host_port(default) != "reserved":
+        return default
+    for port in _candidate_ports(default):
+        if port not in avoid and _probe_host_port(port) != "reserved":
+            print(
+                f"Host port {default} for MinIO is reserved by Windows; publishing on {port} "
+                "instead (containers still use the internal minio:9000)."
+            )
+            os.environ[env_var] = str(port)
+            return port
+    _fail(f"could not find a free host port for MinIO starting from {default}.")
+    raise AssertionError  # unreachable; _fail raises
+
+
+def _warn_reserved_fixed_ports() -> None:
+    """Fixed host ports can't be silently moved, so if Windows has reserved one (the same cause as
+    the MinIO case) surface it now with the canonical fix rather than letting the long build end in
+    a cryptic bind error."""
+    reserved = [
+        f"{label} ({port})" for label, port in _FIXED_HOST_PORTS if _probe_host_port(port) == "reserved"
+    ]
+    if not reserved:
+        return
+    print(
+        f"Warning: host port(s) reserved by Windows, which will block compose: {', '.join(reserved)}.\n"
+        "  Free them by restarting the Windows NAT driver in an elevated PowerShell, then re-run:\n"
+        "    net stop winnat; net start winnat",
+        file=sys.stderr,
+    )
+
+
+def preflight_ports() -> int:
+    """Probe the host ports the compose stack publishes before the slow build/up, turning the late,
+    cryptic 'ports are not available ... forbidden by its access permissions' failure into an early,
+    actionable one. Relocates MinIO's dev-only host ports off any Windows-reserved default and
+    returns the resolved console port for the banner."""
+    api_port = _resolve_minio_port(_MINIO_API_PORT_ENV, _DEFAULT_MINIO_API_PORT, avoid=set())
+    console_port = _resolve_minio_port(
+        _MINIO_CONSOLE_PORT_ENV, _DEFAULT_MINIO_CONSOLE_PORT, avoid={api_port}
+    )
+    _warn_reserved_fixed_ports()
+    return console_port
 
 
 def _parse_compose_ps(stdout: str) -> list[dict]:
@@ -376,14 +472,14 @@ def stop_frontend() -> None:
     FRONTEND_PIDFILE.unlink(missing_ok=True)
 
 
-def print_targets(*, frontend: bool) -> None:
+def print_targets(*, frontend: bool, minio_console_port: int = _DEFAULT_MINIO_CONSOLE_PORT) -> None:
     print("\nOnce healthy:")
     if frontend:
         print("  Workspace     http://localhost:5173   <- the analyst UI")
     print("  API health    http://localhost:8000/healthz")
     print("  API docs      http://localhost:8000/docs")
     print("  Tiler health  http://localhost:8000/tiler/healthz")
-    print("  MinIO console http://localhost:9001  (minioadmin / minioadmin)")
+    print(f"  MinIO console http://localhost:{minio_console_port}  (minioadmin / minioadmin)")
     print()
 
 
@@ -430,11 +526,17 @@ def main(argv: list[str] | None = None) -> int:
     clear_stale_containers(docker)
     free_db_port(docker)
 
+    # Relocate MinIO's dev-only host ports off any Windows-reserved default (and surface reserved
+    # fixed ports) before the slow build/up, turning the late, cryptic "ports are not available ...
+    # forbidden by its access permissions" bind failure into an early, actionable one. Must run
+    # before `compose up` so the env vars it sets are interpolated into the compose port mappings.
+    minio_console_port = preflight_ports()
+
     # The backend must run detached whenever we also start the frontend, otherwise the two fight
     # for the foreground. So the default (frontend on) detaches the backend; --no-frontend without
     # -d keeps the old behavior of streaming the stack's logs in the foreground.
     backend_detached = args.detach or args.frontend
-    print_targets(frontend=args.frontend)
+    print_targets(frontend=args.frontend, minio_console_port=minio_console_port)
 
     up_args = ["up"]
     if args.build:
