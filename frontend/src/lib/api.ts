@@ -7,6 +7,12 @@ export interface Farm {
   canonical_farm_id: string;
   name: string | null;
   region: string | null;
+  overall_health: string | null;
+  overall_health_score: number | null;
+  latest_pass_date: string | null;
+  total_fields: number | null;
+  total_area_hectares: number | null;
+  crops: string[] | null;
 }
 
 export interface Field {
@@ -118,6 +124,14 @@ export interface AOIAnalysisResult {
   pixels?: number;
 }
 
+export interface PublishStatus {
+  canonical_farm_id: string;
+  status: "pending" | "published" | "dead_letter" | string;
+  result_count: number;
+  pushed_at: string | null;
+  last_error: string | null;
+}
+
 export class ApiError extends Error {
   readonly status: number;
   constructor(status: number, message: string) {
@@ -221,11 +235,23 @@ export const api = {
     ),
   analyseAOI: (geometry: Geometry, index: string, token: string) =>
     send<AOIAnalysisResult>("POST", "/analyse/aoi", token, { geometry, index }),
+  collectField: (fieldId: string, token: string) =>
+    send<{ status: string; field_id: string; by: string }>(
+      "POST",
+      `/fields/${fieldId}/collect`,
+      token,
+    ),
   publishFarm: (canonicalFarmId: string, token: string) =>
     send<{ status: string; canonical_farm_id: string }>(
       "POST",
-      `/publish/farm/${encodeURIComponent(canonicalFarmId)}`,
+      `/farms/${encodeURIComponent(canonicalFarmId)}/publish`,
       token,
+    ),
+  publishStatus: (canonicalFarmId: string, token: string, signal?: AbortSignal) =>
+    get<PublishStatus>(
+      `/farms/${encodeURIComponent(canonicalFarmId)}/publish/status`,
+      token,
+      signal,
     ),
 };
 

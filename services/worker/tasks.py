@@ -540,7 +540,11 @@ def _gateway_from_settings(settings: Settings) -> GatewayPort:
     """The active GatewayPort, selected by RS_GATEWAY_ADAPTER (ADR 0006): the AgriTrack push to
     /integrations/satellite/results, a generic HTTP push, or a recording dry-run sink (default)."""
     if settings.gateway_adapter is GatewayAdapter.AGRITRACK:
-        return AgriTrackGatewayPort(settings.agritrack_base_url, settings.agritrack_api_key)
+        return AgriTrackGatewayPort(
+            settings.agritrack_base_url,
+            settings.agritrack_api_key,
+            max_concurrency=settings.gateway_max_concurrency,
+        )
     if settings.gateway_adapter is GatewayAdapter.HTTP and settings.gateway_push_url:
         return HttpGatewayPort(settings.gateway_push_url, settings.gateway_auth_token)
     return RecordingGatewayPort()

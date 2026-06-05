@@ -7,16 +7,25 @@ import { colorForValue, indexMeta } from "@/lib/indices";
 import { useTimeseries } from "@/lib/queries";
 import { useWorkspace } from "@/state/workspace";
 
-import { EmptyState, ErrorState, LoadingRows } from "./states";
+import { ErrorState, LoadingRows } from "./states";
+import { Button } from "./ui";
 
 const W = 500;
 const H = 280;
 const PAD = { l: 40, r: 15, t: 20, b: 35 };
 
-export function IndexTimeseriesChart({ fieldId }: { fieldId: string }) {
+export function IndexTimeseriesChart({
+  fieldId,
+  collecting = false,
+  onCollect,
+}: {
+  fieldId: string;
+  collecting?: boolean;
+  onCollect?: () => void;
+}) {
   const { index, passDate, setPassDate } = useWorkspace();
   const meta = indexMeta(index);
-  const query = useTimeseries(fieldId, index);
+  const query = useTimeseries(fieldId, index, collecting);
 
   const points = useMemo(
     () => (query.data ?? []).filter((p) => p.mean !== null),
@@ -41,10 +50,19 @@ export function IndexTimeseriesChart({ fieldId }: { fieldId: string }) {
   if (query.isError) return <ErrorState error={query.error} onRetry={() => query.refetch()} />;
   if (!points.length) {
     return (
-      <EmptyState
-        title={`No ${meta.label} history`}
-        hint="No usable passes yet for this field at the current geometry version."
-      />
+      <div className="flex h-full flex-col items-center justify-center gap-3 p-8 text-center">
+        <p className="text-sm font-medium text-fg">{`No ${meta.label} history`}</p>
+        <p className="max-w-[42ch] text-xs leading-relaxed text-muted">
+          {collecting
+            ? "Collecting passes. Results appear here as each scene is processed."
+            : "No usable passes yet for this field at the current geometry version."}
+        </p>
+        {onCollect ? (
+          <Button variant="primary" onClick={onCollect} disabled={collecting}>
+            {collecting ? "Collecting..." : "Collect now"}
+          </Button>
+        ) : null}
+      </div>
     );
   }
 

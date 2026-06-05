@@ -1,46 +1,50 @@
-import { X, CloudArrowUp, CheckCircle, Warning } from "@phosphor-icons/react";
+import {
+  X,
+  CloudArrowUp,
+  CheckCircle,
+  Warning,
+  SpinnerGap,
+  ArrowClockwise,
+  Heart,
+} from "@phosphor-icons/react";
 import { useState } from "react";
 
-import { useFarms, usePublishFarm } from "@/lib/queries";
+import { useFarms, usePublishFarm, usePublishStatus } from "@/lib/queries";
+import type { Farm } from "@/lib/api";
 import { EmptyState, ErrorState, LoadingRows } from "./states";
-import { Button } from "./ui";
+import { Badge, Button } from "./ui";
 
 interface GatewayPushModalProps {
   onClose: () => void;
 }
 
+type PushState = "idle" | "enqueuing" | "polling" | "published" | "dead_letter" | "enqueue_error";
+
+interface FarmPushState {
+  state: PushState;
+  resultCount?: number;
+  error?: string;
+}
+
+const healthTone = (health: string | null) => {
+  switch (health) {
+    case "healthy":
+      return "positive" as const;
+    case "moderate":
+      return "caution" as const;
+    case "stressed":
+    case "critical":
+      return "critical" as const;
+    default:
+      return "neutral" as const;
+  }
+};
+
 export function GatewayPushModal({ onClose }: GatewayPushModalProps) {
   const query = useFarms();
-  const publishMutation = usePublishFarm();
   const farms = query.data ?? [];
 
-  // Track the push status per canonical_farm_id
-  const [statuses, setStatuses] = useState<Record<string, { state: "idle" | "loading" | "success" | "error"; message?: string }>>({});
-
-  const handlePush = (canonicalFarmId: string) => {
-    setStatuses((prev) => ({
-      ...prev,
-      [canonicalFarmId]: { state: "loading" },
-    }));
-
-    publishMutation.mutate(canonicalFarmId, {
-      onSuccess: () => {
-        setStatuses((prev) => ({
-          ...prev,
-          [canonicalFarmId]: { state: "success" },
-        }));
-      },
-      onError: (err) => {
-        setStatuses((prev) => ({
-          ...prev,
-          [canonicalFarmId]: {
-            state: "error",
-            message: err instanceof Error ? err.message : String(err),
-          },
-        }));
-      },
-    });
-  };
+  const [statuses, setStatuses] = useState<Record<string, FarmPushState>>({});
 
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-center bg-bg/60 p-4 backdrop-blur-sm sm:p-8">
@@ -67,51 +71,20 @@ export function GatewayPushModal({ onClose }: GatewayPushModalProps) {
           ) : farms.length ? (
             <div className="space-y-3">
               <p className="text-xs text-muted leading-relaxed mb-4">
-                Trigger a manual synchronisation for a farm. This compiles all stored analysis indices and published interpretations and enqueues an asynchronous gateway push.
+                Trigger a manual synchronisation for a farm. This compiles all stored analysis
+                indices and published interpretations and pushes them to the gateway.
               </p>
               <ul className="divide-y divide-border border border-border rounded-lg overflow-hidden bg-panel-2">
-                {farms.map((farm) => {
-                  const status = statuses[farm.canonical_farm_id] || { state: "idle" };
-                  return (
-                    <li
-                      key={farm.canonical_farm_id}
-                      className="flex items-center justify-between gap-4 p-3 text-xs leading-relaxed"
-                    >
-                      <div className="min-w-0 flex-1">
-                        <div className="font-semibold text-fg truncate">
-                          {farm.name || farm.canonical_farm_id}
-                        </div>
-                        <div className="text-[10px] text-muted truncate">
-                          {farm.region ? `${farm.region} · ` : ""}{farm.canonical_farm_id}
-                        </div>
-                        {status.state === "error" && (
-                          <div className="text-[10px] text-critical flex items-center gap-1 mt-1 truncate">
-                            <Warning size={12} />
-                            <span>{status.message}</span>
-                          </div>
-                        )}
-                      </div>
-
-                      <div className="shrink-0">
-                        {status.state === "success" ? (
-                          <span className="flex items-center gap-1 font-medium text-accent">
-                            <CheckCircle size={14} weight="fill" />
-                            <span>Queued</span>
-                          </span>
-                        ) : (
-                          <Button
-                            variant={status.state === "error" ? "outline" : "primary"}
-                            className="h-7 px-2.5 text-[11px]"
-                            disabled={status.state === "loading"}
-                            onClick={() => handlePush(farm.canonical_farm_id)}
-                          >
-                            {status.state === "loading" ? "Pushing..." : "Push"}
-                          </Button>
-                        )}
-                      </div>
-                    </li>
-                  );
-                })}
+                {farms.map((farm) => (
+                  <FarmPushRow
+                    key={farm.canonical_farm_id}
+                    farm={farm}
+                    pushState={statuses[farm.canonical_farm_id] || { state: "idle" }}
+                    onStateChange={(s) =>
+                      setStatuses((prev) => ({ ...prev, [farm.canonical_farm_id]: s }))
+                    }
+                  />
+                ))}
               </ul>
             </div>
           ) : (
@@ -123,5 +96,120 @@ export function GatewayPushModal({ onClose }: GatewayPushModalProps) {
         </div>
       </div>
     </div>
+  );
+}
+
+function FarmPushRow({
+  farm,
+  pushState,
+  onStateChange,
+}: {
+  farm: Farm;
+  pushState: FarmPushState;
+  onStateChange: (s: FarmPushState) => void;
+}) {
+  const publishMutation = usePublishFarm();
+
+  // Poll status only when we're in the polling state
+  const statusQuery = usePublishStatus(
+    farm.canonical_farm_id,
+    pushState.state === "polling",
+  );
+
+  // React to status query data settling
+  const resolvedStatus = statusQuery.data?.status;
+  if (
+    pushState.state === "polling" &&
+    resolvedStatus &&
+    (resolvedStatus === "published" || resolvedStatus === "dead_letter")
+  ) {
+    // Settle the state on next tick to avoid updating during render
+    const count = statusQuery.data?.result_count ?? 0;
+    const error = statusQuery.data?.last_error ?? undefined;
+    queueMicrotask(() => {
+      if (resolvedStatus === "published") {
+        onStateChange({ state: "published", resultCount: count });
+      } else {
+        onStateChange({ state: "dead_letter", error: error || "Push failed" });
+      }
+    });
+  }
+
+  const handlePush = () => {
+    onStateChange({ state: "enqueuing" });
+    publishMutation.mutate(farm.canonical_farm_id, {
+      onSuccess: () => {
+        onStateChange({ state: "polling" });
+      },
+      onError: (err) => {
+        onStateChange({
+          state: "enqueue_error",
+          error: err instanceof Error ? err.message : String(err),
+        });
+      },
+    });
+  };
+
+  return (
+    <li className="flex items-center justify-between gap-4 p-3 text-xs leading-relaxed">
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          <span className="font-semibold text-fg truncate">
+            {farm.name || farm.canonical_farm_id}
+          </span>
+          {farm.overall_health ? (
+            <Badge tone={healthTone(farm.overall_health)}>
+              <Heart size={10} weight="fill" />
+              {farm.overall_health}
+            </Badge>
+          ) : null}
+        </div>
+        <div className="text-[10px] text-muted truncate mt-0.5">
+          {farm.region ? `${farm.region} · ` : ""}
+          {farm.canonical_farm_id}
+          {farm.total_fields != null ? ` · ${farm.total_fields} fields` : ""}
+          {farm.latest_pass_date ? ` · last pass ${farm.latest_pass_date}` : ""}
+        </div>
+
+        {/* Error feedback */}
+        {(pushState.state === "dead_letter" || pushState.state === "enqueue_error") && (
+          <div className="text-[10px] text-critical flex items-center gap-1 mt-1 truncate">
+            <Warning size={12} />
+            <span>{pushState.error}</span>
+          </div>
+        )}
+      </div>
+
+      <div className="shrink-0">
+        {pushState.state === "published" ? (
+          <span className="flex items-center gap-1 font-medium text-positive">
+            <CheckCircle size={14} weight="fill" />
+            <span>Sent{pushState.resultCount ? ` · ${pushState.resultCount}` : ""}</span>
+          </span>
+        ) : pushState.state === "enqueuing" || pushState.state === "polling" ? (
+          <span className="flex items-center gap-1 font-medium text-accent">
+            <SpinnerGap size={14} className="animate-spin" />
+            <span>{pushState.state === "enqueuing" ? "Queuing…" : "Sending…"}</span>
+          </span>
+        ) : pushState.state === "dead_letter" || pushState.state === "enqueue_error" ? (
+          <Button
+            variant="outline"
+            className="h-7 px-2.5 text-[11px]"
+            onClick={handlePush}
+          >
+            <ArrowClockwise size={12} />
+            Retry
+          </Button>
+        ) : (
+          <Button
+            variant="primary"
+            className="h-7 px-2.5 text-[11px]"
+            onClick={handlePush}
+          >
+            Push
+          </Button>
+        )}
+      </div>
+    </li>
   );
 }

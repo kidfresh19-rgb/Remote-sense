@@ -9,17 +9,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from rs_core import (
-    Analysis,
-    Farm,
-    Field,
-    get_outbox,
-    published_narratives_for_farm,
-    record_push,
-)
+from rs_core import get_outbox, published_narratives_for_farm, record_push
 from rs_sync import GatewayPort, IndexResult, PublishedNarrative, build_payload
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from services.worker.publish_utils import fetch_farm_results_with_farm_averages
 
 
 @dataclass(frozen=True)
@@ -33,20 +27,8 @@ class PublishSummary:
 
 async def _farm_results(session: AsyncSession, canonical_farm_id: str) -> list[IndexResult]:
     """Every stored analysis for a farm as a publishable result, joined to each field's canonical
-    id. Geometry is never selected."""
-    rows = (
-        await session.execute(
-            select(Analysis, Field.canonical_field_id)
-            .join(Field, Analysis.field_id == Field.id)
-            .join(Farm, Field.farm_id == Farm.id)
-            .where(Farm.canonical_farm_id == canonical_farm_id)
-            .order_by(Analysis.pass_date, Analysis.index_name)
-        )
-    ).all()
-    return [
-        IndexResult.from_analysis(analysis, canonical_field_id=canonical_field_id)
-        for analysis, canonical_field_id in rows
-    ]
+    id. Geometry is never selected. Calculates area-weighted farm averages and appends them."""
+    return await fetch_farm_results_with_farm_averages(session, canonical_farm_id)
 
 
 async def _farm_narratives(
@@ -77,7 +59,13 @@ async def publish_farm(
         return PublishSummary(canonical_farm_id=canonical_farm_id, results=0, status="empty")
 
     narratives = await _farm_narratives(session, canonical_farm_id)
-    payload = build_payload(canonical_farm_id, results, generated_at=when, narratives=narratives)
+    payload = build_payload(
+        canonical_farm_id,
+        results,
+        generated_at=when,
+        narratives=narratives,
+        destination=gateway.destination_key(),
+    )
     existing = await get_outbox(session, idempotency_key=payload.idempotency_key)
     if existing is not None and existing.status == "published":
         return PublishSummary(

@@ -9,6 +9,7 @@ auth, metric names, the classification mapping) lives here (invariant 1), and ge
 
 from __future__ import annotations
 
+import asyncio
 from collections import defaultdict
 from datetime import date
 
@@ -193,6 +194,7 @@ class AgriTrackGatewayPort(GatewayPort):
         timeout: float = 10.0,
         max_attempts: int = 4,
         backoff: float = 0.5,
+        max_concurrency: int = 10,
     ) -> None:
         if not base_url:
             raise ValueError("AgriTrackGatewayPort needs RS_AGRITRACK_BASE_URL")
@@ -204,16 +206,36 @@ class AgriTrackGatewayPort(GatewayPort):
         self._timeout = timeout
         self._max_attempts = max_attempts
         self._backoff = backoff
+        self._max_concurrency = max_concurrency
+
+    def destination_key(self) -> str:
+        return self._url
 
     async def push(self, payload: GatewayPayload) -> PushResult:
         records = to_satellite_results(payload)
         if not records:
             return PushResult(ok=True, status="empty")
-        try:
-            for record in records:
+        # A farm's whole batch is delivered as one POST per record, all to the single
+        # /integrations/satellite/results endpoint the contract defines (ADR 0006 §2 - there is no
+        # bulk endpoint). Posts run under a concurrency bound so a large farm goes at once without
+        # flooding AgriTrack.
+        semaphore = asyncio.Semaphore(self._max_concurrency)
+
+        async def _post_with_sem(record: SatelliteResult) -> None:
+            async with semaphore:
                 await self._post(record)
-        except _RETRYABLE as exc:
-            return PushResult(ok=False, status="error", detail=str(exc))
+
+        # return_exceptions lets every post finish even when one fails, so no in-flight request is
+        # left orphaned mid-batch. A retryable failure dead-letters the whole push (safely re-sent
+        # whole via extId + outbox dedup); anything else propagates so it surfaces, not silently.
+        outcomes = await asyncio.gather(
+            *(_post_with_sem(r) for r in records), return_exceptions=True
+        )
+        for outcome in outcomes:
+            if isinstance(outcome, _RETRYABLE):
+                return PushResult(ok=False, status="error", detail=str(outcome))
+            if isinstance(outcome, BaseException):
+                raise outcome
         return PushResult(ok=True, status="ok", detail=f"{len(records)} records")
 
     async def _post(self, record: SatelliteResult) -> None:

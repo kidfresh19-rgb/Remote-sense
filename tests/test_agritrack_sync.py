@@ -139,8 +139,8 @@ def test_to_farm_ins_handles_null_boundaries():
                                     "plot_id": "2",
                                     "name": "Subfield 02",
                                     "boundary": _GEOM,
-                                }
-                            ]
+                                },
+                            ],
                         }
                     ],
                 }

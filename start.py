@@ -255,12 +255,15 @@ def _warn_reserved_fixed_ports() -> None:
     the MinIO case) surface it now with the canonical fix rather than letting the long build end in
     a cryptic bind error."""
     reserved = [
-        f"{label} ({port})" for label, port in _FIXED_HOST_PORTS if _probe_host_port(port) == "reserved"
+        f"{label} ({port})"
+        for label, port in _FIXED_HOST_PORTS
+        if _probe_host_port(port) == "reserved"
     ]
     if not reserved:
         return
     print(
-        f"Warning: host port(s) reserved by Windows, which will block compose: {', '.join(reserved)}.\n"
+        f"Warning: host port(s) reserved by Windows, which will block compose: "
+        f"{', '.join(reserved)}.\n"
         "  Free them by restarting the Windows NAT driver in an elevated PowerShell, then re-run:\n"
         "    net stop winnat; net start winnat",
         file=sys.stderr,

@@ -103,6 +103,7 @@ class Settings(BaseSettings):
     gateway_adapter: GatewayAdapter = GatewayAdapter.RECORDING
     gateway_push_url: str = ""
     gateway_auth_token: str = ""
+    gateway_max_concurrency: int = 10
     # AgriTrack integration (ADR 0006). One key both ways: presented as X-Api-Key to their
     # /integrations/satellite/results, and required on inbound /api/v1/mobile/* calls.
     agritrack_base_url: str = ""

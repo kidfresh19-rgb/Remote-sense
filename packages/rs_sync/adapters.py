@@ -67,6 +67,9 @@ class HttpGatewayPort(GatewayPort):
         self._max_attempts = max_attempts
         self._backoff = backoff
 
+    def destination_key(self) -> str:
+        return self._url
+
     async def push(self, payload: GatewayPayload) -> PushResult:
         try:
             async for attempt in AsyncRetrying(

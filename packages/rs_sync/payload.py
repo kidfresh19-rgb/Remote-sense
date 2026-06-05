@@ -142,13 +142,18 @@ def compute_idempotency_key(
     results: list[IndexResult],
     *,
     narrative_signature: str | None = None,
+    destination: str | None = None,
 ) -> str:
-    """A stable key for (farm, this set of result identities, the published narratives). Re-building
-    the same results + narratives yields the same key regardless of order, so the gateway can dedupe
-    a retried push (R-2); a newly published or edited narrative changes the key so it re-pushes."""
+    """A stable key for (farm, result identities, published narratives, delivery destination).
+    Rebuilding the same inputs yields the same key regardless of order, so a retried push dedups
+    (R-2); a new/edited narrative or a different destination changes the key so it re-pushes.
+    `destination` stops a dry-run sink from masking a real delivery (and a rotated gateway URL
+    re-pushes); omitting it preserves the pre-existing key."""
     parts = [canonical_farm_id, PAYLOAD_VERSION, *sorted(_identity(r) for r in results)]
     if narrative_signature:
         parts.append(f"narr:{narrative_signature}")
+    if destination:
+        parts.append(f"dst:{destination}")
     digest = hashlib.sha256("\n".join(parts).encode()).hexdigest()
     return f"{canonical_farm_id}:{digest[:32]}"
 
@@ -159,9 +164,11 @@ def build_payload(
     *,
     generated_at: datetime | None = None,
     narratives: list[PublishedNarrative] | None = None,
+    destination: str | None = None,
 ) -> GatewayPayload:
     """Assemble the additive gateway payload for a farm, optionally carrying the published
-    narratives. Geometry never enters (invariant 6); only published reads are passed in (#6)."""
+    narratives. `destination` (the active gateway target) scopes the idempotency key so a dry-run
+    never masks a real push. No geometry (invariant 6); only published reads pass in (#6)."""
     narratives = narratives or []
     return GatewayPayload(
         canonical_farm_id=canonical_farm_id,
@@ -169,6 +176,9 @@ def build_payload(
         results=results,
         interpretations=narratives,
         idempotency_key=compute_idempotency_key(
-            canonical_farm_id, results, narrative_signature=narrative_signature(narratives)
+            canonical_farm_id,
+            results,
+            narrative_signature=narrative_signature(narratives),
+            destination=destination,
         ),
     )

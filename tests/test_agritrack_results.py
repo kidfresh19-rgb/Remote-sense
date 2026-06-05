@@ -12,6 +12,7 @@ from rs_sync import (
     AgriTrackGatewayPort,
     IndexResult,
     PublishedNarrative,
+    RecordingGatewayPort,
     build_payload,
     to_satellite_results,
 )
@@ -245,3 +246,57 @@ async def test_push_includes_notes_in_body():
     await client.aclose()
 
     assert captured[0]["interpretation"]["notes"] == "Vigorous maize canopy."
+
+
+async def test_push_concurrent_posts_records_with_semaphore():
+    captured: list[tuple[str, str | None, dict]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(
+            (str(request.url), request.headers.get("X-Api-Key"), json.loads(request.content))
+        )
+        return httpx.Response(200, json={"ok": True})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    port = AgriTrackGatewayPort("https://agri.example/", "atk_key", client=client)
+    payload = build_payload(
+        "2",
+        [
+            _ir("4", "ndvi", 0.62),
+            _ir("4.1", "ndvi", 0.25),
+        ],
+    )
+    result = await port.push(payload)
+    await client.aclose()
+
+    assert result.ok
+    assert len(captured) == 2  # two individual requests
+    assert captured[0][0] == "https://agri.example/integrations/satellite/results"
+    assert captured[1][0] == "https://agri.example/integrations/satellite/results"
+
+
+def test_destination_key_identifies_target():
+    port = AgriTrackGatewayPort("https://agri.example/", "atk_key")
+    assert port.destination_key() == "https://agri.example/integrations/satellite/results"
+    # The dry-run sink has a distinct, stable destination so it never collides with a real push.
+    assert RecordingGatewayPort().destination_key() == "RecordingGatewayPort"
+
+
+def test_idempotency_key_scoped_to_destination():
+    # The production bug this guards: a recording dry-run must NOT yield the same key as the real
+    # push, or the real delivery is skipped as an already-published duplicate. A changed target
+    # (e.g. a rotated ngrok URL) must also re-push.
+    results = [_ir("4", "ndvi", 0.62)]
+    legacy = build_payload("2", results).idempotency_key
+    recording = build_payload("2", results, destination="RecordingGatewayPort").idempotency_key
+    agritrack = build_payload(
+        "2", results, destination="https://agri.example/integrations/satellite/results"
+    ).idempotency_key
+    assert len({legacy, recording, agritrack}) == 3
+    # Same destination stays stable, so a genuine re-push to the same gateway still dedups (R-2).
+    assert (
+        agritrack
+        == build_payload(
+            "2", results, destination="https://agri.example/integrations/satellite/results"
+        ).idempotency_key
+    )

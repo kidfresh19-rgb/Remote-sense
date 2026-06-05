@@ -26,6 +26,7 @@ from services.api.workspace import (
     create_annotation_endpoint,
     delete_annotation_endpoint,
     field_audit,
+    field_collect_endpoint,
     field_interpretations,
     field_scenes,
     field_timeseries,
@@ -250,6 +251,36 @@ async def test_create_annotation_unknown_field_is_404(maker_) -> None:
             await create_annotation_endpoint(
                 uuid.uuid4(), AnnotationCreate(body="orphan"), _ANALYST, session
             )
+    assert excinfo.value.status_code == 404
+
+
+async def test_field_collect_enqueues_backfill_for_existing_field(maker_, monkeypatch) -> None:
+    import services.worker.tasks as tasks
+
+    field_id = await _seed(maker_)
+    enqueued: dict = {}
+    monkeypatch.setattr(tasks.backfill_field, "delay", lambda fid: enqueued.update(fid=fid))
+    async with maker_() as session:
+        result = await field_collect_endpoint(field_id, _ANALYST, session)
+    assert result["status"] == "enqueued"
+    assert result["field_id"] == str(field_id)
+    assert result["by"] == "analyst-1"  # the verified token subject, not client input
+    assert enqueued["fid"] == str(field_id)  # the existing field's backfill was enqueued
+
+
+async def test_field_collect_unknown_field_is_404(maker_, monkeypatch) -> None:
+    import services.worker.tasks as tasks
+
+    await _seed(maker_)
+    # A 404 must short-circuit before any enqueue, so a missing field never schedules pipeline work.
+    monkeypatch.setattr(
+        tasks.backfill_field,
+        "delay",
+        lambda fid: pytest.fail("must not enqueue for a missing field"),
+    )
+    async with maker_() as session:
+        with pytest.raises(HTTPException) as excinfo:
+            await field_collect_endpoint(uuid.uuid4(), _ANALYST, session)
     assert excinfo.value.status_code == 404
 
 

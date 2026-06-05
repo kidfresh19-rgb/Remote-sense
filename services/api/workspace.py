@@ -17,6 +17,8 @@ from rs_core import (
     Permission,
     Principal,
     delete_annotation,
+    get_farm_analytics_summary,
+    get_latest_outbox_for_farm,
     insert_annotation,
     list_annotations,
     list_review_queue,
@@ -43,6 +45,12 @@ class FarmOut(BaseModel):
     canonical_farm_id: str
     name: str | None
     region: str | None
+    overall_health: str | None = None
+    overall_health_score: float | None = None
+    latest_pass_date: date | None = None
+    total_fields: int | None = None
+    total_area_hectares: float | None = None
+    crops: list[str] | None = None
 
 
 class FieldOut(BaseModel):
@@ -172,9 +180,26 @@ def _annotation_out(row: Any) -> AnnotationOut:
 
 async def list_farms(session: AsyncSession) -> list[FarmOut]:
     farms = (await session.execute(select(Farm).order_by(Farm.canonical_farm_id))).scalars().all()
-    return [
-        FarmOut(canonical_farm_id=f.canonical_farm_id, name=f.name, region=f.region) for f in farms
-    ]
+    out = []
+    for f in farms:
+        summary = await get_farm_analytics_summary(session, f.canonical_farm_id)
+        if summary:
+            out.append(
+                FarmOut(
+                    canonical_farm_id=f.canonical_farm_id,
+                    name=f.name,
+                    region=f.region,
+                    overall_health=summary["overall_health"],
+                    overall_health_score=summary["overall_health_score"],
+                    latest_pass_date=summary["latest_pass_date"],
+                    total_fields=summary["total_fields"],
+                    total_area_hectares=summary["total_area_hectares"],
+                    crops=summary["crops"],
+                )
+            )
+        else:
+            out.append(FarmOut(canonical_farm_id=f.canonical_farm_id, name=f.name, region=f.region))
+    return out
 
 
 async def list_fields(session: AsyncSession, canonical_farm_id: str) -> list[FieldOut]:
@@ -347,6 +372,59 @@ async def list_farms_endpoint(principal: ViewPrincipal, session: SessionDep) -> 
     return await list_farms(session)
 
 
+@router.post("/farms/{canonical_farm_id}/publish", status_code=status.HTTP_202_ACCEPTED)
+async def publish_farm_endpoint(
+    canonical_farm_id: str,
+    principal: PublishPrincipal,
+    session: SessionDep,
+) -> dict[str, str]:
+    """Enqueue a gateway push for one farm so its results are sent now instead of waiting for the
+    next scheduled sync. Reuses the existing ``publish_farm_task`` Celery path, which is idempotent
+    (R-2). Requires ``publish``."""
+    from services.worker.tasks import publish_farm_task
+
+    farm_exists = (
+        await session.execute(select(Farm).where(Farm.canonical_farm_id == canonical_farm_id))
+    ).scalar_one_or_none()
+    if farm_exists is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "farm not found")
+    publish_farm_task.delay(canonical_farm_id)
+    return {
+        "status": "enqueued",
+        "canonical_farm_id": canonical_farm_id,
+        "by": principal.subject,
+    }
+
+
+class PublishStatusOut(BaseModel):
+    canonical_farm_id: str
+    status: str  # pending | published | dead_letter
+    result_count: int
+    pushed_at: datetime | None
+    last_error: str | None
+
+
+@router.get("/farms/{canonical_farm_id}/publish/status")
+async def publish_status_endpoint(
+    canonical_farm_id: str,
+    principal: PublishPrincipal,
+    session: SessionDep,
+) -> PublishStatusOut:
+    """The latest gateway push outcome for a farm. The frontend polls this after enqueuing a push
+    to confirm delivery (published), surface errors (dead_letter), or show in-progress (pending).
+    Returns 404 if no push has ever been recorded for this farm."""
+    row = await get_latest_outbox_for_farm(session, canonical_farm_id)
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "no push recorded for this farm")
+    return PublishStatusOut(
+        canonical_farm_id=canonical_farm_id,
+        status=row.status,
+        result_count=row.result_count,
+        pushed_at=row.pushed_at,
+        last_error=row.last_error,
+    )
+
+
 @router.get("/farms/{canonical_farm_id}/fields")
 async def list_fields_endpoint(
     canonical_farm_id: str, principal: ViewPrincipal, session: SessionDep
@@ -416,6 +494,28 @@ async def field_audit_endpoint(
     field_id: uuid.UUID, principal: ViewPrincipal, session: SessionDep
 ) -> list[AuditRecordOut]:
     return await field_audit(session, field_id)
+
+
+@router.post("/fields/{field_id}/collect", status_code=status.HTTP_202_ACCEPTED)
+async def field_collect_endpoint(
+    field_id: uuid.UUID,
+    principal: RunAnalysisPrincipal,
+    session: SessionDep,
+) -> dict[str, str]:
+    """Enqueue an on-demand backfill for one field so its history is collected now instead of
+    waiting for the nightly scan. This only exposes the existing pipeline entrypoint:
+    `backfill_field` is idempotent and gap-filling (it replans only outstanding passes), so repeated
+    clicks are safe and converge the field to complete. A missing field is a 404, not a dangling
+    task. Requires `run_analysis`."""
+    from services.worker.tasks import backfill_field
+
+    field_exists = (
+        await session.execute(select(Field.id).where(Field.id == field_id))
+    ).scalar_one_or_none()
+    if field_exists is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "field not found")
+    backfill_field.delay(str(field_id))
+    return {"status": "enqueued", "field_id": str(field_id), "by": principal.subject}
 
 
 @router.get("/fields/{field_id}/annotations")

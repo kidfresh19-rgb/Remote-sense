@@ -71,7 +71,7 @@ def _client(responses: list[httpx.Response]) -> tuple[CdseStacClient, list[dict]
 
 def test_missing_stac_url_raises():
     with pytest.raises(ValueError):
-        CdseStacClient(Settings())
+        CdseStacClient(Settings(cdse_stac_url=""))
 
 
 async def test_search_returns_scenes_sorted_chronologically():
