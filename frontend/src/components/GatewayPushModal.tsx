@@ -24,6 +24,9 @@ interface FarmPushState {
   state: PushState;
   resultCount?: number;
   error?: string;
+  // True when the gateway is in recording/dry-run mode: the push was recorded but nothing left the
+  // building. Surfaced so a dry-run never masquerades as a real delivery.
+  dryRun?: boolean;
 }
 
 const healthTone = (health: string | null) => {
@@ -126,9 +129,10 @@ function FarmPushRow({
     // Settle the state on next tick to avoid updating during render
     const count = statusQuery.data?.result_count ?? 0;
     const error = statusQuery.data?.last_error ?? undefined;
+    const dryRun = statusQuery.data?.dry_run ?? false;
     queueMicrotask(() => {
       if (resolvedStatus === "published") {
-        onStateChange({ state: "published", resultCount: count });
+        onStateChange({ state: "published", resultCount: count, dryRun });
       } else {
         onStateChange({ state: "dead_letter", error: error || "Push failed" });
       }
@@ -138,8 +142,8 @@ function FarmPushRow({
   const handlePush = () => {
     onStateChange({ state: "enqueuing" });
     publishMutation.mutate(farm.canonical_farm_id, {
-      onSuccess: () => {
-        onStateChange({ state: "polling" });
+      onSuccess: (data) => {
+        onStateChange({ state: "polling", dryRun: data.dry_run });
       },
       onError: (err) => {
         onStateChange({
@@ -182,10 +186,20 @@ function FarmPushRow({
 
       <div className="shrink-0">
         {pushState.state === "published" ? (
-          <span className="flex items-center gap-1 font-medium text-positive">
-            <CheckCircle size={14} weight="fill" />
-            <span>Sent{pushState.resultCount ? ` · ${pushState.resultCount}` : ""}</span>
-          </span>
+          pushState.dryRun ? (
+            <span
+              className="flex items-center gap-1 font-medium text-muted"
+              title="Recorded to the outbox but not sent: the gateway is in recording (dry-run) mode."
+            >
+              <CheckCircle size={14} />
+              <span>Recorded{pushState.resultCount ? ` · ${pushState.resultCount}` : ""}</span>
+            </span>
+          ) : (
+            <span className="flex items-center gap-1 font-medium text-positive">
+              <CheckCircle size={14} weight="fill" />
+              <span>Sent{pushState.resultCount ? ` · ${pushState.resultCount}` : ""}</span>
+            </span>
+          )
         ) : pushState.state === "enqueuing" || pushState.state === "polling" ? (
           <span className="flex items-center gap-1 font-medium text-accent">
             <SpinnerGap size={14} className="animate-spin" />

@@ -5,18 +5,14 @@ for the real push - the one place that knows the gateway URL, auth, and wire tra
 from __future__ import annotations
 
 import httpx
-from tenacity import (
-    AsyncRetrying,
-    retry_if_exception_type,
-    stop_after_attempt,
-    wait_exponential,
-)
 
 from rs_sync.payload import GatewayPayload
 from rs_sync.port import GatewayPort, PushResult
-
-# Transient failures worth a retry: connection/timeout errors and 5xx/429 (raise_for_status).
-_RETRYABLE = (httpx.TransportError, httpx.HTTPStatusError)
+from rs_sync.resilience import (
+    GATEWAY_PUSH_ERRORS,
+    describe_push_error,
+    push_retrying,
+)
 
 
 class RecordingGatewayPort(GatewayPort):
@@ -72,16 +68,16 @@ class HttpGatewayPort(GatewayPort):
 
     async def push(self, payload: GatewayPayload) -> PushResult:
         try:
-            async for attempt in AsyncRetrying(
-                reraise=True,
-                stop=stop_after_attempt(self._max_attempts),
-                wait=wait_exponential(multiplier=self._backoff, max=10),
-                retry=retry_if_exception_type(_RETRYABLE),
+            async for attempt in push_retrying(
+                max_attempts=self._max_attempts, backoff=self._backoff
             ):
                 with attempt:
                     response = await self._post(payload)
-        except _RETRYABLE as exc:
-            return PushResult(ok=False, status="error", detail=str(exc))
+        except GATEWAY_PUSH_ERRORS as exc:
+            # Transient failures arrive here only after retries are exhausted; a permanent 4xx
+            # arrives on the first attempt (retry_transient_push declined it). Either way it is a
+            # dead-letter, with a reason the operator can act on.
+            return PushResult(ok=False, status="error", detail=describe_push_error(exc))
         return PushResult(ok=True, status=str(response.status_code))
 
     async def _post(self, payload: GatewayPayload) -> httpx.Response:

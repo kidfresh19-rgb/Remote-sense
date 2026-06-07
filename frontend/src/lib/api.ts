@@ -130,6 +130,20 @@ export interface PublishStatus {
   result_count: number;
   pushed_at: string | null;
   last_error: string | null;
+  /** Active gateway adapter: "recording" | "http" | "agritrack". */
+  gateway: string;
+  /** True when the gateway records "published" without sending (the recording dry-run sink). */
+  dry_run: boolean;
+}
+
+/** Response of POST /farms/{id}/publish: the push was accepted onto the queue. `dry_run` tells the
+ *  workspace whether this will actually reach the gateway or is a recording no-op. */
+export interface PublishEnqueued {
+  status: string;
+  canonical_farm_id: string;
+  by: string;
+  gateway: string;
+  dry_run: boolean;
 }
 
 export class ApiError extends Error {
@@ -242,7 +256,7 @@ export const api = {
       token,
     ),
   publishFarm: (canonicalFarmId: string, token: string) =>
-    send<{ status: string; canonical_farm_id: string }>(
+    send<PublishEnqueued>(
       "POST",
       `/farms/${encodeURIComponent(canonicalFarmId)}/publish`,
       token,

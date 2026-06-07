@@ -15,7 +15,13 @@ from geoalchemy2.shape import from_shape
 from rs_core.db import Base
 from rs_core.models import Farm, Field, SyncOutbox
 from rs_core.repositories import upsert_analysis, upsert_scene_metadata
-from rs_sync import AgriTrackGatewayPort, RecordingGatewayPort
+from rs_sync import (
+    AgriTrackGatewayPort,
+    GatewayPayload,
+    GatewayPort,
+    PushResult,
+    RecordingGatewayPort,
+)
 from shapely.geometry import MultiPolygon, Polygon
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -343,3 +349,34 @@ async def test_recording_dry_run_does_not_block_real_push(maker_) -> None:
     # The push fired (field record + farm-average record), all to the one contract endpoint.
     assert posted
     assert all(u == "https://agri.example/integrations/satellite/results" for u in posted)
+
+
+class _RaisingGateway(GatewayPort):
+    """A gateway whose push raises an unexpected (non-delivery) error, to prove the publisher's
+    backstop turns it into a recorded dead-letter rather than a crashed task."""
+
+    def destination_key(self) -> str:
+        return "raising-test-gateway"
+
+    async def push(self, payload: GatewayPayload) -> PushResult:
+        raise RuntimeError("kaboom")
+
+
+async def test_publish_unexpected_push_error_dead_letters(maker_) -> None:
+    # A publish must always land a terminal outbox state. If the gateway raises something unexpected
+    # (not a transport/HTTP error the adapter would convert), the publisher records a dead-letter
+    # with the reason instead of letting the task crash and leaving the workspace polling forever.
+    await _seed(maker_)
+    async with maker_() as session:
+        summary = await publish_farm(
+            session, _RaisingGateway(), canonical_farm_id="FARM-P1", now=_NOW
+        )
+        await session.commit()
+
+    assert summary.status == "dead_letter"
+    async with maker_() as session:
+        outbox = (await session.execute(select(SyncOutbox))).scalar_one()
+        assert outbox.status == "dead_letter"
+        assert outbox.attempts == 1
+        assert "unexpected push error" in (outbox.last_error or "")
+        assert "kaboom" in (outbox.last_error or "")

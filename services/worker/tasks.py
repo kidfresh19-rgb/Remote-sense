@@ -22,7 +22,6 @@ from rs_core import (
     CogStore,
     Field,
     FieldCollectionState,
-    Settings,
     advance_cursor,
     cog_key,
     cog_store_from_settings,
@@ -33,9 +32,7 @@ from rs_core import (
     record_forward_fill_poll,
     upsert_scene_metadata,
 )
-from rs_core.config import GatewayAdapter
 from rs_imagery import AOI, AccessPort, TimeRange, get_access_adapter
-from rs_sync import AgriTrackGatewayPort, GatewayPort, HttpGatewayPort, RecordingGatewayPort
 from shapely.geometry import mapping
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -54,7 +51,7 @@ from services.worker.planning import (
     plan_scenes,
     select_forward_fill_due,
 )
-from services.worker.publish import publish_farm
+from services.worker.publish import gateway_from_settings, publish_farm
 
 # The core indices stored on every usable pass (PLAN §5). Adding one is a config change here, not
 # a schema migration - the analysis row is index-agnostic.
@@ -536,23 +533,9 @@ def interpret_field_pass_task(field_id: str, scene_id: str) -> dict[str, object]
     return asyncio.run(_interpret_for_pass(field_id, scene_id))
 
 
-def _gateway_from_settings(settings: Settings) -> GatewayPort:
-    """The active GatewayPort, selected by RS_GATEWAY_ADAPTER (ADR 0006): the AgriTrack push to
-    /integrations/satellite/results, a generic HTTP push, or a recording dry-run sink (default)."""
-    if settings.gateway_adapter is GatewayAdapter.AGRITRACK:
-        return AgriTrackGatewayPort(
-            settings.agritrack_base_url,
-            settings.agritrack_api_key,
-            max_concurrency=settings.gateway_max_concurrency,
-        )
-    if settings.gateway_adapter is GatewayAdapter.HTTP and settings.gateway_push_url:
-        return HttpGatewayPort(settings.gateway_push_url, settings.gateway_auth_token)
-    return RecordingGatewayPort()
-
-
 async def _publish_farm(canonical_farm_id: str) -> dict[str, object]:
     settings = get_settings()
-    gateway = _gateway_from_settings(settings)
+    gateway = gateway_from_settings(settings)
     engine = create_async_engine(settings.database_url, poolclass=NullPool)
     try:
         async with async_sessionmaker(engine, expire_on_commit=False)() as session:

@@ -19,6 +19,7 @@ from rs_core import (
     delete_annotation,
     get_farm_analytics_summary,
     get_latest_outbox_for_farm,
+    get_settings,
     insert_annotation,
     list_annotations,
     list_review_queue,
@@ -31,6 +32,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from services.api.auth import require
+from services.worker.publish import gateway_config_error, gateway_is_dry_run
 
 router = APIRouter(tags=["workspace"])
 
@@ -372,15 +374,27 @@ async def list_farms_endpoint(principal: ViewPrincipal, session: SessionDep) -> 
     return await list_farms(session)
 
 
+class PublishEnqueuedOut(BaseModel):
+    status: str
+    canonical_farm_id: str
+    by: str
+    gateway: str  # active adapter: recording | http | agritrack
+    dry_run: bool  # True when the active gateway records without sending (recording sink)
+
+
 @router.post("/farms/{canonical_farm_id}/publish", status_code=status.HTTP_202_ACCEPTED)
 async def publish_farm_endpoint(
     canonical_farm_id: str,
     principal: PublishPrincipal,
     session: SessionDep,
-) -> dict[str, str]:
+) -> PublishEnqueuedOut:
     """Enqueue a gateway push for one farm so its results are sent now instead of waiting for the
     next scheduled sync. Reuses the existing ``publish_farm_task`` Celery path, which is idempotent
-    (R-2). Requires ``publish``."""
+    (R-2). Requires ``publish``.
+
+    A gateway configured for real delivery (``agritrack``/``http``) but missing its URL or key fails
+    fast with 503 here, so the operator sees the misconfiguration immediately rather than enqueuing
+    a task that cannot deliver and leaves the workspace polling forever."""
     from services.worker.tasks import publish_farm_task
 
     farm_exists = (
@@ -388,12 +402,18 @@ async def publish_farm_endpoint(
     ).scalar_one_or_none()
     if farm_exists is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "farm not found")
+    settings = get_settings()
+    config_error = gateway_config_error(settings)
+    if config_error is not None:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, config_error)
     publish_farm_task.delay(canonical_farm_id)
-    return {
-        "status": "enqueued",
-        "canonical_farm_id": canonical_farm_id,
-        "by": principal.subject,
-    }
+    return PublishEnqueuedOut(
+        status="enqueued",
+        canonical_farm_id=canonical_farm_id,
+        by=principal.subject,
+        gateway=settings.gateway_adapter.value,
+        dry_run=gateway_is_dry_run(settings),
+    )
 
 
 class PublishStatusOut(BaseModel):
@@ -402,6 +422,8 @@ class PublishStatusOut(BaseModel):
     result_count: int
     pushed_at: datetime | None
     last_error: str | None
+    gateway: str  # active adapter: recording | http | agritrack
+    dry_run: bool  # True when the active gateway records without sending (recording sink)
 
 
 @router.get("/farms/{canonical_farm_id}/publish/status")
@@ -416,12 +438,15 @@ async def publish_status_endpoint(
     row = await get_latest_outbox_for_farm(session, canonical_farm_id)
     if row is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "no push recorded for this farm")
+    settings = get_settings()
     return PublishStatusOut(
         canonical_farm_id=canonical_farm_id,
         status=row.status,
         result_count=row.result_count,
         pushed_at=row.pushed_at,
         last_error=row.last_error,
+        gateway=settings.gateway_adapter.value,
+        dry_run=gateway_is_dry_run(settings),
     )
 
 
