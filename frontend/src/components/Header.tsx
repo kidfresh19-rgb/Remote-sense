@@ -1,4 +1,4 @@
-import { ClipboardText, MapTrifold, Moon, SignOut, Sun } from "@phosphor-icons/react";
+import { ClipboardText, MapTrifold, Moon, SignOut, Sun, CloudArrowUp } from "@phosphor-icons/react";
 import { useState } from "react";
 
 import { useCanPublish } from "@/auth/permissions";
@@ -8,6 +8,7 @@ import { useTheme } from "@/lib/theme";
 import { useWorkspace } from "@/state/workspace";
 
 import { ReviewQueue } from "./ReviewQueue";
+import { GatewayPushModal } from "./GatewayPushModal";
 import { IconButton, SegmentedControl } from "./ui";
 
 export function Header() {
@@ -16,6 +17,7 @@ export function Header() {
   const { index, setIndex } = useWorkspace();
   const canPublish = useCanPublish();
   const [queueOpen, setQueueOpen] = useState(false);
+  const [pushOpen, setPushOpen] = useState(false);
 
   return (
     <header className="flex h-14 items-center justify-between gap-4 border-b border-border bg-panel px-4">
@@ -37,13 +39,22 @@ export function Header() {
           </div>
         ) : null}
         {token && canPublish ? (
-          <IconButton
-            label="Review queue"
-            active={queueOpen}
-            onClick={() => setQueueOpen((open) => !open)}
-          >
-            <ClipboardText size={18} />
-          </IconButton>
+          <div className="flex items-center gap-2">
+            <IconButton
+              label="Push data to gateway"
+              active={pushOpen}
+              onClick={() => setPushOpen((o) => !o)}
+            >
+              <CloudArrowUp size={18} />
+            </IconButton>
+            <IconButton
+              label="Review queue"
+              active={queueOpen}
+              onClick={() => setQueueOpen((open) => !open)}
+            >
+              <ClipboardText size={18} />
+            </IconButton>
+          </div>
         ) : null}
         <IconButton
           label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
@@ -58,6 +69,7 @@ export function Header() {
         ) : null}
       </div>
       {queueOpen ? <ReviewQueue onClose={() => setQueueOpen(false)} /> : null}
+      {pushOpen ? <GatewayPushModal onClose={() => setPushOpen(false)} /> : null}
     </header>
   );
 }

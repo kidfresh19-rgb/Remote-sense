@@ -89,3 +89,27 @@ adapter selected by `RS_GATEWAY_ADAPTER`). Secrets come from env only (invariant
   record.
 - The single shared key is the simplest option but couples the two directions; it was chosen at the
   owner's request. Rotating it (it has been exposed in chat) is a one-value change in `.env`.
+
+## Push reliability (operational hardening)
+
+The wire contract above is fixed; how the push *behaves on failure* was hardened without changing it
+(all behind `GatewayPort`, so no architecture change):
+
+- **Retry classification.** A push retries only on transient failures - transport/timeout errors and
+  HTTP 429/5xx - with jittered exponential backoff. A permanent 4xx (bad `X-Api-Key` -> 401, wrong
+  URL -> 404, malformed record -> 422) fails fast instead of burning four retries per record. The
+  policy is one shared module (`rs_sync/resilience.py`) used by both the AgriTrack and generic-HTTP
+  adapters.
+- **Always a terminal state.** Every publish lands `published` or `dead_letter` in the `SyncOutbox`,
+  never crashing the task: the adapter converts a non-integer farm id and HTTP/transport failures to
+  a dead-letter, and the publisher has a catch-all backstop. The workspace therefore never polls a
+  push that can't resolve.
+- **Fail fast on misconfiguration.** `POST /farms/{id}/publish` returns 503 with the reason when a
+  real-push adapter (`agritrack`/`http`) is selected but its URL or key is missing, a placeholder, or
+  scheme-less - rather than enqueuing a doomed task. The `recording` dry-run stays valid and is
+  surfaced as `dry_run=true` so it is never mistaken for a real delivery.
+- **Actionable diagnostics.** A dead-letter records the status code plus a truncated response-body
+  snippet (e.g. an AgriTrack JSON error, or an `ERR_NGROK_3200 ... is offline` page), the failure
+  ratio (`3/10 records failed`), and a structured `gateway.push.*` log line. None of this changes the
+  bytes on the wire - `extId`, `farmId/fieldId/subPlotId`, `analysisDate`, and the metric mapping are
+  untouched, so re-pushes still additively update the same AgriTrack records.

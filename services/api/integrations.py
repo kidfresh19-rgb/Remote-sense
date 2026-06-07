@@ -16,15 +16,14 @@ from pydantic import BaseModel, ConfigDict
 from rs_core.config import Settings, get_settings
 from rs_core.db import get_session
 from rs_core.logging import get_logger
-from rs_core.models import Analysis, Farm, Field
 from rs_core.repositories import published_narratives_for_farm
 from rs_core.schemas import FarmIn, FarmIngestReport, FieldIn
 from rs_sync import SatelliteResult, build_payload, to_satellite_results
-from rs_sync.payload import IndexResult, PublishedNarrative
-from sqlalchemy import select
+from rs_sync.payload import PublishedNarrative
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from services.api.ingestion import IngestionError, ingest_farm
+from services.worker.publish_utils import fetch_farm_results_with_farm_averages
 
 log = get_logger("integrations.agritrack")
 
@@ -40,7 +39,7 @@ class _SubPlotIn(BaseModel):
     plot_id: str | int
     name: str | None = None
     crop: str | None = None
-    boundary: dict[str, Any]
+    boundary: dict[str, Any] | None = None
 
 
 class _FieldSyncIn(BaseModel):
@@ -48,7 +47,7 @@ class _FieldSyncIn(BaseModel):
     field_id: str | int
     name: str | None = None
     crop: str | None = None
-    boundary: dict[str, Any]
+    boundary: dict[str, Any] | None = None
     sub_plots: list[_SubPlotIn] = []
 
 
@@ -87,18 +86,25 @@ def to_farm_ins(sync: AgriTrackSyncIn) -> list[FarmIn]:
         fields: list[FieldIn] = []
         for f in farm.fields:
             field_key = str(f.field_id)
-            fields.append(
-                FieldIn(canonical_field_id=field_key, name=f.name, crop=f.crop, geometry=f.boundary)
-            )
-            for plot in f.sub_plots:
+            if f.boundary is not None:
                 fields.append(
                     FieldIn(
-                        canonical_field_id=f"{field_key}.{plot.plot_id}",
-                        name=plot.name,
-                        crop=plot.crop,
-                        geometry=plot.boundary,
+                        canonical_field_id=field_key,
+                        name=f.name,
+                        crop=f.crop,
+                        geometry=f.boundary,
                     )
                 )
+            for plot in f.sub_plots:
+                if plot.boundary is not None:
+                    fields.append(
+                        FieldIn(
+                            canonical_field_id=f"{field_key}.{plot.plot_id}",
+                            name=plot.name,
+                            crop=plot.crop,
+                            geometry=plot.boundary,
+                        )
+                    )
         farms.append(
             FarmIn(
                 canonical_farm_id=str(farm.farm_id),
@@ -159,18 +165,7 @@ async def farm_satellite_results(
     field/pass's published agronomic narrative attached (only published reads, risk #6). Selects
     canonical ids + stats + published narratives only; geometry is never read (invariant 6). Raises
     ValueError if the farm id is not an AgriTrack integer id."""
-    rows = (
-        await session.execute(
-            select(Analysis, Field.canonical_field_id)
-            .join(Field, Analysis.field_id == Field.id)
-            .join(Farm, Field.farm_id == Farm.id)
-            .where(Farm.canonical_farm_id == canonical_farm_id)
-            .order_by(Analysis.pass_date, Analysis.index_name)
-        )
-    ).all()
-    results = [
-        IndexResult.from_analysis(analysis, canonical_field_id=cfid) for analysis, cfid in rows
-    ]
+    results = await fetch_farm_results_with_farm_averages(session, canonical_farm_id)
     if not results:
         return []
     narratives = [

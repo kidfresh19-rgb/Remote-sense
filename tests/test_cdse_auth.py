@@ -69,7 +69,7 @@ def _make_client(
 
 def test_missing_token_url_raises():
     with pytest.raises(ValueError):
-        CdseOAuth2Client(Settings())
+        CdseOAuth2Client(Settings(cdse_token_url=""))
 
 
 async def test_acquires_via_client_credentials():

@@ -2,14 +2,15 @@ import {
   Article,
   ChartLine,
   ClockCounterClockwise,
+  Lightning,
   NotePencil,
   Star,
   Stack,
 } from "@phosphor-icons/react";
-import { useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import { cn } from "@/lib/format";
-import { useFields } from "@/lib/queries";
+import { useCollectField, useFields } from "@/lib/queries";
 import { addSavedView, removeSavedView, useIsSaved } from "@/lib/savedViews";
 import { useWorkspace } from "@/state/workspace";
 
@@ -19,7 +20,7 @@ import { IndexTimeseriesChart } from "./IndexTimeseriesChart";
 import { InterpretationPanel } from "./InterpretationPanel";
 import { SceneList } from "./SceneList";
 import { EmptyState } from "./states";
-import { IconButton } from "./ui";
+import { Button, IconButton } from "./ui";
 
 type Tab = "series" | "passes" | "read" | "notes" | "audit";
 
@@ -37,6 +38,36 @@ export function FieldInspector() {
   const field = fields.data?.find((f) => f.field_id === fieldId) ?? null;
   const [tab, setTab] = useState<Tab>("series");
   const saved = useIsSaved(fieldId, index);
+
+  const collect = useCollectField(fieldId);
+  const [collecting, setCollecting] = useState(false);
+  const [collectError, setCollectError] = useState<string | null>(null);
+  const collectTimer = useRef<number | null>(null);
+
+  // Reset the collecting indicator when the field changes; clear the safety timer on unmount.
+  useEffect(() => {
+    setCollecting(false);
+    setCollectError(null);
+    return () => {
+      if (collectTimer.current) window.clearTimeout(collectTimer.current);
+      collectTimer.current = null;
+    };
+  }, [fieldId]);
+
+  const handleCollect = () => {
+    if (!fieldId) return;
+    setCollectError(null);
+    collect.mutate(undefined, {
+      onSuccess: () => {
+        setCollecting(true);
+        if (collectTimer.current) window.clearTimeout(collectTimer.current);
+        // Stop polling after a few minutes so we never poll forever if no pass ever lands.
+        collectTimer.current = window.setTimeout(() => setCollecting(false), 180_000);
+      },
+      onError: (err) =>
+        setCollectError(err instanceof Error ? err.message : "Could not start collection."),
+    });
+  };
 
   if (!fieldId) {
     return (
@@ -64,15 +95,31 @@ export function FieldInspector() {
           <p className="truncate text-xs text-muted">
             {field?.crop ? `${field.crop} · ` : ""}geometry v{field?.geometry_version ?? "?"}
           </p>
+          {collectError ? (
+            <p className="truncate text-xs text-critical" title={collectError}>
+              {collectError}
+            </p>
+          ) : null}
         </div>
-        <IconButton
-          label={saved ? "Remove saved view" : `Save ${index.toUpperCase()} view`}
-          active={saved}
-          onClick={toggleSaved}
-          className="shrink-0"
-        >
-          <Star size={16} weight={saved ? "fill" : "regular"} />
-        </IconButton>
+        <div className="flex shrink-0 items-center gap-1.5">
+          <Button
+            variant="primary"
+            onClick={handleCollect}
+            disabled={collecting || collect.isPending}
+            className="h-8 gap-1.5 px-2.5 text-xs"
+            title="Fetch this field's satellite history now"
+          >
+            <Lightning size={13} weight="fill" />
+            {collecting || collect.isPending ? "Collecting..." : "Collect now"}
+          </Button>
+          <IconButton
+            label={saved ? "Remove saved view" : `Save ${index.toUpperCase()} view`}
+            active={saved}
+            onClick={toggleSaved}
+          >
+            <Star size={16} weight={saved ? "fill" : "regular"} />
+          </IconButton>
+        </div>
       </div>
 
       <div
@@ -99,9 +146,13 @@ export function FieldInspector() {
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         {tab === "series" ? (
-          <IndexTimeseriesChart fieldId={fieldId} />
+          <IndexTimeseriesChart
+            fieldId={fieldId}
+            collecting={collecting}
+            onCollect={handleCollect}
+          />
         ) : tab === "passes" ? (
-          <SceneList fieldId={fieldId} />
+          <SceneList fieldId={fieldId} collecting={collecting} />
         ) : tab === "read" ? (
           <InterpretationPanel fieldId={fieldId} />
         ) : tab === "notes" ? (

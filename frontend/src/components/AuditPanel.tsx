@@ -1,3 +1,5 @@
+import { ClockCounterClockwise } from "@phosphor-icons/react";
+
 import type { AuditRecord } from "@/lib/api";
 import { formatDate, formatPercent } from "@/lib/format";
 import { useAudit } from "@/lib/queries";
@@ -16,8 +18,9 @@ export function AuditPanel({ fieldId }: { fieldId: string }) {
   if (!records.length) {
     return (
       <EmptyState
-        title="No analyses yet"
-        hint="Once the pipeline computes a value for this field, its full provenance appears here."
+        icon={<ClockCounterClockwise size={32} weight="duotone" className="text-accent" />}
+        title="Provenance log is empty"
+        hint="When the collection pipeline processes satellite passes for this field, each computed index value and its full provenance tuple (scene, formula, geometry version, processing mode) appears here. This log is read-only and verifiable."
       />
     );
   }

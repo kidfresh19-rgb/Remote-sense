@@ -7,6 +7,12 @@ export interface Farm {
   canonical_farm_id: string;
   name: string | null;
   region: string | null;
+  overall_health: string | null;
+  overall_health_score: number | null;
+  latest_pass_date: string | null;
+  total_fields: number | null;
+  total_area_hectares: number | null;
+  crops: string[] | null;
 }
 
 export interface Field {
@@ -97,6 +103,47 @@ export interface Annotation {
   body: string;
   author: string | null;
   created_at: string;
+}
+
+/** Result of an ad-hoc AOI preview analysis (POST /analyse/aoi). `status` is "ok" or "no_scenes";
+ *  on "ok" the index stats for the most recent usable pass are present. Mirrors the worker task
+ *  `analysis.analyse_aoi` return shape. Nothing is persisted - this is a quick look, not a field. */
+export interface AOIAnalysisResult {
+  status: "ok" | "no_scenes" | string;
+  index?: string;
+  pass_date?: string;
+  scene_id?: string;
+  mean?: number | null;
+  min?: number | null;
+  max?: number | null;
+  p10?: number | null;
+  p90?: number | null;
+  clear_fraction?: number;
+  confidence?: string;
+  resolution_m?: number;
+  pixels?: number;
+}
+
+export interface PublishStatus {
+  canonical_farm_id: string;
+  status: "pending" | "published" | "dead_letter" | string;
+  result_count: number;
+  pushed_at: string | null;
+  last_error: string | null;
+  /** Active gateway adapter: "recording" | "http" | "agritrack". */
+  gateway: string;
+  /** True when the gateway records "published" without sending (the recording dry-run sink). */
+  dry_run: boolean;
+}
+
+/** Response of POST /farms/{id}/publish: the push was accepted onto the queue. `dry_run` tells the
+ *  workspace whether this will actually reach the gateway or is a recording no-op. */
+export interface PublishEnqueued {
+  status: string;
+  canonical_farm_id: string;
+  by: string;
+  gateway: string;
+  dry_run: boolean;
 }
 
 export class ApiError extends Error {
@@ -199,6 +246,26 @@ export const api = {
       "DELETE",
       `/fields/${fieldId}/annotations/${encodeURIComponent(annotationId)}`,
       token,
+    ),
+  analyseAOI: (geometry: Geometry, index: string, token: string) =>
+    send<AOIAnalysisResult>("POST", "/analyse/aoi", token, { geometry, index }),
+  collectField: (fieldId: string, token: string) =>
+    send<{ status: string; field_id: string; by: string }>(
+      "POST",
+      `/fields/${fieldId}/collect`,
+      token,
+    ),
+  publishFarm: (canonicalFarmId: string, token: string) =>
+    send<PublishEnqueued>(
+      "POST",
+      `/farms/${encodeURIComponent(canonicalFarmId)}/publish`,
+      token,
+    ),
+  publishStatus: (canonicalFarmId: string, token: string, signal?: AbortSignal) =>
+    get<PublishStatus>(
+      `/farms/${encodeURIComponent(canonicalFarmId)}/publish/status`,
+      token,
+      signal,
     ),
 };
 

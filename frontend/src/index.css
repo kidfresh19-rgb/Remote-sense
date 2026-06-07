@@ -116,3 +116,75 @@ body {
 .dark .maplibregl-ctrl button .maplibregl-ctrl-icon {
   filter: invert(0.9);
 }
+
+/* ── Chart: tooltip ────────────────────────────────────────────────────────── */
+.chart-tooltip {
+  background: color-mix(in srgb, var(--panel) 82%, transparent);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow-panel);
+  pointer-events: none;
+}
+
+/* ── Chart: crosshair ──────────────────────────────────────────────────────── */
+.chart-crosshair {
+  stroke: var(--accent);
+  stroke-width: 1;
+  stroke-dasharray: 4 3;
+  opacity: 0.55;
+  transition: opacity 120ms ease-out;
+}
+.chart-crosshair--active {
+  opacity: 0.85;
+}
+
+/* ── Chart: dot glow on hover ──────────────────────────────────────────────── */
+.chart-dot {
+  transition: r 120ms ease-out, filter 120ms ease-out;
+}
+.chart-dot--hover {
+  filter: drop-shadow(0 0 4px var(--accent));
+}
+
+/* ── Chart: zoom brush selection ───────────────────────────────────────────── */
+.chart-brush {
+  fill: var(--accent);
+  fill-opacity: 0.08;
+  stroke: var(--accent);
+  stroke-width: 1;
+  stroke-dasharray: 3 2;
+  stroke-opacity: 0.4;
+}
+
+/* ── Stat cards: subtle accent gradient ────────────────────────────────────── */
+.stat-card {
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--accent) 6%, var(--panel-2)) 0%,
+    var(--panel-2) 100%
+  );
+  border: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+  border-radius: 8px;
+  transition: transform 120ms ease-out, box-shadow 120ms ease-out;
+}
+.stat-card:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px 0 rgb(0 0 0 / 0.06);
+}
+
+/* ── Gateway push modal (shared glassmorphism with chart tooltip) ──────────── */
+.modal-overlay {
+  background: rgb(0 0 0 / 0.45);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+.modal-panel {
+  background: color-mix(in srgb, var(--panel) 92%, transparent);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: 0 8px 40px 0 rgb(0 0 0 / 0.18);
+}

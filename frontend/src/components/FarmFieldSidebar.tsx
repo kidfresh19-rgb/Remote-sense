@@ -1,4 +1,4 @@
-import { CaretRight, Folder, Plant } from "@phosphor-icons/react";
+import { CaretRight, Folder, Heart, Plant } from "@phosphor-icons/react";
 import type { Geometry } from "geojson";
 
 import type { Farm } from "@/lib/api";
@@ -8,6 +8,7 @@ import { useWorkspace } from "@/state/workspace";
 
 import { CustomAOIPanel } from "./CustomAOIPanel";
 import { EmptyState, ErrorState, LoadingRows } from "./states";
+import { Badge } from "./ui";
 
 const rowBase =
   "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm ease-out transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent";
@@ -82,6 +83,21 @@ function FarmRow({
         />
         <Plant size={16} weight="duotone" className="shrink-0 text-muted" />
         <span className="min-w-0 flex-1 truncate">{farm.name ?? farm.canonical_farm_id}</span>
+        {farm.overall_health ? (
+          <Badge
+            tone={
+              farm.overall_health === "healthy"
+                ? "positive"
+                : farm.overall_health === "moderate"
+                  ? "caution"
+                  : "critical"
+            }
+            className="text-[9px] px-1.5 py-0"
+          >
+            <Heart size={8} weight="fill" />
+            {farm.overall_health}
+          </Badge>
+        ) : null}
       </button>
       {expanded ? <FieldList canonicalFarmId={farm.canonical_farm_id} /> : null}
     </li>

@@ -9,22 +9,21 @@ auth, metric names, the classification mapping) lives here (invariant 1), and ge
 
 from __future__ import annotations
 
+import asyncio
 from collections import defaultdict
 from datetime import date
 
 import httpx
 from pydantic import BaseModel
-from tenacity import (
-    AsyncRetrying,
-    retry_if_exception_type,
-    stop_after_attempt,
-    wait_exponential,
-)
 
 from rs_sync.payload import GatewayPayload, IndexResult
 from rs_sync.port import GatewayPort, PushResult
+from rs_sync.resilience import (
+    GATEWAY_PUSH_ERRORS,
+    describe_push_error,
+    push_retrying,
+)
 
-_RETRYABLE = (httpx.TransportError, httpx.HTTPStatusError)
 _RESULTS_PATH = "/integrations/satellite/results"
 
 # The NDVI vigour band (rs_interpret) collapses onto the AgriTrack classification enum. Reusing the
@@ -193,6 +192,7 @@ class AgriTrackGatewayPort(GatewayPort):
         timeout: float = 10.0,
         max_attempts: int = 4,
         backoff: float = 0.5,
+        max_concurrency: int = 10,
     ) -> None:
         if not base_url:
             raise ValueError("AgriTrackGatewayPort needs RS_AGRITRACK_BASE_URL")
@@ -204,35 +204,79 @@ class AgriTrackGatewayPort(GatewayPort):
         self._timeout = timeout
         self._max_attempts = max_attempts
         self._backoff = backoff
+        self._max_concurrency = max_concurrency
+
+    def destination_key(self) -> str:
+        return self._url
 
     async def push(self, payload: GatewayPayload) -> PushResult:
-        records = to_satellite_results(payload)
+        try:
+            records = to_satellite_results(payload)
+        except ValueError as exc:
+            # A non-integer canonical_farm_id can never satisfy the AgriTrack contract, so this is a
+            # permanent failure of THIS farm, not a transient one. Dead-letter it with the reason
+            # instead of raising - a raise here crashes the publish task and leaves the workspace
+            # polling "Sending..." forever with nothing to show.
+            return PushResult(ok=False, status="error", detail=str(exc))
         if not records:
             return PushResult(ok=True, status="empty")
-        try:
-            for record in records:
-                await self._post(record)
-        except _RETRYABLE as exc:
-            return PushResult(ok=False, status="error", detail=str(exc))
+
+        # When a client is injected (tests), use it as-is. Otherwise own one client for the whole
+        # batch - reused across every record and every retry - instead of opening a fresh
+        # connection per POST. A cold tunnel (ngrok) gets a bounded connect timeout, and the pool is
+        # capped to the same concurrency the semaphore allows.
+        if self._client is not None:
+            return await self._push_records(self._client, records)
+        timeout = httpx.Timeout(self._timeout, connect=min(self._timeout, 10.0))
+        limits = httpx.Limits(max_connections=self._max_concurrency)
+        async with httpx.AsyncClient(timeout=timeout, limits=limits) as client:
+            return await self._push_records(client, records)
+
+    async def _push_records(
+        self, client: httpx.AsyncClient, records: list[SatelliteResult]
+    ) -> PushResult:
+        # A farm's whole batch is delivered as one POST per record, all to the single
+        # /integrations/satellite/results endpoint the contract defines (ADR 0006 §2 - there is no
+        # bulk endpoint). Posts run under a concurrency bound so a large farm goes at once without
+        # flooding AgriTrack.
+        semaphore = asyncio.Semaphore(self._max_concurrency)
+
+        async def _post_with_sem(record: SatelliteResult) -> None:
+            async with semaphore:
+                await self._post(client, record)
+
+        # return_exceptions lets every post finish even when one fails, so no in-flight request is
+        # left orphaned mid-batch. A push error (transient exhausted, or a permanent 4xx that failed
+        # fast) dead-letters the whole push - safely re-sent whole via extId + outbox dedup;
+        # anything unexpected propagates so a real bug surfaces, not silently.
+        outcomes = await asyncio.gather(
+            *(_post_with_sem(r) for r in records), return_exceptions=True
+        )
+        unexpected = [
+            o
+            for o in outcomes
+            if isinstance(o, BaseException) and not isinstance(o, GATEWAY_PUSH_ERRORS)
+        ]
+        if unexpected:
+            raise unexpected[0]
+        failures = [o for o in outcomes if isinstance(o, GATEWAY_PUSH_ERRORS)]
+        if failures:
+            # Report the failure ratio plus the first reason, so a partial batch failure is legible
+            # ("3/10 records failed") rather than a lone error stripped of its scale. The whole
+            # farm re-pushes on retry (extId + outbox dedup), so the first reason is sufficient.
+            detail = (
+                f"{len(failures)}/{len(records)} records failed; "
+                f"first: {describe_push_error(failures[0])}"
+            )
+            return PushResult(ok=False, status="error", detail=detail)
         return PushResult(ok=True, status="ok", detail=f"{len(records)} records")
 
-    async def _post(self, record: SatelliteResult) -> None:
+    async def _post(self, client: httpx.AsyncClient, record: SatelliteResult) -> None:
         headers = {"X-Api-Key": self._api_key, "Content-Type": "application/json"}
         body = record.model_dump(mode="json")
-        async for attempt in AsyncRetrying(
-            reraise=True,
-            stop=stop_after_attempt(self._max_attempts),
-            wait=wait_exponential(multiplier=self._backoff, max=10),
-            retry=retry_if_exception_type(_RETRYABLE),
-        ):
+        async for attempt in push_retrying(max_attempts=self._max_attempts, backoff=self._backoff):
             with attempt:
-                if self._client is not None:
-                    response = await self._client.post(
-                        self._url, json=body, headers=headers, timeout=self._timeout
-                    )
-                else:
-                    async with httpx.AsyncClient() as client:
-                        response = await client.post(
-                            self._url, json=body, headers=headers, timeout=self._timeout
-                        )
+                response = await client.post(
+                    self._url, json=body, headers=headers, timeout=self._timeout
+                )
                 response.raise_for_status()

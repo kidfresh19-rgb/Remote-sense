@@ -28,3 +28,11 @@ class GatewayPort(ABC):
     async def push(self, payload: GatewayPayload) -> PushResult:
         """Deliver one farm's additive payload. Must be safe to retry with the same payload (the
         idempotency key dedupes on the gateway side)."""
+
+    def destination_key(self) -> str:
+        """A stable identifier for *where* this port delivers, folded into the outbox idempotency
+        key (R-2). It stops a dry-run sink from masking a real delivery, and makes switching the
+        gateway (or its target URL) re-push the same analyses to the new destination instead of
+        skipping them as already-published. Adapters with a concrete endpoint override this with
+        their URL; the default is the adapter type name."""
+        return type(self).__name__

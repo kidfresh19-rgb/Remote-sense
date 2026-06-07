@@ -5,15 +5,30 @@ import { useWorkspace } from "@/state/workspace";
 import { EmptyState, ErrorState, LoadingRows } from "./states";
 import { TimelineScrubber } from "./TimelineScrubber";
 
-export function SceneList({ fieldId }: { fieldId: string }) {
-  const query = useScenes(fieldId);
+export function SceneList({
+  fieldId,
+  collecting = false,
+}: {
+  fieldId: string;
+  collecting?: boolean;
+}) {
+  const query = useScenes(fieldId, collecting);
   const { passDate, setPassDate } = useWorkspace();
 
   if (query.isLoading) return <LoadingRows />;
   if (query.isError) return <ErrorState error={query.error} onRetry={() => query.refetch()} />;
   const scenes = query.data ?? [];
   if (!scenes.length) {
-    return <EmptyState title="No passes" hint="No collected passes for this field yet." />;
+    return (
+      <EmptyState
+        title="No passes"
+        hint={
+          collecting
+            ? "Collecting passes. They appear here as each scene is processed."
+            : "No collected passes for this field yet."
+        }
+      />
+    );
   }
 
   return (

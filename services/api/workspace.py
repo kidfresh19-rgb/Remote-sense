@@ -10,12 +10,16 @@ from datetime import date, datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.concurrency import run_in_threadpool
 from geoalchemy2.shape import to_shape
 from pydantic import BaseModel, StringConstraints
 from rs_core import (
     Permission,
     Principal,
     delete_annotation,
+    get_farm_analytics_summary,
+    get_latest_outbox_for_farm,
+    get_settings,
     insert_annotation,
     list_annotations,
     list_review_queue,
@@ -28,12 +32,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from services.api.auth import require
+from services.worker.publish import gateway_config_error, gateway_is_dry_run
 
 router = APIRouter(tags=["workspace"])
 
 ViewPrincipal = Annotated[Principal, Depends(require(Permission.VIEW))]
 AnnotatePrincipal = Annotated[Principal, Depends(require(Permission.ANNOTATE))]
 PublishPrincipal = Annotated[Principal, Depends(require(Permission.PUBLISH))]
+RunAnalysisPrincipal = Annotated[Principal, Depends(require(Permission.RUN_ANALYSIS))]
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
 
 
@@ -41,6 +47,12 @@ class FarmOut(BaseModel):
     canonical_farm_id: str
     name: str | None
     region: str | None
+    overall_health: str | None = None
+    overall_health_score: float | None = None
+    latest_pass_date: date | None = None
+    total_fields: int | None = None
+    total_area_hectares: float | None = None
+    crops: list[str] | None = None
 
 
 class FieldOut(BaseModel):
@@ -151,6 +163,11 @@ class AnnotationCreate(BaseModel):
     pass_date: date | None = None
 
 
+class AOIAnalysisRequest(BaseModel):
+    geometry: dict[str, Any]
+    index: str
+
+
 def _annotation_out(row: Any) -> AnnotationOut:
     return AnnotationOut(
         id=str(row.id),
@@ -165,9 +182,26 @@ def _annotation_out(row: Any) -> AnnotationOut:
 
 async def list_farms(session: AsyncSession) -> list[FarmOut]:
     farms = (await session.execute(select(Farm).order_by(Farm.canonical_farm_id))).scalars().all()
-    return [
-        FarmOut(canonical_farm_id=f.canonical_farm_id, name=f.name, region=f.region) for f in farms
-    ]
+    out = []
+    for f in farms:
+        summary = await get_farm_analytics_summary(session, f.canonical_farm_id)
+        if summary:
+            out.append(
+                FarmOut(
+                    canonical_farm_id=f.canonical_farm_id,
+                    name=f.name,
+                    region=f.region,
+                    overall_health=summary["overall_health"],
+                    overall_health_score=summary["overall_health_score"],
+                    latest_pass_date=summary["latest_pass_date"],
+                    total_fields=summary["total_fields"],
+                    total_area_hectares=summary["total_area_hectares"],
+                    crops=summary["crops"],
+                )
+            )
+        else:
+            out.append(FarmOut(canonical_farm_id=f.canonical_farm_id, name=f.name, region=f.region))
+    return out
 
 
 async def list_fields(session: AsyncSession, canonical_farm_id: str) -> list[FieldOut]:
@@ -340,6 +374,82 @@ async def list_farms_endpoint(principal: ViewPrincipal, session: SessionDep) -> 
     return await list_farms(session)
 
 
+class PublishEnqueuedOut(BaseModel):
+    status: str
+    canonical_farm_id: str
+    by: str
+    gateway: str  # active adapter: recording | http | agritrack
+    dry_run: bool  # True when the active gateway records without sending (recording sink)
+
+
+@router.post("/farms/{canonical_farm_id}/publish", status_code=status.HTTP_202_ACCEPTED)
+async def publish_farm_endpoint(
+    canonical_farm_id: str,
+    principal: PublishPrincipal,
+    session: SessionDep,
+) -> PublishEnqueuedOut:
+    """Enqueue a gateway push for one farm so its results are sent now instead of waiting for the
+    next scheduled sync. Reuses the existing ``publish_farm_task`` Celery path, which is idempotent
+    (R-2). Requires ``publish``.
+
+    A gateway configured for real delivery (``agritrack``/``http``) but missing its URL or key fails
+    fast with 503 here, so the operator sees the misconfiguration immediately rather than enqueuing
+    a task that cannot deliver and leaves the workspace polling forever."""
+    from services.worker.tasks import publish_farm_task
+
+    farm_exists = (
+        await session.execute(select(Farm).where(Farm.canonical_farm_id == canonical_farm_id))
+    ).scalar_one_or_none()
+    if farm_exists is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "farm not found")
+    settings = get_settings()
+    config_error = gateway_config_error(settings)
+    if config_error is not None:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, config_error)
+    publish_farm_task.delay(canonical_farm_id)
+    return PublishEnqueuedOut(
+        status="enqueued",
+        canonical_farm_id=canonical_farm_id,
+        by=principal.subject,
+        gateway=settings.gateway_adapter.value,
+        dry_run=gateway_is_dry_run(settings),
+    )
+
+
+class PublishStatusOut(BaseModel):
+    canonical_farm_id: str
+    status: str  # pending | published | dead_letter
+    result_count: int
+    pushed_at: datetime | None
+    last_error: str | None
+    gateway: str  # active adapter: recording | http | agritrack
+    dry_run: bool  # True when the active gateway records without sending (recording sink)
+
+
+@router.get("/farms/{canonical_farm_id}/publish/status")
+async def publish_status_endpoint(
+    canonical_farm_id: str,
+    principal: PublishPrincipal,
+    session: SessionDep,
+) -> PublishStatusOut:
+    """The latest gateway push outcome for a farm. The frontend polls this after enqueuing a push
+    to confirm delivery (published), surface errors (dead_letter), or show in-progress (pending).
+    Returns 404 if no push has ever been recorded for this farm."""
+    row = await get_latest_outbox_for_farm(session, canonical_farm_id)
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "no push recorded for this farm")
+    settings = get_settings()
+    return PublishStatusOut(
+        canonical_farm_id=canonical_farm_id,
+        status=row.status,
+        result_count=row.result_count,
+        pushed_at=row.pushed_at,
+        last_error=row.last_error,
+        gateway=settings.gateway_adapter.value,
+        dry_run=gateway_is_dry_run(settings),
+    )
+
+
 @router.get("/farms/{canonical_farm_id}/fields")
 async def list_fields_endpoint(
     canonical_farm_id: str, principal: ViewPrincipal, session: SessionDep
@@ -411,6 +521,28 @@ async def field_audit_endpoint(
     return await field_audit(session, field_id)
 
 
+@router.post("/fields/{field_id}/collect", status_code=status.HTTP_202_ACCEPTED)
+async def field_collect_endpoint(
+    field_id: uuid.UUID,
+    principal: RunAnalysisPrincipal,
+    session: SessionDep,
+) -> dict[str, str]:
+    """Enqueue an on-demand backfill for one field so its history is collected now instead of
+    waiting for the nightly scan. This only exposes the existing pipeline entrypoint:
+    `backfill_field` is idempotent and gap-filling (it replans only outstanding passes), so repeated
+    clicks are safe and converge the field to complete. A missing field is a 404, not a dangling
+    task. Requires `run_analysis`."""
+    from services.worker.tasks import backfill_field
+
+    field_exists = (
+        await session.execute(select(Field.id).where(Field.id == field_id))
+    ).scalar_one_or_none()
+    if field_exists is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "field not found")
+    backfill_field.delay(str(field_id))
+    return {"status": "enqueued", "field_id": str(field_id), "by": principal.subject}
+
+
 @router.get("/fields/{field_id}/annotations")
 async def list_annotations_endpoint(
     field_id: uuid.UUID, principal: ViewPrincipal, session: SessionDep
@@ -456,3 +588,38 @@ async def delete_annotation_endpoint(
     removed = await delete_annotation(session, annotation_id=annotation_id, field_id=field_id)
     if not removed:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "annotation not found")
+
+
+@router.post("/analyse/aoi")
+async def analyse_aoi_endpoint(
+    payload: AOIAnalysisRequest,
+    principal: RunAnalysisPrincipal,
+) -> dict[str, Any]:
+    """Ad-hoc preview analysis over a custom AOI: returns the most recent usable pass's index stats
+    for the drawn geometry, computed on the worker (geo extra) through the production engine.
+    Nothing is persisted - no field is created, so it cannot collide with gateway-owned identity
+    (invariant 6 governs only the outbound push). Requires `run_analysis`.
+
+    The work runs on the worker (it needs rasterio + CDSE), so we enqueue and wait for the result
+    off the event loop; a bad index name is rejected up front as a 422 rather than a worker failure.
+    """
+    from celery.exceptions import TimeoutError as CeleryTimeoutError
+    from rs_analysis import get_index
+
+    from services.worker.tasks import analyse_aoi_task
+
+    try:
+        get_index(payload.index)
+    except KeyError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+
+    async_result = analyse_aoi_task.delay(payload.geometry, payload.index)
+    try:
+        return await run_in_threadpool(async_result.get, timeout=75)
+    except CeleryTimeoutError as exc:
+        raise HTTPException(
+            status.HTTP_504_GATEWAY_TIMEOUT,
+            "AOI analysis timed out; the imagery service is slow right now. Try again.",
+        ) from exc
+    except Exception as exc:  # the worker task raised (e.g. no imagery / fetch error)
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"AOI analysis failed: {exc}") from exc

@@ -121,18 +121,26 @@ async def test_mobile_data_pull_returns_contract_records(maker_):
     await _seed_agritrack_farm(maker_)
     async with maker_() as session:
         records = await farm_satellite_results(session, "2")
-    assert len(records) == 1  # one (field, pass) record aggregating the three indices
-    rec = records[0]
-    assert rec.farmId == 2
-    assert rec.fieldId == 4
-    assert rec.subPlotId is None
-    assert rec.scope == "field"
-    assert rec.analysisDate == "2026-05-17"
-    assert rec.metrics.ndvi_mean == 0.62
-    assert rec.metrics.evi_mean == 0.55
-    assert rec.metrics.ndwi_mean == 0.40  # NDMI -> ndwi_mean
-    assert rec.metrics.classification == "healthy"
-    assert rec.extId == "2:4:2026-05-17"
+    assert len(records) == 2  # farm record + field record
+    rec_farm = records[0]
+    assert rec_farm.farmId == 2
+    assert rec_farm.fieldId is None
+    assert rec_farm.subPlotId is None
+    assert rec_farm.scope == "farm"
+    assert rec_farm.analysisDate == "2026-05-17"
+    assert rec_farm.metrics.ndvi_mean == 0.62
+
+    rec_field = records[1]
+    assert rec_field.farmId == 2
+    assert rec_field.fieldId == 4
+    assert rec_field.subPlotId is None
+    assert rec_field.scope == "field"
+    assert rec_field.analysisDate == "2026-05-17"
+    assert rec_field.metrics.ndvi_mean == 0.62
+    assert rec_field.metrics.evi_mean == 0.55
+    assert rec_field.metrics.ndwi_mean == 0.40  # NDMI -> ndwi_mean
+    assert rec_field.metrics.classification == "healthy"
+    assert rec_field.extId == "2:4:2026-05-17"
 
 
 async def test_mobile_data_pull_empty_for_unknown_farm(maker_):

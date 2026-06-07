@@ -1,3 +1,4 @@
+import { Leaf } from "@phosphor-icons/react";
 import { useState } from "react";
 
 import { useCanPublish } from "@/auth/permissions";
@@ -45,11 +46,12 @@ export function InterpretationPanel({ fieldId }: { fieldId: string }) {
   if (!reads.length) {
     return (
       <EmptyState
-        title="No agronomic reads"
+        icon={<Leaf size={32} weight="duotone" className="text-accent animate-pulse" />}
+        title="No agronomic reads yet"
         hint={
           canPublish
-            ? "Reads appear here once drafted. Review and publish one to send its narrative to the farmer."
-            : "Reads appear here once drafted. They stay unpublished until an agronomist reviews them."
+            ? "Reads are drafted automatically when the analysis pipeline processes a pass. Once a draft appears here, review and publish it to send its narrative to the farmer."
+            : "Reads are drafted automatically when the analysis pipeline processes a pass. They stay unpublished until an agronomist reviews them."
         }
       />
     );

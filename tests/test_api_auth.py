@@ -73,6 +73,25 @@ def test_annotation_read_requires_auth() -> None:
     assert resp.status_code == 401
 
 
+def test_field_collect_forbidden_for_viewer() -> None:
+    # Triggering a field backfill needs `run_analysis`; a viewer is gated out (403) before any DB.
+    _as(Principal(subject="viewer", roles=frozenset({Role.VIEWER})))
+    field_id = "00000000-0000-0000-0000-000000000001"
+    try:
+        with TestClient(app) as client:
+            resp = client.post(f"/fields/{field_id}/collect")
+    finally:
+        app.dependency_overrides.clear()
+    assert resp.status_code == 403
+
+
+def test_field_collect_requires_auth() -> None:
+    field_id = "00000000-0000-0000-0000-000000000001"
+    with TestClient(app) as client:  # no override, no bearer -> 401 before any DB access
+        resp = client.post(f"/fields/{field_id}/collect")
+    assert resp.status_code == 401
+
+
 def test_review_interpretation_forbidden_for_viewer() -> None:
     # Publishing/withholding a read needs `publish`; a viewer is gated out (403) before any DB.
     _as(Principal(subject="viewer", roles=frozenset({Role.VIEWER})))

@@ -152,7 +152,9 @@ function CompareCell({
   });
   return (
     <div className="relative min-h-0">
-      <div ref={ref} className="absolute inset-0" />
+      {/* size-full, not absolute inset-0: MapLibre sets `.maplibregl-map { position: relative }`
+          unlayered, overriding Tailwind v4's layered `absolute` and collapsing the map to 0 height. */}
+      <div ref={ref} className="size-full" />
       {children}
     </div>
   );
