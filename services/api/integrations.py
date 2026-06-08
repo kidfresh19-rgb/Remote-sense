@@ -102,9 +102,14 @@ def to_farm_ins(sync: AgriTrackSyncIn) -> list[FarmIn]:
                 )
             for plot in f.sub_plots:
                 if plot.boundary is not None:
+                    plot_id_str = str(plot.plot_id)
+                    if plot_id_str.startswith(f"{field_key}."):
+                        subplot_key = plot_id_str
+                    else:
+                        subplot_key = f"{field_key}.{plot_id_str}"
                     fields.append(
                         FieldIn(
-                            canonical_field_id=f"{field_key}.{plot.plot_id}",
+                            canonical_field_id=subplot_key,
                             name=plot.name,
                             crop=plot.crop,
                             geometry=plot.boundary,

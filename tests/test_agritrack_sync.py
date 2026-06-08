@@ -119,6 +119,34 @@ def test_to_farm_ins_accepts_integer_ids():
     assert [f.canonical_field_id for f in farm.fields] == ["4", "4.1"]
 
 
+def test_to_farm_ins_handles_pre_prefixed_plot_id():
+    sync = AgriTrackSyncIn.model_validate(
+        {
+            "farms": [
+                {
+                    "farm_id": "9",
+                    "boundary": _GEOM,
+                    "fields": [
+                        {
+                            "field_id": "7",
+                            "boundary": _GEOM,
+                            "sub_plots": [
+                                {
+                                    "plot_id": "7.1",
+                                    "name": "Subfield 01",
+                                    "boundary": _GEOM,
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ]
+        }
+    )
+    farm = to_farm_ins(sync)[0]
+    assert [f.canonical_field_id for f in farm.fields] == ["7", "7.1"]
+
+
 def test_to_farm_ins_handles_null_boundaries():
     sync = AgriTrackSyncIn.model_validate(
         {
