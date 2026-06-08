@@ -350,6 +350,7 @@ async def ingest_farm(session: AsyncSession, payload: FarmIn) -> FarmIngestRepor
     def _build_farm() -> Farm:
         return Farm(
             canonical_farm_id=payload.canonical_farm_id,
+            agritrack_farmer_id=payload.agritrack_farmer_id,
             name=payload.name,
             region=payload.region,
             boundary=farm_stored,
@@ -370,6 +371,7 @@ async def ingest_farm(session: AsyncSession, payload: FarmIn) -> FarmIngestRepor
         # reconcile its fields below.
         farm.name = payload.name
         farm.region = payload.region
+        farm.agritrack_farmer_id = payload.agritrack_farmer_id
         farm.boundary = farm_stored
         farm.centroid_lon = centroid.x
         farm.centroid_lat = centroid.y

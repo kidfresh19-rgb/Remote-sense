@@ -69,6 +69,7 @@ def test_to_farm_ins_maps_farm_field_and_subplot():
     assert len(farms) == 1
     farm = farms[0]
     assert farm.canonical_farm_id == "2"  # agritrack farm_id
+    assert farm.agritrack_farmer_id == "2"  # agritrack farmer_id
     assert farm.name == "Makuni's Farm"
     assert farm.region == "Norton"  # location -> region
     assert farm.boundary == _GEOM

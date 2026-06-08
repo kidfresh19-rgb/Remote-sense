@@ -81,6 +81,11 @@ def to_farm_ins(sync: AgriTrackSyncIn) -> list[FarmIn]:
     (`"{field_id}.{plot_id}"`), so both are analysed and results can be reported at field and
     sub-plot scope (ADR 0006). AgriTrack sends GeoJSON in EPSG:4326 (the FieldIn/FarmIn
     default)."""
+    farmer_id = (
+        str(sync.farmer.agritrack_id)
+        if sync.farmer and sync.farmer.agritrack_id is not None
+        else None
+    )
     farms: list[FarmIn] = []
     for farm in sync.farms:
         fields: list[FieldIn] = []
@@ -108,6 +113,7 @@ def to_farm_ins(sync: AgriTrackSyncIn) -> list[FarmIn]:
         farms.append(
             FarmIn(
                 canonical_farm_id=str(farm.farm_id),
+                agritrack_farmer_id=farmer_id,
                 name=farm.name,
                 region=farm.location,
                 boundary=farm.boundary,
