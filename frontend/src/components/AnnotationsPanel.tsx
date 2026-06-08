@@ -1,5 +1,6 @@
 import { Trash } from "@phosphor-icons/react";
 import { useState } from "react";
+import { motion, AnimatePresence } from "motion/react";
 
 import { ApiError, type Annotation } from "@/lib/api";
 import { formatDate } from "@/lib/format";
@@ -76,14 +77,16 @@ export function AnnotationsPanel({ fieldId }: { fieldId: string }) {
         <ErrorState error={notes.error} onRetry={() => void notes.refetch()} />
       ) : notes.data && notes.data.length ? (
         <ul className="divide-y divide-border">
-          {notes.data.map((note) => (
-            <NoteRow
-              key={note.id}
-              note={note}
-              deleting={deleteNote.isPending && deleteNote.variables === note.id}
-              onDelete={() => deleteNote.mutate(note.id)}
-            />
-          ))}
+          <AnimatePresence initial={false}>
+            {notes.data.map((note) => (
+              <NoteRow
+                key={note.id}
+                note={note}
+                deleting={deleteNote.isPending && deleteNote.variables === note.id}
+                onDelete={() => deleteNote.mutate(note.id)}
+              />
+            ))}
+          </AnimatePresence>
         </ul>
       ) : (
         <EmptyState title="No notes yet" hint="Pin observations to this field as you work." />
@@ -102,7 +105,13 @@ function NoteRow({
   deleting: boolean;
 }) {
   return (
-    <li className="group flex gap-2 p-3">
+    <motion.li
+      initial={{ opacity: 0, height: 0 }}
+      animate={{ opacity: 1, height: "auto" }}
+      exit={{ opacity: 0, height: 0 }}
+      transition={{ duration: 0.15, ease: "easeOut" }}
+      className="group flex gap-2 p-3 overflow-hidden"
+    >
       <div className="min-w-0 flex-1 space-y-1.5">
         <div className="flex flex-wrap items-center gap-1.5">
           {note.pass_date ? (
@@ -125,6 +134,6 @@ function NoteRow({
       >
         <Trash size={14} />
       </IconButton>
-    </li>
+    </motion.li>
   );
 }

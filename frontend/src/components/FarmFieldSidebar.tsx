@@ -1,5 +1,6 @@
 import { CaretRight, Folder, Heart, Plant } from "@phosphor-icons/react";
 import type { Geometry } from "geojson";
+import { motion, AnimatePresence } from "motion/react";
 
 import type { Farm } from "@/lib/api";
 import { cn } from "@/lib/format";
@@ -28,7 +29,7 @@ export function FarmFieldSidebar() {
   }
 
   return (
-    <aside className="flex min-h-0 flex-col border-b border-border bg-panel lg:border-b-0 lg:border-r">
+    <aside className="flex min-h-0 flex-col border-b border-border bg-panel lg:border-b-0 lg:border-r h-full">
       <div className="border-b border-border px-3 py-2 text-xs font-semibold uppercase tracking-wide text-muted">
         Farms
       </div>
@@ -99,7 +100,19 @@ function FarmRow({
           </Badge>
         ) : null}
       </button>
-      {expanded ? <FieldList canonicalFarmId={farm.canonical_farm_id} /> : null}
+      <AnimatePresence initial={false}>
+        {expanded && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.15, ease: "easeOut" }}
+            className="overflow-hidden"
+          >
+            <FieldList canonicalFarmId={farm.canonical_farm_id} />
+          </motion.div>
+        )}
+      </AnimatePresence>
     </li>
   );
 }

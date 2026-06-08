@@ -141,7 +141,7 @@ export function MapPanel({
   };
 
   return (
-    <section className="relative min-h-[55vh] bg-bg lg:min-h-0">
+    <section className="relative min-h-0 h-full bg-bg">
       {/* Map — always mounted so the AOI toolbar and coordinate/geocoder callbacks have a
            live map regardless of field selection state. */}
       {comparing && selectedField ? (

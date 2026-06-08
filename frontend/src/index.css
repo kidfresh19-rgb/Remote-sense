@@ -188,3 +188,21 @@ body {
   border-radius: 14px;
   box-shadow: 0 8px 40px 0 rgb(0 0 0 / 0.18);
 }
+
+/* Custom Scrollbars to match theme, particularly nice on Windows */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
+  transition: background 150ms ease-out;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--muted);
+}
+
