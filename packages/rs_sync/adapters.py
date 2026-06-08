@@ -96,8 +96,6 @@ class HttpGatewayPort(GatewayPort):
             "Content-Type": "application/json",
         }
         body = payload.model_dump(mode="json")
-        response = await client.post(
-            self._url, json=body, headers=headers, timeout=self._timeout
-        )
+        response = await client.post(self._url, json=body, headers=headers, timeout=self._timeout)
         response.raise_for_status()
         return response

@@ -14,7 +14,7 @@ from collections import defaultdict
 from datetime import date
 
 import httpx
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from rs_sync.payload import GatewayPayload, IndexResult
 from rs_sync.port import GatewayPort, PushResult
@@ -65,7 +65,7 @@ class SatelliteResult(BaseModel):
     analysisDate: str
     extId: str
     metrics: SatelliteMetrics
-    interpretation: SatelliteInterpretation | None = None
+    interpretation: SatelliteInterpretation = Field(default_factory=SatelliteInterpretation)
 
 
 def _decode_field(canonical_field_id: str | None) -> tuple[int | None, int | None, str]:
@@ -123,12 +123,8 @@ def _build_record(
         metrics.health_score = round(_clamp01(ndvi.mean), 2)
         if classification is not None:
             stress_level = _STRESS.get(classification)
-    # Build the block when there is either a derived stress level or a published narrative to carry.
-    interpretation = (
-        SatelliteInterpretation(stress_level=stress_level, notes=narrative)
-        if stress_level is not None or narrative is not None
-        else None
-    )
+    # Build the block (always return a valid dictionary, never null, to satisfy the API contract)
+    interpretation = SatelliteInterpretation(stress_level=stress_level, notes=narrative)
 
     field_id, sub_plot_id, scope = _decode_field(canonical_field_id)
     return SatelliteResult(
