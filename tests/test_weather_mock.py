@@ -42,9 +42,11 @@ async def test_forecast_returns_n_days_flagged_forecast():
     assert series.provenance.forecast is True
 
 
-def test_registry_returns_mock_and_defers_open_meteo():
+def test_registry_returns_mock_and_open_meteo():
+    from rs_weather.adapters.open_meteo import OpenMeteoWeatherAdapter
     assert isinstance(
         get_weather_adapter(Settings(weather_adapter=WeatherAdapter.MOCK)), MockWeatherAdapter
     )
-    with pytest.raises(NotImplementedError):
-        get_weather_adapter(Settings(weather_adapter=WeatherAdapter.OPEN_METEO))
+    assert isinstance(
+        get_weather_adapter(Settings(weather_adapter=WeatherAdapter.OPEN_METEO)), OpenMeteoWeatherAdapter
+    )
