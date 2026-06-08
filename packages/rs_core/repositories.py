@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, date, datetime
-from typing import Any
+from typing import TypedDict
 
 from sqlalchemy import Insert, delete, func, literal_column, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -626,9 +626,52 @@ async def get_latest_outbox_for_farm(
     ).scalar_one_or_none()
 
 
+class FarmAnalyticsSummary(TypedDict):
+    canonical_farm_id: str
+    farm_name: str
+    region: str | None
+    total_fields: int
+    total_area_hectares: float
+    crops: list[str]
+    latest_pass_date: date | None
+    overall_health: str | None
+    overall_health_score: float | None
+    field_status_counts: dict[str, int]
+
+
+class FarmAnalyticsTimeSeriesPoint(TypedDict):
+    pass_date: date
+    scene_id: str
+    area_weighted_mean: float
+    clear_fraction: float
+    analyzed_fields: int
+    analyzed_area_hectares: float
+    health_distribution_pct: dict[str, float] | None
+
+
+class FarmAnomaly(TypedDict):
+    field_id: str
+    canonical_field_id: str | None
+    name: str | None
+    crop: str | None
+    field_area_hectares: float
+    index_name: str
+    field_value: float
+    farm_average: float
+    status: str
+    anomaly_type: str
+    detail: str
+
+
+class FarmAnalyticsAnomalies(TypedDict):
+    pass_date: date | None
+    farm_average: float | None
+    anomalies: list[FarmAnomaly]
+
+
 async def get_farm_analytics_summary(
     session: AsyncSession, canonical_farm_id: str
-) -> dict[str, Any] | None:
+) -> FarmAnalyticsSummary | None:
     """Calculate overall farm health summary on-the-fly."""
     farm_info = (
         await session.execute(select(Farm).where(Farm.canonical_farm_id == canonical_farm_id))
@@ -689,7 +732,7 @@ async def get_farm_analytics_summary(
 
         total_weight_area = 0.0
         weighted_ndvi_sum = 0.0
-        from rs_interpret import classify
+        from rs_interpret import classify, vigour_to_status
 
         for mean, crop, area_m2, _ in analyses:
             area = area_m2 if area_m2 is not None else 1.0
@@ -697,25 +740,13 @@ async def get_farm_analytics_summary(
                 weighted_ndvi_sum += mean * area
                 total_weight_area += area
                 vigour_band = classify("ndvi", mean, crop).label
-                status = "healthy"
-                if vigour_band == "bare":
-                    status = "critical"
-                elif vigour_band == "sparse":
-                    status = "stressed"
-                elif vigour_band == "developing":
-                    status = "moderate"
+                status = vigour_to_status(vigour_band)
                 field_status_counts[status] += 1
 
         if total_weight_area > 0:
             overall_health_score = round(weighted_ndvi_sum / total_weight_area, 4)
             farm_vigour = classify("ndvi", overall_health_score).label
-            overall_health = "healthy"
-            if farm_vigour == "bare":
-                overall_health = "critical"
-            elif farm_vigour == "sparse":
-                overall_health = "stressed"
-            elif farm_vigour == "developing":
-                overall_health = "moderate"
+            overall_health = vigour_to_status(farm_vigour)
 
     return {
         "canonical_farm_id": canonical_farm_id,
@@ -737,10 +768,10 @@ async def get_farm_analytics_timeseries(
     index: str = "ndvi",
     start_date: date | None = None,
     end_date: date | None = None,
-) -> list[dict[str, Any]] | None:
+) -> list[FarmAnalyticsTimeSeriesPoint] | None:
     """Calculate farm-level index timeseries."""
     farm_info = (
-        await session.execute(select(Farm.id).where(Farm.canonical_farm_id == canonical_farm_id))
+        await session.execute(select(Farm).where(Farm.canonical_farm_id == canonical_farm_id))
     ).scalar_one_or_none()
     if not farm_info:
         return None
@@ -760,7 +791,7 @@ async def get_farm_analytics_timeseries(
             (FieldGeometryVersion.field_id == Field.id)
             & (FieldGeometryVersion.version == Field.geometry_version),
         )
-        .where(Field.farm_id == farm_info, Analysis.index_name == index)
+        .where(Field.farm_id == farm_info.id, Analysis.index_name == index)
     )
     if start_date:
         stmt = stmt.where(Analysis.pass_date >= start_date)
@@ -777,7 +808,7 @@ async def get_farm_analytics_timeseries(
         grouped[(r.pass_date, r.scene_id)].append(r)
 
     points = []
-    from rs_interpret import classify
+    from rs_interpret import classify, vigour_to_status
 
     for (pass_date, scene_id), records in sorted(grouped.items(), key=lambda x: x[0][0]):
         total_area = 0.0
@@ -794,13 +825,7 @@ async def get_farm_analytics_timeseries(
 
                 if index.lower() == "ndvi":
                     vigour_band = classify("ndvi", r.mean, r.crop).label
-                    status = "healthy"
-                    if vigour_band == "bare":
-                        status = "critical"
-                    elif vigour_band == "sparse":
-                        status = "stressed"
-                    elif vigour_band == "developing":
-                        status = "moderate"
+                    status = vigour_to_status(vigour_band)
                     status_areas[status] += area
 
         if total_area > 0:
@@ -829,7 +854,7 @@ async def get_farm_analytics_anomalies(
     session: AsyncSession,
     canonical_farm_id: str,
     deviation_threshold: float = 0.15,
-) -> dict[str, Any] | None:
+) -> FarmAnalyticsAnomalies | None:
     """Identify underperforming fields or fields with sudden biomass drops on the latest pass."""
     farm_info = (
         await session.execute(select(Farm).where(Farm.canonical_farm_id == canonical_farm_id))
@@ -883,7 +908,7 @@ async def get_farm_analytics_anomalies(
     farm_mean = weighted_ndvi_sum / total_area if total_area > 0 else 0.0
 
     anomalies = []
-    from rs_interpret import classify
+    from rs_interpret import classify, vigour_to_status
 
     for row in analyses:
         if row.mean is None:
@@ -916,13 +941,7 @@ async def get_farm_analytics_anomalies(
                 )
 
         vigour_band = classify("ndvi", row.mean, row.crop).label
-        status = "healthy"
-        if vigour_band == "bare":
-            status = "critical"
-        elif vigour_band == "sparse":
-            status = "stressed"
-        elif vigour_band == "developing":
-            status = "moderate"
+        status = vigour_to_status(vigour_band)
 
         if is_underperforming or is_sudden_drop:
             anomaly_types = []

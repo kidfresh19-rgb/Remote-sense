@@ -26,15 +26,6 @@ from rs_sync.resilience import (
 
 _RESULTS_PATH = "/integrations/satellite/results"
 
-# The NDVI vigour band (rs_interpret) collapses onto the AgriTrack classification enum. Reusing the
-# agronomy thresholds (classify) rather than duplicating them; the five vigour bands map to four.
-_CLASSIFICATION = {
-    "dense": "healthy",
-    "vigorous": "healthy",
-    "developing": "moderate",
-    "sparse": "stressed",
-    "bare": "critical",
-}
 # classification -> the contract's stress_level (their side maps stress_level onto classification).
 _STRESS = {"healthy": "none", "moderate": "low", "stressed": "moderate", "critical": "high"}
 
@@ -110,7 +101,8 @@ def _build_record(
     (ADR 0006); `classification`/`health_score` come from the NDVI vigour band; `cloud_cover_pct`
     is the AOI's non-clear fraction. `narrative` is the published agronomist read, attached as
     `interpretation.notes` (only published reads are passed in, risk #6)."""
-    from rs_interpret import classify  # pure agronomy bands; lazy so rs_sync stays import-light
+    # pure agronomy bands; lazy so rs_sync stays import-light
+    from rs_interpret import classify, vigour_to_status
 
     by_index = {r.index_name.lower(): r for r in rows}
     ndvi = by_index.get("ndvi")
@@ -126,7 +118,7 @@ def _build_record(
     )
     stress_level: str | None = None
     if ndvi is not None and ndvi.mean is not None:
-        classification = _CLASSIFICATION.get(classify("ndvi", ndvi.mean).label)
+        classification = vigour_to_status(classify("ndvi", ndvi.mean).label)
         metrics.classification = classification
         metrics.health_score = round(_clamp01(ndvi.mean), 2)
         if classification is not None:

@@ -7,7 +7,7 @@ and testable without it."""
 from rs_interpret.grounding import Evidence, IndexReading, ground
 from rs_interpret.prompts import PROMPT_VERSION, SYSTEM_CONTEXT, build_user_prompt
 from rs_interpret.service import Interpretation, InterpretClient, interpret
-from rs_interpret.thresholds import CROP_BANDS, CROPS, Band, bands_for, classify
+from rs_interpret.thresholds import CROP_BANDS, CROPS, Band, bands_for, classify, vigour_to_status
 
 __all__ = [
     "Evidence",
@@ -24,4 +24,5 @@ __all__ = [
     "Band",
     "bands_for",
     "classify",
+    "vigour_to_status",
 ]
