@@ -44,3 +44,21 @@ def test_write_cog_round_trips() -> None:
         assert src.crs.to_epsg() == 32735
         assert src.profile["tiled"] is True
         assert np.isclose(src.read(1)[0, 0], -0.2, atol=1e-3)
+
+
+def test_write_cog_3d_round_trips() -> None:
+    pytest.importorskip("rasterio")
+    from rasterio.io import MemoryFile
+    from rs_analysis import write_cog
+
+    arr = np.linspace(-0.2, 0.9, num=3 * 64 * 64, dtype="float32").reshape(3, 64, 64)
+    transform = (10.0, 0.0, 500000.0, 0.0, -10.0, 8030000.0)
+    data = write_cog(arr, transform=transform, crs="EPSG:32735")
+
+    assert data[:2] in (b"II", b"MM")
+    with MemoryFile(data) as mem, mem.open() as src:
+        assert src.count == 3
+        assert (src.width, src.height) == (64, 64)
+        assert src.crs.to_epsg() == 32735
+        assert src.profile["tiled"] is True
+        assert np.isclose(src.read(1)[0, 0], -0.2, atol=1e-3)

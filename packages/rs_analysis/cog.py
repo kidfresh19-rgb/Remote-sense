@@ -52,12 +52,10 @@ def write_cog(
     nodata: float = NODATA,
     tags: dict[str, str] | None = None,
 ) -> bytes:
-    """Encode a single-band float index raster as a Cloud-Optimized GeoTIFF and return its bytes.
-    Uses GDAL's COG driver, which guarantees the cloud-optimized layout (internal tiling + built
-    overviews) the tiler relies on for windowed reads - a hand-assembled tiled GTiff silently
-    degrades to strips when a single tile spans the whole raster, which is not a valid COG. `tags`
-    are written as GDAL metadata (e.g. provenance for an analyst export). Needs `rasterio` (the
-    `geo` extra, in-container only)."""
+    """Encode a single-band or multi-band float index raster as a Cloud-Optimized GeoTIFF and
+    return its bytes. Uses GDAL's COG driver, which guarantees the cloud-optimized layout
+    (internal tiling + built overviews) the tiler relies on for windowed reads. `tags` are written
+    as GDAL metadata. Needs `rasterio` (the `geo` extra, in-container only)."""
     try:
         from rasterio.io import MemoryFile
         from rasterio.transform import Affine
@@ -67,13 +65,19 @@ def write_cog(
         ) from exc
 
     data = np.asarray(array, dtype="float32")
-    if data.ndim != 2:
-        raise ValueError(f"index raster must be 2-D, got shape {data.shape}")
-    height, width = data.shape
+    if data.ndim == 2:
+        count = 1
+        height, width = data.shape
+    elif data.ndim == 3:
+        count = data.shape[0]
+        _, height, width = data.shape
+    else:
+        raise ValueError(f"index raster must be 2-D or 3-D, got shape {data.shape}")
+
     profile = {
         "driver": "COG",
         "dtype": "float32",
-        "count": 1,
+        "count": count,
         "height": height,
         "width": width,
         "crs": crs,
@@ -85,7 +89,11 @@ def write_cog(
     }
     with MemoryFile() as mem:
         with mem.open(**profile) as dst:
-            dst.write(data, 1)
+            if data.ndim == 2:
+                dst.write(data, 1)
+            else:
+                for b in range(count):
+                    dst.write(data[b], b + 1)
             if tags:
                 dst.update_tags(**tags)
         return bytes(mem.read())

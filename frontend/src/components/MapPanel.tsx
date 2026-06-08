@@ -1,4 +1,4 @@
-import { CaretLeft, CaretRight, Columns, Stack, X, Lightning } from "@phosphor-icons/react";
+import { CaretLeft, CaretRight, Columns, Stack, X, Lightning, Eye } from "@phosphor-icons/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { Field } from "@/lib/api";
@@ -36,7 +36,9 @@ export function MapPanel({
     passDate,
     compareDate,
     showRaster,
+    showRgb,
     toggleRaster,
+    toggleRgb,
     setCompareDate,
     customAOI,
     setCustomAOI,
@@ -159,6 +161,7 @@ export function MapPanel({
           index={index}
           sceneId={activeSceneId}
           showRaster={showRaster}
+          showRgb={showRgb}
           customAOI={customAOI}
           marker={searchMarker}
           drawMode={drawMode}
@@ -222,6 +225,15 @@ export function MapPanel({
           <Stack size={18} />
         </IconButton>
         <IconButton
+          label={showRgb ? "Hide true color imagery" : "Show true color imagery"}
+          active={showRgb}
+          onClick={toggleRgb}
+          disabled={!selectedField}
+          className="border border-border bg-panel"
+        >
+          <Eye size={18} />
+        </IconButton>
+        <IconButton
           label={comparing ? "Exit comparison" : "Compare two passes"}
           active={comparing}
           onClick={toggleCompare}
@@ -282,7 +294,7 @@ export function MapPanel({
       </button>
 
       {/* Index legend */}
-      {selectedField ? (
+      {selectedField && !showRgb ? (
         <div className="absolute bottom-3 left-3 z-20">
           <IndexLegend meta={indexMeta(index)} />
         </div>
@@ -329,6 +341,7 @@ function SingleSceneMap({
   index,
   sceneId,
   showRaster,
+  showRgb,
   customAOI,
   marker,
   drawMode,
@@ -340,6 +353,7 @@ function SingleSceneMap({
   index: IndexKey;
   sceneId: string | null;
   showRaster: boolean;
+  showRgb: boolean;
   customAOI: import("geojson").Geometry | null;
   marker: [number, number] | null;
   drawMode: boolean;
@@ -356,6 +370,7 @@ function SingleSceneMap({
     index,
     sceneId,
     showRaster,
+    showRgb,
     customAOI,
     marker,
     drawMode,

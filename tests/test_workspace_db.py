@@ -289,3 +289,68 @@ def test_create_annotation_empty_body_is_422() -> None:
     # request parse (Pydantic) and never reaches the endpoint.
     with pytest.raises(ValidationError):
         AnnotationCreate(body="   ")
+
+
+async def test_field_scenes_deduplicates_by_pass_date(maker_) -> None:
+    field_id = await _seed(maker_)
+    # Insert another scene on the same date with lower clear_fraction, and another scene on a different date
+    async with maker_() as session:
+        # A duplicate date, lower clear_fraction (0.5 vs 0.9 in seeded)
+        await upsert_scene_metadata(
+            session,
+            scene_id="S2B_MSIL2A_20250115T075_DUPE",
+            provider="cdse",
+            quantification_value=10000.0,
+            boa_add_offset={"B04": -1000.0},
+            crs="EPSG:32736",
+            sensing_datetime=datetime(2025, 1, 15, 8, 5, tzinfo=UTC),
+        )
+        await upsert_analysis(
+            session,
+            field_id=field_id,
+            scene_id="S2B_MSIL2A_20250115T075_DUPE",
+            pass_date=_PASS,
+            index_name="ndvi",
+            formula_version="1",
+            geometry_version=1,
+            provider="cdse",
+            provider_scene_id="S2B_MSIL2A_20250115T075_DUPE",
+            processing_mode="windowed_cog",
+            resolution_m=10.0,
+            clear_fraction=0.5, # lower than 0.9
+            mean=0.5,
+            confidence="medium",
+        )
+        # A different date (2025-01-20)
+        await upsert_scene_metadata(
+            session,
+            scene_id="S2A_MSIL2A_20250120T075",
+            provider="cdse",
+            quantification_value=10000.0,
+            boa_add_offset={"B04": -1000.0},
+            crs="EPSG:32736",
+            sensing_datetime=datetime(2025, 1, 20, 7, 55, tzinfo=UTC),
+        )
+        await upsert_analysis(
+            session,
+            field_id=field_id,
+            scene_id="S2A_MSIL2A_20250120T075",
+            pass_date=date(2025, 1, 20),
+            index_name="ndvi",
+            formula_version="1",
+            geometry_version=1,
+            provider="cdse",
+            provider_scene_id="S2A_MSIL2A_20250120T075",
+            processing_mode="windowed_cog",
+            resolution_m=10.0,
+            clear_fraction=0.8,
+            mean=0.7,
+            confidence="high",
+        )
+        await session.commit()
+
+    async with maker_() as session:
+        scenes = await field_scenes(session, field_id)
+    # The duplicate date must return ONLY the one with highest clear_fraction (0.9, which has scene_id == _SCENE)
+    assert [s.pass_date for s in scenes] == [_PASS, date(2025, 1, 20)]
+    assert [s.scene_id for s in scenes] == [_SCENE, "S2A_MSIL2A_20250120T075"]

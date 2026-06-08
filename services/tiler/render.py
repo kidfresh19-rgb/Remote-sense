@@ -22,6 +22,8 @@ class TileUnavailable(RuntimeError):
 def render_params(index: str) -> dict[str, object]:
     """The rescale range + colormap name a tile of `index` is rendered with (matplotlib / rio-tiler
     convention), read from the locked display range. Raises KeyError for an unknown index."""
+    if index == "rgb":
+        return {"colormap_name": None, "rescale": (0.0, 0.3)}
     colormap = get_colormap(index)
     return {"colormap_name": colormap.colormap, "rescale": (colormap.vmin, colormap.vmax)}
 
@@ -48,11 +50,6 @@ def render_tile(
     except ImportError as exc:
         raise RasterStackUnavailable(str(exc)) from exc
 
-    params = render_params(index)
-    vmin, vmax = params["rescale"]  # type: ignore[misc]
-    # rio-tiler's registry keys are lowercase matplotlib names (the locked names are mixed-case).
-    colormap = default_cmaps.get(str(params["colormap_name"]).lower())
-
     # rasterio 1.4 refuses AWS credentials as rasterio.Env options; GDAL still reads them from the
     # process environment for /vsis3/. Move any credential keys into os.environ and pass only the
     # remaining endpoint/addressing options to the Env.
@@ -69,6 +66,14 @@ def render_tile(
         raise TileUnavailable(f"tile {z}/{x}/{y} is outside {index} coverage") from exc
     except RasterioIOError as exc:
         raise TileUnavailable(f"no readable {index} COG at the source") from exc
+
+    if index == "rgb":
+        image.rescale(in_range=((0.0, 0.3), (0.0, 0.3), (0.0, 0.3)))
+        return image.render(img_format="PNG")
+
+    params = render_params(index)
+    vmin, vmax = params["rescale"]  # type: ignore[misc]
+    colormap = default_cmaps.get(str(params["colormap_name"]).lower())
 
     image.rescale(in_range=((vmin, vmax),))
     return image.render(img_format="PNG", colormap=colormap)

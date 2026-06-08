@@ -11,6 +11,7 @@ interface WorkspaceState {
   // The second pass to compare the primary against. Non-null puts the map into side-by-side mode.
   compareDate: string | null;
   showRaster: boolean;
+  showRgb: boolean;
   customAOI: Geometry | null; // user-defined analysis boundary
 }
 
@@ -28,6 +29,7 @@ type Action =
   | { type: "setCompareDate"; compareDate: string | null }
   | { type: "restoreView"; view: RestoreView }
   | { type: "toggleRaster" }
+  | { type: "toggleRgb" }
   | { type: "setCustomAOI"; geometry: Geometry | null };
 
 const initialState: WorkspaceState = {
@@ -37,6 +39,7 @@ const initialState: WorkspaceState = {
   passDate: null,
   compareDate: null,
   showRaster: false,
+  showRgb: false,
   customAOI: null,
 };
 
@@ -45,10 +48,10 @@ function reducer(state: WorkspaceState, action: Action): WorkspaceState {
     case "selectFarm":
       if (action.farmId === state.farmId) return state;
       // Switching farm clears the field-scoped selection so panels never show stale context.
-      return { ...state, farmId: action.farmId, fieldId: null, passDate: null, compareDate: null };
+      return { ...state, farmId: action.farmId, fieldId: null, passDate: null, compareDate: null, showRgb: false };
     case "selectField":
       if (action.fieldId === state.fieldId) return state;
-      return { ...state, fieldId: action.fieldId, passDate: null, compareDate: null };
+      return { ...state, fieldId: action.fieldId, passDate: null, compareDate: null, showRgb: false };
     case "setIndex":
       return { ...state, index: action.index };
     case "setPassDate":
@@ -64,9 +67,22 @@ function reducer(state: WorkspaceState, action: Action): WorkspaceState {
         index: action.view.index,
         passDate: null,
         compareDate: null,
+        showRgb: false,
       };
     case "toggleRaster":
-      return { ...state, showRaster: !state.showRaster };
+      const nextShowRaster = !state.showRaster;
+      return {
+        ...state,
+        showRaster: nextShowRaster,
+        showRgb: nextShowRaster ? false : state.showRgb,
+      };
+    case "toggleRgb":
+      const nextShowRgb = !state.showRgb;
+      return {
+        ...state,
+        showRgb: nextShowRgb,
+        showRaster: nextShowRgb ? false : state.showRaster,
+      };
     case "setCustomAOI":
       return { ...state, customAOI: action.geometry };
     default:
@@ -82,6 +98,7 @@ interface WorkspaceContextValue extends WorkspaceState {
   setCompareDate: (date: string | null) => void;
   restoreView: (view: RestoreView) => void;
   toggleRaster: () => void;
+  toggleRgb: () => void;
   setCustomAOI: (geometry: Geometry | null) => void;
 }
 
@@ -99,6 +116,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       setCompareDate: (compareDate) => dispatch({ type: "setCompareDate", compareDate }),
       restoreView: (view) => dispatch({ type: "restoreView", view }),
       toggleRaster: () => dispatch({ type: "toggleRaster" }),
+      toggleRgb: () => dispatch({ type: "toggleRgb" }),
       setCustomAOI: (geometry) => dispatch({ type: "setCustomAOI", geometry }),
     }),
     [state],

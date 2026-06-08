@@ -81,10 +81,23 @@ async def collect_field(
         rasters: dict[str, IndexRaster] = {}
         provider = scene.provider
         processing_mode = "mock"
+        
+        fetched_bands_10m = None
+        transform_10m = None
+        crs_10m = None
+
         for resolution_m, names in resolution_groups.items():
             bands = sorted({band for name in names for band in get_index(name).bands})
+            if emit_rasters and resolution_m == 10:
+                bands = sorted(set(bands) | {"B04", "B03", "B02"})
             fetched = await adapter.fetch(scene, aoi, bands=bands, resolution_m=float(resolution_m))
             processing_mode = fetched.provenance.processing_mode.value
+            
+            if resolution_m == 10:
+                fetched_bands_10m = fetched.data.bands
+                transform_10m = fetched.data.transform
+                crs_10m = fetched.data.crs
+
             for name in names:
                 outputs.append(
                     analyze_index(
@@ -100,6 +113,25 @@ async def collect_field(
                         transform=fetched.data.transform,
                         crs=fetched.data.crs,
                     )
+        
+        if emit_rasters and fetched_bands_10m is None:
+            fetched_10m = await adapter.fetch(scene, aoi, bands=["B04", "B03", "B02"], resolution_m=10.0)
+            fetched_bands_10m = fetched_10m.data.bands
+            transform_10m = fetched_10m.data.transform
+            crs_10m = fetched_10m.data.crs
+
+        if emit_rasters and fetched_bands_10m is not None:
+            red = fetched_bands_10m.get("B04")
+            green = fetched_bands_10m.get("B03")
+            blue = fetched_bands_10m.get("B02")
+            if red is not None and green is not None and blue is not None:
+                rgb_stack = np.stack([red, green, blue], axis=0)
+                rasters["rgb"] = IndexRaster(
+                    array=rgb_stack,
+                    transform=transform_10m,
+                    crs=crs_10m,
+                )
+
         results.append(
             ScenePassResult(
                 scene_id=scene_id,

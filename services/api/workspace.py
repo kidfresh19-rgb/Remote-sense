@@ -261,12 +261,26 @@ async def field_timeseries(
 
 
 async def field_scenes(session: AsyncSession, field_id: uuid.UUID) -> list[SceneOut]:
+    from sqlalchemy import func
+
+    # Partition by pass_date to select the scene with the highest clear_fraction on that date
+    subq = (
+        select(
+            Analysis.scene_id,
+            Analysis.pass_date,
+            func.row_number().over(
+                partition_by=Analysis.pass_date,
+                order_by=Analysis.clear_fraction.desc()
+            ).label("rn")
+        )
+        .where(Analysis.field_id == field_id)
+        .subquery()
+    )
     rows = (
         await session.execute(
-            select(Analysis.scene_id, Analysis.pass_date)
-            .where(Analysis.field_id == field_id)
-            .distinct()
-            .order_by(Analysis.pass_date)
+            select(subq.c.scene_id, subq.c.pass_date)
+            .where(subq.c.rn == 1)
+            .order_by(subq.c.pass_date)
         )
     ).all()
     return [SceneOut(scene_id=scene_id, pass_date=pass_date) for scene_id, pass_date in rows]

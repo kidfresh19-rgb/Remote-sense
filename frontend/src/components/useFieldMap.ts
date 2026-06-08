@@ -117,6 +117,7 @@ interface FieldMapParams {
   index: IndexKey;
   sceneId: string | null;
   showRaster: boolean;
+  showRgb: boolean;
   /** Fit the camera to the field on selection. The follower map in a synced pair sets this false
    *  so the shared-camera controller drives it instead. */
   fit?: boolean;
@@ -269,6 +270,7 @@ export function useFieldMap(
     index,
     sceneId,
     showRaster,
+    showRgb,
     fit = true,
     controls = true,
     onMap,
@@ -404,12 +406,13 @@ export function useFieldMap(
     const apply = () => {
       if (map.getLayer(INDEX_LAYER)) map.removeLayer(INDEX_LAYER);
       if (map.getSource(INDEX_SOURCE)) map.removeSource(INDEX_SOURCE);
-      if (!showRaster || !field || !sceneId) return;
+      const activeRaster = showRgb ? "rgb" : (showRaster ? index : null);
+      if (!activeRaster || !field || !sceneId) return;
       map.addSource(INDEX_SOURCE, {
         type: "raster",
         tiles: [
           indexTileTemplate({
-            index,
+            index: activeRaster,
             geometryVersion: field.geometry_version,
             fieldId: field.field_id,
             sceneId,
@@ -425,7 +428,7 @@ export function useFieldMap(
     };
     if (readyRef.current) apply();
     else map.once("load", apply);
-  }, [showRaster, index, field, sceneId]);
+  }, [showRaster, showRgb, index, field, sceneId]);
 
   // Custom AOI overlay: dashed line + translucent fill, placed beneath the field outline.
   useEffect(() => {
