@@ -299,6 +299,9 @@ async def insert_interpretation(
     status: str,
     confidence: str,
     model: str,
+    gdd_accumulation: float | None = None,
+    total_precipitation: float | None = None,
+    recent_activities: list[dict] | None = None,
 ) -> tuple[Interpretation, bool]:
     """Store a drafted interpretation if none exists for this field/pass/geometry/prompt-version;
     return (row, created). First-draft-wins (ON CONFLICT DO NOTHING), so a re-run never clobbers a
@@ -317,6 +320,9 @@ async def insert_interpretation(
             status=status,
             confidence=confidence,
             model=model,
+            gdd_accumulation=gdd_accumulation,
+            total_precipitation=total_precipitation,
+            recent_activities=recent_activities,
             needs_review=True,
             published=False,
         )

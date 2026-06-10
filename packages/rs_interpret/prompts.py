@@ -13,7 +13,7 @@ from rs_interpret.grounding import Evidence
 # sign-off, bump the version (the rule the scaffolding documents) so edits never silently overwrite
 # a read an agronomist already approved. The version travels into the stored interpretation's
 # provenance.
-PROMPT_VERSION = "interp/v1"
+PROMPT_VERSION = "interp/v2"
 
 # Static and identical across calls, so the client can mark it for prompt caching. The agronomic
 # guidance below is intentionally substantial: it gives the model the Zimbabwe + per-crop context it
@@ -42,6 +42,16 @@ SYSTEM_CONTEXT = (
     "- NDMI tracks canopy moisture and water stress.\n"
     "- The band label already encodes the crop- and index-specific threshold; lean on it and the "
     "supplied note rather than re-deriving meaning from the raw value.\n\n"
+    "EVALUATING MULTI-SOURCE CONTEXT:\n"
+    "- Evaluate vegetation index trends (e.g. NDVI for canopy vigour, NDRE for chlorophyll/nitrogen) "  # noqa: E501
+    "relative to weather and farm management. Cross-reference index changes with preceding rainfall "  # noqa: E501
+    "and temperature/GDD anomalies to identify water deficit, moisture stress, or growth rates.\n"
+    "- Correlate index signals with recent activity logs. A boost in vigour or red-edge response "
+    "following fertilization or irrigation indicates a positive response to intervention. A drop "
+    "in moisture (NDMI) or vigour (NDVI) despite recent irrigation indicates potential water deficit or irrigation "  # noqa: E501
+    "insufficiency. If low vigour continues after planting, mention emergence or germination delay.\n"  # noqa: E501
+    "- Use preceding 14-day cumulative rainfall and GDD (growing degree days) to contextualize crop "  # noqa: E501
+    "growth rates and moisture availability. Maintain an advisory, descriptive tone without prescribing interventions.\n\n"  # noqa: E501
     "ZIMBABWE CONTEXT (background only - never assert these as facts about the field):\n"
     "- The main rainfed season runs roughly November to April; the dry season May to October. A "
     "low vegetation read in the dry season can be normal fallow, not crop failure.\n"
@@ -94,5 +104,19 @@ def build_user_prompt(evidence: Evidence) -> str:
             lines.append(
                 f"- {reading.index.upper()}: {reading.mean:.3f} -> {reading.band} ({reading.note})"
             )
+
+    if evidence.gdd_accumulation is not None:
+        lines.append(f"Preceding 14-day GDD accumulation: {evidence.gdd_accumulation:.1f} °C-day")
+    if evidence.total_precipitation is not None:
+        lines.append(f"Preceding 14-day total precipitation: {evidence.total_precipitation:.1f} mm")
+
+    if evidence.recent_activities:
+        lines.append("Preceding 30-day activity logs:")
+        for act in evidence.recent_activities:
+            detail_str = f" ({act.get('detail')})" if act.get("detail") else ""
+            lines.append(f"- {act.get('date')}: {act.get('activity')}{detail_str}")
+    else:
+        lines.append("Preceding 30-day activity logs: None recorded")
+
     lines.append("\nWrite the field-health read.")
     return "\n".join(lines)

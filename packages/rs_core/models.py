@@ -275,6 +275,11 @@ class Interpretation(Base):
     prompt_version: Mapped[str] = mapped_column(String(32))
     crop: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
+    # Grounding Context (weather/activity telemetry)
+    gdd_accumulation: Mapped[float | None] = mapped_column(Float, nullable=True)
+    total_precipitation: Mapped[float | None] = mapped_column(Float, nullable=True)
+    recent_activities: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
     # The model's words; the structured fields below are grounded in the numbers, not the model.
     narrative: Mapped[str] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(32))

@@ -140,6 +140,9 @@ async def _seed(maker) -> uuid.UUID:
             status="vigorous",
             confidence="high",
             model="claude-opus-4-8",
+            gdd_accumulation=120.5,
+            total_precipitation=45.2,
+            recent_activities=[{"date": "2025-01-10", "activity": "fertilizer", "detail": None}],
         )
         await session.commit()
     return field_id
@@ -174,6 +177,9 @@ async def test_field_interpretations(maker_) -> None:
     assert len(interps) == 1
     assert interps[0].status == "vigorous"
     assert interps[0].published is False
+    assert interps[0].gdd_accumulation == 120.5
+    assert interps[0].total_precipitation == 45.2
+    assert interps[0].recent_activities == [{"date": "2025-01-10", "activity": "fertilizer", "detail": None}]  # noqa: E501
 
 
 async def test_field_audit(maker_) -> None:
@@ -293,7 +299,7 @@ def test_create_annotation_empty_body_is_422() -> None:
 
 async def test_field_scenes_deduplicates_by_pass_date(maker_) -> None:
     field_id = await _seed(maker_)
-    # Insert another scene on the same date with lower clear_fraction, and another scene on a different date
+    # Insert another scene on the same date with lower clear_fraction, and another scene on a different date  # noqa: E501
     async with maker_() as session:
         # A duplicate date, lower clear_fraction (0.5 vs 0.9 in seeded)
         await upsert_scene_metadata(
@@ -351,6 +357,6 @@ async def test_field_scenes_deduplicates_by_pass_date(maker_) -> None:
 
     async with maker_() as session:
         scenes = await field_scenes(session, field_id)
-    # The duplicate date must return ONLY the one with highest clear_fraction (0.9, which has scene_id == _SCENE)
+    # The duplicate date must return ONLY the one with highest clear_fraction (0.9, which has scene_id == _SCENE)  # noqa: E501
     assert [s.pass_date for s in scenes] == [_PASS, date(2025, 1, 20)]
     assert [s.scene_id for s in scenes] == [_SCENE, "S2A_MSIL2A_20250120T075"]

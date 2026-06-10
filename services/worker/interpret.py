@@ -75,8 +75,37 @@ async def interpret_field_pass(
     if not rows:
         return None
 
+    # Fetch preceding 14-day weather and 30-day activity logs context
+    from rs_activity import get_activity_adapter
+    from rs_interpret.grounding import aggregate_grounding_data
+    from rs_weather import get_weather_adapter
+
+    weather_port = get_weather_adapter()
+    activity_port = get_activity_adapter()
+
+    gdd, precip, logs = await aggregate_grounding_data(
+        session,
+        rows[0],
+        weather_port,
+        activity_port,
+    )
+
+    recent_activities = [
+        {
+            "date": log.date.isoformat(),
+            "activity": str(log.activity),
+            "detail": log.detail,
+        }
+        for log in logs
+    ]
+
     evidence = ground(
-        [_output_from_analysis(row) for row in rows], crop=crop, pass_date=rows[0].pass_date
+        [_output_from_analysis(row) for row in rows],
+        crop=crop,
+        pass_date=rows[0].pass_date,
+        gdd_accumulation=gdd,
+        total_precipitation=precip,
+        recent_activities=recent_activities,
     )
     draft = await interpret(evidence, client, model=model_id)
     row, _ = await insert_interpretation(
@@ -91,5 +120,8 @@ async def interpret_field_pass(
         status=draft.status,
         confidence=draft.confidence,
         model=draft.model,
+        gdd_accumulation=evidence.gdd_accumulation,
+        total_precipitation=evidence.total_precipitation,
+        recent_activities=evidence.recent_activities,
     )
     return row

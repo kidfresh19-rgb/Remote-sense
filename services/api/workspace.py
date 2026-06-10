@@ -91,6 +91,9 @@ class InterpretationOut(BaseModel):
     needs_review: bool
     reviewed_by: str | None
     reviewed_at: datetime | None
+    gdd_accumulation: float | None = None
+    total_precipitation: float | None = None
+    recent_activities: list[dict[str, Any]] | None = None
 
 
 class InterpretationReview(BaseModel):
@@ -314,6 +317,9 @@ def _interpretation_out(i: Interpretation) -> InterpretationOut:
         needs_review=i.needs_review,
         reviewed_by=i.reviewed_by,
         reviewed_at=i.reviewed_at,
+        gdd_accumulation=i.gdd_accumulation,
+        total_precipitation=i.total_precipitation,
+        recent_activities=i.recent_activities,
     )
 
 

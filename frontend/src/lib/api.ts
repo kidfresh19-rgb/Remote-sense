@@ -41,6 +41,12 @@ export interface Scene {
   pass_date: string;
 }
 
+export interface RecentActivity {
+  date: string;
+  activity: string;
+  detail: string | null;
+}
+
 export interface Interpretation {
   id: string;
   pass_date: string;
@@ -51,6 +57,9 @@ export interface Interpretation {
   needs_review: boolean;
   reviewed_by: string | null;
   reviewed_at: string | null;
+  gdd_accumulation?: number | null;
+  total_precipitation?: number | null;
+  recent_activities?: RecentActivity[] | null;
 }
 
 /** An agronomist's review action: publish/withhold and optionally correct the narrative. A null or
