@@ -271,10 +271,9 @@ async def field_scenes(session: AsyncSession, field_id: uuid.UUID) -> list[Scene
         select(
             Analysis.scene_id,
             Analysis.pass_date,
-            func.row_number().over(
-                partition_by=Analysis.pass_date,
-                order_by=Analysis.clear_fraction.desc()
-            ).label("rn")
+            func.row_number()
+            .over(partition_by=Analysis.pass_date, order_by=Analysis.clear_fraction.desc())
+            .label("rn"),
         )
         .where(Analysis.field_id == field_id)
         .subquery()

@@ -68,7 +68,9 @@ async def test_aggregate_grounding_data() -> None:
     all_logs = [
         ActivityLog("cfarm-1", "cfld-1", date(2025, 6, 5), ActivityType.PLANTING, "maize"),
         ActivityLog("cfarm-1", "cfld-1", date(2025, 6, 10), ActivityType.FERTILIZER, None),
-        ActivityLog("cfarm-1", "cfld-1", date(2025, 6, 12), ActivityType.OTHER, None),  # filtered out  # noqa: E501
+        ActivityLog(
+            "cfarm-1", "cfld-1", date(2025, 6, 12), ActivityType.OTHER, None
+        ),  # filtered out  # noqa: E501
     ]
     activity_port = FakeActivityLogPort(all_logs)
 

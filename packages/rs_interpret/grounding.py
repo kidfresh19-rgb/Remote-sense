@@ -137,4 +137,3 @@ async def aggregate_grounding_data(
         filtered_logs = []
 
     return gdd, precip, filtered_logs
-

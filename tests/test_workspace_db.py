@@ -179,7 +179,9 @@ async def test_field_interpretations(maker_) -> None:
     assert interps[0].published is False
     assert interps[0].gdd_accumulation == 120.5
     assert interps[0].total_precipitation == 45.2
-    assert interps[0].recent_activities == [{"date": "2025-01-10", "activity": "fertilizer", "detail": None}]  # noqa: E501
+    assert interps[0].recent_activities == [
+        {"date": "2025-01-10", "activity": "fertilizer", "detail": None}
+    ]  # noqa: E501
 
 
 async def test_field_audit(maker_) -> None:
@@ -323,7 +325,7 @@ async def test_field_scenes_deduplicates_by_pass_date(maker_) -> None:
             provider_scene_id="S2B_MSIL2A_20250115T075_DUPE",
             processing_mode="windowed_cog",
             resolution_m=10.0,
-            clear_fraction=0.5, # lower than 0.9
+            clear_fraction=0.5,  # lower than 0.9
             mean=0.5,
             confidence="medium",
         )
