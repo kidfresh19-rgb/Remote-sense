@@ -15,6 +15,11 @@ weather and farm activity, and pushes reviewed results back to the gateway.
 
 - **Farm / field / analysis** the data hierarchy. A farm owns fields (polygons); an analysis is one
   index over one field for one scene (`rs_core` data model).
+- **Client / farmer vs analyst / agronomist** two distinct human roles, never conflated. A *client*
+  (farmer) is onboarded through the mobile app, owns farms, and never uses remote-sense directly:
+  their data flows farmer -> gateway -> remote-sense, and results flow back the same way. The
+  *analysts / agronomists* are the small expert group who operate the remote-sense workspace and
+  answer client questions.
 - **AOI** area of interest: the field polygon a computation is clipped to.
 - **DN / reflectance / BOA offset** raw pixel digital number vs surface reflectance.
   `rho = (DN + BOA_ADD_OFFSET) / QUANTIFICATION_VALUE`, read per scene from metadata. `DN == 0` is
