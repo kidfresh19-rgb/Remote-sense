@@ -10,6 +10,29 @@ override default behavior. The product spec lives in `PLAN.md`; this file is *ho
 
 ---
 
+## 0. Active rebuild constraints (non-negotiable while the intelligence-core rebuild runs)
+
+We are re-implementing the intelligence core (L2 to L6) in an ordered, test-first way behind a
+frozen external boundary. Full plan: `docs/adr/0008-ordered-reimplementation-frozen-contract.md`,
+`docs/prd/0001-intelligence-core-rebuild.md`, `docs/backlog/0001-intelligence-core-rebuild-backlog.md`.
+
+- **The external contract is FROZEN.** The gateway / AgriTrack-facing routes and the outbound push
+  (`POST /api/v1/mobile/sync`, `GET /api/v1/mobile/data`, `POST /ingest/farm`, and the `rs_sync`
+  push payload) keep their exact routes, methods, schemas, status codes, and auth headers. The map
+  is `CONTRACT.md`; the snapshot is `contract/openapi.before.json`; the gate is `tests/contract/`. A
+  non-additive change to a frozen route is a regression, not a refactor. The browser BFF
+  (`workspace.py`) is internal and may be improved.
+- **No new credentials.** Reuse the exact `RS_`-prefixed env var names in `.env.example`. Never
+  create, rename, rotate, or hard-code an auth token, key, header, or scheme.
+- **Keep the architecture; rebuild the interior.** A cleaner re-implementation, not a redesign. The
+  section 1 invariants and the stack (FastAPI + Celery/Redis, ports-and-adapters imagery,
+  pre-computed tiles) stand. Improve interior structure where the reevaluation calls for it; moving
+  an invariant still needs its own ADR.
+- **Every green light is committed.** A slice is done only when `ruff check`, `ruff format --check`,
+  and `pytest` are all clean. Small Conventional Commits; push each green slice.
+
+---
+
 ## 1. Architecture invariants (never violate without an ADR)
 
 1. **Ports & adapters at both external edges.** Satellite access goes through `rs_imagery`'s
