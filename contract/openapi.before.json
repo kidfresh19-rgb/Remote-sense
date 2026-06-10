@@ -1,0 +1,2552 @@
+{
+  "components": {
+    "schemas": {
+      "AOIAnalysisRequest": {
+        "properties": {
+          "geometry": {
+            "additionalProperties": true,
+            "title": "Geometry",
+            "type": "object"
+          },
+          "index": {
+            "title": "Index",
+            "type": "string"
+          }
+        },
+        "required": [
+          "geometry",
+          "index"
+        ],
+        "title": "AOIAnalysisRequest",
+        "type": "object"
+      },
+      "AgriTrackSyncIn": {
+        "description": "One AgriTrack sync push: a farmer and their farms.",
+        "properties": {
+          "farmer": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/_FarmerSyncIn"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "farms": {
+            "items": {
+              "$ref": "#/components/schemas/_FarmSyncIn"
+            },
+            "title": "Farms",
+            "type": "array"
+          }
+        },
+        "required": [
+          "farms"
+        ],
+        "title": "AgriTrackSyncIn",
+        "type": "object"
+      },
+      "AnnotationCreate": {
+        "description": "An analyst's new note. The geometry version is resolved server-side from the field (never\ntrusted from the client, invariant 5); the author is the verified token subject.",
+        "properties": {
+          "body": {
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Body",
+            "type": "string"
+          },
+          "pass_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pass Date"
+          }
+        },
+        "required": [
+          "body"
+        ],
+        "title": "AnnotationCreate",
+        "type": "object"
+      },
+      "AnnotationOut": {
+        "properties": {
+          "author": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Author"
+          },
+          "body": {
+            "title": "Body",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "field_id": {
+            "title": "Field Id",
+            "type": "string"
+          },
+          "geometry_version": {
+            "title": "Geometry Version",
+            "type": "integer"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "pass_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pass Date"
+          }
+        },
+        "required": [
+          "id",
+          "field_id",
+          "geometry_version",
+          "pass_date",
+          "body",
+          "author",
+          "created_at"
+        ],
+        "title": "AnnotationOut",
+        "type": "object"
+      },
+      "AuditRecordOut": {
+        "description": "The provenance tuple (CLAUDE.md invariant 5) of one stored analysis, surfaced so an analyst\ncan see exactly which scene, formula, geometry version, and processing mode produced a value.\nRead-only and geometry-free; this is internal reproducibility metadata, not the gateway push.",
+        "properties": {
+          "clear_fraction": {
+            "title": "Clear Fraction",
+            "type": "number"
+          },
+          "cog_uri": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cog Uri"
+          },
+          "confidence": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confidence"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "formula_version": {
+            "title": "Formula Version",
+            "type": "string"
+          },
+          "geometry_version": {
+            "title": "Geometry Version",
+            "type": "integer"
+          },
+          "index_name": {
+            "title": "Index Name",
+            "type": "string"
+          },
+          "pass_date": {
+            "format": "date",
+            "title": "Pass Date",
+            "type": "string"
+          },
+          "processing_mode": {
+            "title": "Processing Mode",
+            "type": "string"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
+          "provider_scene_id": {
+            "title": "Provider Scene Id",
+            "type": "string"
+          },
+          "resolution_m": {
+            "title": "Resolution M",
+            "type": "number"
+          },
+          "scene_id": {
+            "title": "Scene Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "pass_date",
+          "index_name",
+          "scene_id",
+          "provider",
+          "provider_scene_id",
+          "processing_mode",
+          "formula_version",
+          "geometry_version",
+          "resolution_m",
+          "clear_fraction",
+          "confidence",
+          "cog_uri",
+          "created_at"
+        ],
+        "title": "AuditRecordOut",
+        "type": "object"
+      },
+      "FarmIn": {
+        "description": "A farm onboarding payload. `boundary` may be omitted when the gateway sends only inner\nfields; in that case the farm boundary is derived from the union of its fields. A farm\nwith neither a boundary nor fields is rejected (nothing to analyse, DI-4).",
+        "properties": {
+          "agritrack_farmer_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agritrack Farmer Id"
+          },
+          "boundary": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Boundary"
+          },
+          "canonical_farm_id": {
+            "minLength": 1,
+            "title": "Canonical Farm Id",
+            "type": "string"
+          },
+          "crs": {
+            "default": "EPSG:4326",
+            "title": "Crs",
+            "type": "string"
+          },
+          "fields": {
+            "items": {
+              "$ref": "#/components/schemas/FieldIn"
+            },
+            "title": "Fields",
+            "type": "array"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "region": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Region"
+          }
+        },
+        "required": [
+          "canonical_farm_id"
+        ],
+        "title": "FarmIn",
+        "type": "object"
+      },
+      "FarmIngestReport": {
+        "description": "Full ingestion outcome for one farm.",
+        "properties": {
+          "action": {
+            "title": "Action",
+            "type": "string"
+          },
+          "canonical_farm_id": {
+            "title": "Canonical Farm Id",
+            "type": "string"
+          },
+          "farm_id": {
+            "title": "Farm Id",
+            "type": "string"
+          },
+          "fields": {
+            "items": {
+              "$ref": "#/components/schemas/FieldIngestReport"
+            },
+            "title": "Fields",
+            "type": "array"
+          },
+          "working_crs": {
+            "title": "Working Crs",
+            "type": "string"
+          }
+        },
+        "required": [
+          "canonical_farm_id",
+          "farm_id",
+          "action",
+          "working_crs"
+        ],
+        "title": "FarmIngestReport",
+        "type": "object"
+      },
+      "FarmOut": {
+        "properties": {
+          "canonical_farm_id": {
+            "title": "Canonical Farm Id",
+            "type": "string"
+          },
+          "crops": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Crops"
+          },
+          "latest_pass_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latest Pass Date"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "overall_health": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Overall Health"
+          },
+          "overall_health_score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Overall Health Score"
+          },
+          "region": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Region"
+          },
+          "total_area_hectares": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Area Hectares"
+          },
+          "total_fields": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Fields"
+          }
+        },
+        "required": [
+          "canonical_farm_id",
+          "name",
+          "region"
+        ],
+        "title": "FarmOut",
+        "type": "object"
+      },
+      "FieldIn": {
+        "description": "One inner field within a farm. Geometry is GeoJSON in the declared CRS.",
+        "properties": {
+          "canonical_field_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Canonical Field Id"
+          },
+          "crop": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Crop"
+          },
+          "crs": {
+            "default": "EPSG:4326",
+            "title": "Crs",
+            "type": "string"
+          },
+          "geometry": {
+            "additionalProperties": true,
+            "title": "Geometry",
+            "type": "object"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          }
+        },
+        "required": [
+          "geometry"
+        ],
+        "title": "FieldIn",
+        "type": "object"
+      },
+      "FieldIngestReport": {
+        "description": "Per-field outcome, surfaced so an operator can see exactly what ingestion did.",
+        "properties": {
+          "action": {
+            "title": "Action",
+            "type": "string"
+          },
+          "canonical_field_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Canonical Field Id"
+          },
+          "field_id": {
+            "title": "Field Id",
+            "type": "string"
+          },
+          "geometry_version": {
+            "title": "Geometry Version",
+            "type": "integer"
+          },
+          "repaired": {
+            "default": false,
+            "title": "Repaired",
+            "type": "boolean"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "canonical_field_id",
+          "field_id",
+          "action",
+          "geometry_version"
+        ],
+        "title": "FieldIngestReport",
+        "type": "object"
+      },
+      "FieldOut": {
+        "properties": {
+          "canonical_field_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Canonical Field Id"
+          },
+          "crop": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Crop"
+          },
+          "field_id": {
+            "title": "Field Id",
+            "type": "string"
+          },
+          "geometry": {
+            "additionalProperties": true,
+            "title": "Geometry",
+            "type": "object"
+          },
+          "geometry_version": {
+            "title": "Geometry Version",
+            "type": "integer"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          }
+        },
+        "required": [
+          "field_id",
+          "canonical_field_id",
+          "name",
+          "crop",
+          "geometry_version",
+          "geometry"
+        ],
+        "title": "FieldOut",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "InterpretationOut": {
+        "properties": {
+          "confidence": {
+            "title": "Confidence",
+            "type": "string"
+          },
+          "gdd_accumulation": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gdd Accumulation"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "narrative": {
+            "title": "Narrative",
+            "type": "string"
+          },
+          "needs_review": {
+            "title": "Needs Review",
+            "type": "boolean"
+          },
+          "pass_date": {
+            "format": "date",
+            "title": "Pass Date",
+            "type": "string"
+          },
+          "published": {
+            "title": "Published",
+            "type": "boolean"
+          },
+          "recent_activities": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recent Activities"
+          },
+          "reviewed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reviewed At"
+          },
+          "reviewed_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reviewed By"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "total_precipitation": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Precipitation"
+          }
+        },
+        "required": [
+          "id",
+          "pass_date",
+          "status",
+          "confidence",
+          "narrative",
+          "published",
+          "needs_review",
+          "reviewed_by",
+          "reviewed_at"
+        ],
+        "title": "InterpretationOut",
+        "type": "object"
+      },
+      "InterpretationReview": {
+        "description": "An agronomist's review action on a drafted read (risk #6): publish or withhold it, and\noptionally correct the narrative. `status`/`confidence` are grounded in the numbers and are not\naccepted here. `narrative=None` keeps the existing text; an empty string is rejected.",
+        "properties": {
+          "narrative": {
+            "anyOf": [
+              {
+                "maxLength": 8000,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Narrative"
+          },
+          "publish": {
+            "title": "Publish",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "publish"
+        ],
+        "title": "InterpretationReview",
+        "type": "object"
+      },
+      "PublishEnqueuedOut": {
+        "properties": {
+          "by": {
+            "title": "By",
+            "type": "string"
+          },
+          "canonical_farm_id": {
+            "title": "Canonical Farm Id",
+            "type": "string"
+          },
+          "dry_run": {
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "gateway": {
+            "title": "Gateway",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "canonical_farm_id",
+          "by",
+          "gateway",
+          "dry_run"
+        ],
+        "title": "PublishEnqueuedOut",
+        "type": "object"
+      },
+      "PublishStatusOut": {
+        "properties": {
+          "canonical_farm_id": {
+            "title": "Canonical Farm Id",
+            "type": "string"
+          },
+          "dry_run": {
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "gateway": {
+            "title": "Gateway",
+            "type": "string"
+          },
+          "last_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error"
+          },
+          "pushed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pushed At"
+          },
+          "result_count": {
+            "title": "Result Count",
+            "type": "integer"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "canonical_farm_id",
+          "status",
+          "result_count",
+          "pushed_at",
+          "last_error",
+          "gateway",
+          "dry_run"
+        ],
+        "title": "PublishStatusOut",
+        "type": "object"
+      },
+      "ReviewQueueItem": {
+        "description": "One row of the cross-field review surface: a drafted/published read plus the canonical ids\nneeded to open its field. Geometry-free (this is a triage list, not a map view).",
+        "properties": {
+          "canonical_farm_id": {
+            "title": "Canonical Farm Id",
+            "type": "string"
+          },
+          "canonical_field_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Canonical Field Id"
+          },
+          "confidence": {
+            "title": "Confidence",
+            "type": "string"
+          },
+          "crop": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Crop"
+          },
+          "field_id": {
+            "title": "Field Id",
+            "type": "string"
+          },
+          "field_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Field Name"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "narrative": {
+            "title": "Narrative",
+            "type": "string"
+          },
+          "needs_review": {
+            "title": "Needs Review",
+            "type": "boolean"
+          },
+          "pass_date": {
+            "format": "date",
+            "title": "Pass Date",
+            "type": "string"
+          },
+          "published": {
+            "title": "Published",
+            "type": "boolean"
+          },
+          "reviewed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reviewed At"
+          },
+          "reviewed_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reviewed By"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "field_id",
+          "canonical_field_id",
+          "canonical_farm_id",
+          "field_name",
+          "crop",
+          "pass_date",
+          "status",
+          "confidence",
+          "narrative",
+          "published",
+          "needs_review",
+          "reviewed_by",
+          "reviewed_at"
+        ],
+        "title": "ReviewQueueItem",
+        "type": "object"
+      },
+      "SatelliteInterpretation": {
+        "description": "The optional interpretation block: none|low|moderate|high stress, free-text anomalies, and\n`notes` - the agronomist's reviewed, published narrative (ADR 0006). `notes` is present only\nwhen the read was published; an unreviewed draft never reaches the wire (risk #6).",
+        "properties": {
+          "anomalies": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Anomalies",
+            "type": "array"
+          },
+          "notes": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notes"
+          },
+          "stress_level": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stress Level"
+          }
+        },
+        "title": "SatelliteInterpretation",
+        "type": "object"
+      },
+      "SatelliteMetrics": {
+        "description": "The flattened per-record metrics AgriTrack expects (ADR 0006).",
+        "properties": {
+          "classification": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Classification"
+          },
+          "cloud_cover_pct": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cloud Cover Pct"
+          },
+          "evi_mean": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evi Mean"
+          },
+          "health_score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Health Score"
+          },
+          "ndvi_max": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ndvi Max"
+          },
+          "ndvi_mean": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ndvi Mean"
+          },
+          "ndvi_min": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ndvi Min"
+          },
+          "ndwi_mean": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ndwi Mean"
+          }
+        },
+        "title": "SatelliteMetrics",
+        "type": "object"
+      },
+      "SatelliteResult": {
+        "description": "One AgriTrack `/integrations/satellite/results` record: a field (or sub-plot) on one analysis\ndate. Field names are the contract's camelCase wire keys.",
+        "properties": {
+          "analysisDate": {
+            "title": "Analysisdate",
+            "type": "string"
+          },
+          "extId": {
+            "title": "Extid",
+            "type": "string"
+          },
+          "farmId": {
+            "title": "Farmid",
+            "type": "integer"
+          },
+          "fieldId": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fieldid"
+          },
+          "interpretation": {
+            "$ref": "#/components/schemas/SatelliteInterpretation"
+          },
+          "metrics": {
+            "$ref": "#/components/schemas/SatelliteMetrics"
+          },
+          "scope": {
+            "title": "Scope",
+            "type": "string"
+          },
+          "sourceSystem": {
+            "default": "satellite",
+            "title": "Sourcesystem",
+            "type": "string"
+          },
+          "subPlotId": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subplotid"
+          }
+        },
+        "required": [
+          "farmId",
+          "scope",
+          "analysisDate",
+          "extId",
+          "metrics"
+        ],
+        "title": "SatelliteResult",
+        "type": "object"
+      },
+      "SceneOut": {
+        "properties": {
+          "pass_date": {
+            "format": "date",
+            "title": "Pass Date",
+            "type": "string"
+          },
+          "scene_id": {
+            "title": "Scene Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "scene_id",
+          "pass_date"
+        ],
+        "title": "SceneOut",
+        "type": "object"
+      },
+      "SyncResponse": {
+        "description": "Per-sync outcome: how many farms were ingested and each farm's ingestion report.",
+        "properties": {
+          "farms": {
+            "items": {
+              "$ref": "#/components/schemas/FarmIngestReport"
+            },
+            "title": "Farms",
+            "type": "array"
+          },
+          "synced": {
+            "title": "Synced",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "synced",
+          "farms"
+        ],
+        "title": "SyncResponse",
+        "type": "object"
+      },
+      "TimeseriesPoint": {
+        "properties": {
+          "clear_fraction": {
+            "title": "Clear Fraction",
+            "type": "number"
+          },
+          "confidence": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confidence"
+          },
+          "max": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max"
+          },
+          "mean": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mean"
+          },
+          "min": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min"
+          },
+          "p10": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "P10"
+          },
+          "p90": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "P90"
+          },
+          "pass_date": {
+            "format": "date",
+            "title": "Pass Date",
+            "type": "string"
+          },
+          "std": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Std"
+          }
+        },
+        "required": [
+          "pass_date",
+          "mean",
+          "min",
+          "max",
+          "std",
+          "p10",
+          "p90",
+          "clear_fraction",
+          "confidence"
+        ],
+        "title": "TimeseriesPoint",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      },
+      "_FarmSyncIn": {
+        "properties": {
+          "boundary": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Boundary"
+          },
+          "farm_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              }
+            ],
+            "title": "Farm Id"
+          },
+          "fields": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/_FieldSyncIn"
+            },
+            "title": "Fields",
+            "type": "array"
+          },
+          "location": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          }
+        },
+        "required": [
+          "farm_id"
+        ],
+        "title": "_FarmSyncIn",
+        "type": "object"
+      },
+      "_FarmerSyncIn": {
+        "properties": {
+          "agritrack_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agritrack Id"
+          },
+          "email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          }
+        },
+        "title": "_FarmerSyncIn",
+        "type": "object"
+      },
+      "_FieldSyncIn": {
+        "properties": {
+          "boundary": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Boundary"
+          },
+          "crop": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Crop"
+          },
+          "field_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              }
+            ],
+            "title": "Field Id"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "sub_plots": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/_SubPlotIn"
+            },
+            "title": "Sub Plots",
+            "type": "array"
+          }
+        },
+        "required": [
+          "field_id"
+        ],
+        "title": "_FieldSyncIn",
+        "type": "object"
+      },
+      "_SubPlotIn": {
+        "properties": {
+          "boundary": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Boundary"
+          },
+          "crop": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Crop"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "plot_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              }
+            ],
+            "title": "Plot Id"
+          }
+        },
+        "required": [
+          "plot_id"
+        ],
+        "title": "_SubPlotIn",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "title": "remote-sense API",
+    "version": "0.1.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/analyse/aoi": {
+      "post": {
+        "description": "Ad-hoc preview analysis over a custom AOI: returns the most recent usable pass's index stats\nfor the drawn geometry, computed on the worker (geo extra) through the production engine.\nNothing is persisted - no field is created, so it cannot collide with gateway-owned identity\n(invariant 6 governs only the outbound push). Requires `run_analysis`.\n\nThe work runs on the worker (it needs rasterio + CDSE), so we enqueue and wait for the result\noff the event loop; a bad index name is rejected up front as a 422 rather than a worker failure.",
+        "operationId": "analyse_aoi_endpoint_analyse_aoi_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AOIAnalysisRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Analyse Aoi Endpoint Analyse Aoi Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Analyse Aoi Endpoint",
+        "tags": [
+          "workspace"
+        ]
+      }
+    },
+    "/api/v1/mobile/data": {
+      "get": {
+        "description": "Pull a farm's stored satellite results in the AgriTrack contract shape (ADR 0006 section 4);\nAgriTrack triggers this per farm when a push could not be delivered. Geometry is never returned\n(invariant 6).",
+        "operationId": "mobile_data_api_v1_mobile_data_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "farm_id",
+            "required": true,
+            "schema": {
+              "title": "Farm Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "x-api-key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/SatelliteResult"
+                  },
+                  "title": "Response Mobile Data Api V1 Mobile Data Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Mobile Data",
+        "tags": [
+          "agritrack"
+        ]
+      }
+    },
+    "/api/v1/mobile/sync": {
+      "post": {
+        "description": "Ingest an AgriTrack sync (farmer -> farms -> fields -> sub-plots). Idempotent: re-sending the\nsame payload changes nothing (the ingestion layer dedupes on the canonical ids). Bad geometry is\nrejected with 422.",
+        "operationId": "mobile_sync_api_v1_mobile_sync_post",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "x-api-key",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Api-Key"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgriTrackSyncIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SyncResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Mobile Sync",
+        "tags": [
+          "agritrack"
+        ]
+      }
+    },
+    "/farms": {
+      "get": {
+        "operationId": "list_farms_endpoint_farms_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/FarmOut"
+                  },
+                  "title": "Response List Farms Endpoint Farms Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Farms Endpoint",
+        "tags": [
+          "workspace"
+        ]
+      }
+    },
+    "/farms/{canonical_farm_id}/fields": {
+      "get": {
+        "operationId": "list_fields_endpoint_farms__canonical_farm_id__fields_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "canonical_farm_id",
+            "required": true,
+            "schema": {
+              "title": "Canonical Farm Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/FieldOut"
+                  },
+                  "title": "Response List Fields Endpoint Farms  Canonical Farm Id  Fields Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Fields Endpoint",
+        "tags": [
+          "workspace"
+        ]
+      }
+    },
+    "/farms/{canonical_farm_id}/publish": {
+      "post": {
+        "description": "Enqueue a gateway push for one farm so its results are sent now instead of waiting for the\nnext scheduled sync. Reuses the existing ``publish_farm_task`` Celery path, which is idempotent\n(R-2). Requires ``publish``.\n\nA gateway configured for real delivery (``agritrack``/``http``) but missing its URL or key fails\nfast with 503 here, so the operator sees the misconfiguration immediately rather than enqueuing\na task that cannot deliver and leaves the workspace polling forever.",
+        "operationId": "publish_farm_endpoint_farms__canonical_farm_id__publish_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "canonical_farm_id",
+            "required": true,
+            "schema": {
+              "title": "Canonical Farm Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublishEnqueuedOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Publish Farm Endpoint",
+        "tags": [
+          "workspace"
+        ]
+      }
+    },
+    "/farms/{canonical_farm_id}/publish/status": {
+      "get": {
+        "description": "The latest gateway push outcome for a farm. The frontend polls this after enqueuing a push\nto confirm delivery (published), surface errors (dead_letter), or show in-progress (pending).\nReturns 404 if no push has ever been recorded for this farm.",
+        "operationId": "publish_status_endpoint_farms__canonical_farm_id__publish_status_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "canonical_farm_id",
+            "required": true,
+            "schema": {
+              "title": "Canonical Farm Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublishStatusOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Publish Status Endpoint",
+        "tags": [
+          "workspace"
+        ]
+      }
+    },
+    "/fields/{field_id}/annotations": {
+      "get": {
+        "operationId": "list_annotations_endpoint_fields__field_id__annotations_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "field_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Field Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/AnnotationOut"
+                  },
+                  "title": "Response List Annotations Endpoint Fields  Field Id  Annotations Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Annotations Endpoint",
+        "tags": [
+          "workspace"
+        ]
+      },
+      "post": {
+        "operationId": "create_annotation_endpoint_fields__field_id__annotations_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "field_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Field Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AnnotationCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AnnotationOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Annotation Endpoint",
+        "tags": [
+          "workspace"
+        ]
+      }
+    },
+    "/fields/{field_id}/annotations/{annotation_id}": {
+      "delete": {
+        "operationId": "delete_annotation_endpoint_fields__field_id__annotations__annotation_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "field_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Field Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "annotation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Annotation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Annotation Endpoint",
+        "tags": [
+          "workspace"
+        ]
+      }
+    },
+    "/fields/{field_id}/audit": {
+      "get": {
+        "operationId": "field_audit_endpoint_fields__field_id__audit_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "field_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Field Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/AuditRecordOut"
+                  },
+                  "title": "Response Field Audit Endpoint Fields  Field Id  Audit Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Field Audit Endpoint",
+        "tags": [
+          "workspace"
+        ]
+      }
+    },
+    "/fields/{field_id}/collect": {
+      "post": {
+        "description": "Enqueue an on-demand backfill for one field so its history is collected now instead of\nwaiting for the nightly scan. This only exposes the existing pipeline entrypoint:\n`backfill_field` is idempotent and gap-filling (it replans only outstanding passes), so repeated\nclicks are safe and converge the field to complete. A missing field is a 404, not a dangling\ntask. Requires `run_analysis`.",
+        "operationId": "field_collect_endpoint_fields__field_id__collect_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "field_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Field Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "title": "Response Field Collect Endpoint Fields  Field Id  Collect Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Field Collect Endpoint",
+        "tags": [
+          "workspace"
+        ]
+      }
+    },
+    "/fields/{field_id}/interpretations": {
+      "get": {
+        "operationId": "field_interpretations_endpoint_fields__field_id__interpretations_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "field_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Field Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/InterpretationOut"
+                  },
+                  "title": "Response Field Interpretations Endpoint Fields  Field Id  Interpretations Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Field Interpretations Endpoint",
+        "tags": [
+          "workspace"
+        ]
+      }
+    },
+    "/fields/{field_id}/interpretations/{interpretation_id}": {
+      "patch": {
+        "description": "Review a drafted agronomic read: publish/withhold it and optionally correct its narrative.\nThe only path that can publish one (risk #6, never auto-published). Gated on `publish`; the\nreviewer is the verified token subject, never client input. 404 if the read is not on this\nfield. status/confidence stay immutable - they are grounded in the numbers, not the model.",
+        "operationId": "review_interpretation_endpoint_fields__field_id__interpretations__interpretation_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "field_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Field Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "interpretation_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Interpretation Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InterpretationReview"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InterpretationOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Review Interpretation Endpoint",
+        "tags": [
+          "workspace"
+        ]
+      }
+    },
+    "/fields/{field_id}/scenes": {
+      "get": {
+        "operationId": "field_scenes_endpoint_fields__field_id__scenes_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "field_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Field Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/SceneOut"
+                  },
+                  "title": "Response Field Scenes Endpoint Fields  Field Id  Scenes Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Field Scenes Endpoint",
+        "tags": [
+          "workspace"
+        ]
+      }
+    },
+    "/fields/{field_id}/timeseries": {
+      "get": {
+        "operationId": "field_timeseries_endpoint_fields__field_id__timeseries_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "field_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Field Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "index",
+            "required": true,
+            "schema": {
+              "title": "Index",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/TimeseriesPoint"
+                  },
+                  "title": "Response Field Timeseries Endpoint Fields  Field Id  Timeseries Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Field Timeseries Endpoint",
+        "tags": [
+          "workspace"
+        ]
+      }
+    },
+    "/healthz": {
+      "get": {
+        "operationId": "healthz_healthz_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "title": "Response Healthz Healthz Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Healthz"
+      }
+    },
+    "/ingest/farm": {
+      "post": {
+        "description": "Ingest one farm. Idempotent under retries; bad geometry is rejected with 422.\n\n⚑ CONFIRM (DI-1): this HTTP entrypoint mirrors the eventual webhook arrival path. The\ndefault arrival mode is DB polling (config `RS_ARRIVAL_SOURCE`); both paths share this\nsame service, so swapping the trigger never touches ingestion logic.",
+        "operationId": "ingest_farm_endpoint_ingest_farm_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FarmIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FarmIngestReport"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Ingest Farm Endpoint",
+        "tags": [
+          "ingestion"
+        ]
+      }
+    },
+    "/interpretations/review-queue": {
+      "get": {
+        "description": "The cross-field review backlog for an agronomist (gated on `publish`): every read with the\ncanonical ids to open its field. `?needs_review=true` narrows to the unreviewed ones.",
+        "operationId": "review_queue_endpoint_interpretations_review_queue_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "needs_review",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Needs Review"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ReviewQueueItem"
+                  },
+                  "title": "Response Review Queue Endpoint Interpretations Review Queue Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Review Queue Endpoint",
+        "tags": [
+          "workspace"
+        ]
+      }
+    },
+    "/pipeline/health": {
+      "get": {
+        "description": "Pipeline coverage + failure summary for the health dashboard (R-4). Requires `view`. Fired\nalerts (dead-lettered pushes, backfill backlog) are logged so an operator or a log-based\nnotifier can act on them; the summary itself is returned unchanged.",
+        "operationId": "pipeline_health_endpoint_pipeline_health_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "integer"
+                  },
+                  "title": "Response Pipeline Health Endpoint Pipeline Health Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Pipeline Health Endpoint",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/publish/farm/{canonical_farm_id}": {
+      "post": {
+        "description": "Enqueue an additive push of a farm's results to the gateway (L7). Requires `publish`.",
+        "operationId": "publish_farm_endpoint_publish_farm__canonical_farm_id__post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "canonical_farm_id",
+            "required": true,
+            "schema": {
+              "title": "Canonical Farm Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "title": "Response Publish Farm Endpoint Publish Farm  Canonical Farm Id  Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Publish Farm Endpoint",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/readyz": {
+      "get": {
+        "operationId": "readyz_readyz_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Readyz Readyz Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Readyz"
+      }
+    }
+  }
+}
