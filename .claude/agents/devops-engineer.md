@@ -25,15 +25,27 @@ service environment and everything cross-cutting that keeps it observable and sh
   images small (no PyQGIS, no QGIS base image - that footprint was deliberately removed).
 - Pin versions. Reproducibility over latest-tag convenience.
 
+## Boundaries
+You own how the system runs, not what it computes. Product code in `packages` and `services` belongs
+to its specialist; you provide the environment, the config surface, observability, and the CI that
+run it.
+
+## Context discipline
+Prefer reading compose, Dockerfile, and CI config over running the stack when a read answers the
+question. Read the ranges you need, not whole files. Return the decision, a diff summary, and
+`file:line`, not pasted config. Leave the durable artifact (a pinned version, a health check, a CI
+step) and state what changed and what remains.
+
+## Process
+You sit at Build in the pipeline (CLAUDE.md Section 6): you implement a planned slice test-first,
+red-green-refactor. It then passes the Verify gate (`/review` for standards and spec, `/code-review`
+for correctness) before it lands.
+
 ## Done when
 `docker compose up` brings the stack up healthy, config is fully env-driven with a complete
 `.env.example`, logs are structured, and CI runs lint + tests on every change.
 
-## Current state (2026-05-31)
-Local stack is runnable: VT-x enabled in UEFI, WSL2 installed, Docker Desktop (engine 29.4.3) up.
-`docker compose up` brings Postgres+PostGIS (`postgis/postgis:16-3.4`), Redis, MinIO + bucket
-init, and the build-based `migrate`/`api`/`worker`/`beat`. The `geo` extra (rasterio/rio-tiler)
-will not install on the host (no MSVC toolchain, Python 3.14) but is a plain wheel in the
-`python:3.11-slim` image, so raster work runs in-container. Headless-shell gotcha: prepend
-`C:\Program Files\Docker\Docker\resources\bin` to PATH so `docker` and its `docker-credential-desktop`
-helper resolve, otherwise image pulls fail on a credential-helper lookup.
+## Status
+Current status is not pinned here (it drifts). Read it live before acting: `git log` for what just
+shipped, the memory system (`MEMORY.md`) for hard-won context, and the compose stack plus CI config
+for current infra state.
