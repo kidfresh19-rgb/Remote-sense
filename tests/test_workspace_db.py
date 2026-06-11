@@ -23,8 +23,12 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from services.api.workspace import (
     AnnotationCreate,
+    ResolvedPass,
+    choose_nearer_pass,
     create_annotation_endpoint,
     delete_annotation_endpoint,
+    field_as_of,
+    field_as_of_endpoint,
     field_audit,
     field_collect_endpoint,
     field_interpretations,
@@ -149,6 +153,40 @@ async def _seed(maker) -> uuid.UUID:
     return field_id
 
 
+async def _add_pass(
+    session, field_id: uuid.UUID, scene_id: str, pass_date: date, clear_fraction: float
+) -> None:
+    """Store one extra ndvi pass for the seeded field (scene metadata first: the analysis FKs
+    onto it)."""
+    await upsert_scene_metadata(
+        session,
+        scene_id=scene_id,
+        provider="cdse",
+        quantification_value=10000.0,
+        boa_add_offset={"B04": -1000.0},
+        crs="EPSG:32736",
+        sensing_datetime=datetime(
+            pass_date.year, pass_date.month, pass_date.day, 7, 55, tzinfo=UTC
+        ),
+    )
+    await upsert_analysis(
+        session,
+        field_id=field_id,
+        scene_id=scene_id,
+        pass_date=pass_date,
+        index_name="ndvi",
+        formula_version="1",
+        geometry_version=1,
+        provider="cdse",
+        provider_scene_id=scene_id,
+        processing_mode="windowed_cog",
+        resolution_m=10.0,
+        clear_fraction=clear_fraction,
+        mean=0.5,
+        confidence="high",
+    )
+
+
 async def test_list_farms_and_fields(maker_) -> None:
     field_id = await _seed(maker_)
     async with maker_() as session:
@@ -169,6 +207,81 @@ async def test_field_timeseries_and_scenes(maker_) -> None:
     assert [p.pass_date for p in series] == [_PASS]
     assert series[0].mean == 0.6
     assert [s.scene_id for s in scenes] == [_SCENE]
+    assert scenes[0].clear_fraction == 0.9  # the scrubber labels passes by usability
+
+
+def test_choose_nearer_pass_policy() -> None:
+    # ⚑ CONFIRM policy (S3.1): the nearer side wins; a tie goes to before, because the past is
+    # the safer claim for "as of" semantics. No DB needed - this is the pure decision rule.
+    def p(day_gap: int) -> ResolvedPass:
+        return ResolvedPass(
+            scene_id=f"S{day_gap}", pass_date=_PASS, day_gap=day_gap, clear_fraction=0.9
+        )
+
+    assert choose_nearer_pass(None, None) is None
+    assert choose_nearer_pass(p(-3), None).day_gap == -3
+    assert choose_nearer_pass(None, p(4)).day_gap == 4
+    assert choose_nearer_pass(p(-5), p(2)).day_gap == 2  # nearer after wins
+    assert choose_nearer_pass(p(-2), p(5)).day_gap == -2  # nearer before wins
+    assert choose_nearer_pass(p(-3), p(3)).day_gap == -3  # tie -> before
+
+
+async def test_field_as_of_resolves_nearest_clear_pass(maker_) -> None:
+    field_id = await _seed(maker_)  # seeds one clear ndvi pass on 2025-01-15 (0.9)
+    async with maker_() as session:
+        await _add_pass(session, field_id, "S2A_CLOUDY_20250125", date(2025, 1, 25), 0.2)
+        await _add_pass(session, field_id, "S2A_CLEAR_20250204", date(2025, 2, 4), 0.8)
+        await session.commit()
+
+    async with maker_() as session:
+        # Jan 26: the cloudy Jan 25 pass sits below the floor, so the sides are Jan 15 / Feb 4
+        # and the nearer one (Feb 4, +9 vs -11) is resolved.
+        res = await field_as_of(
+            session, field_id, requested=date(2025, 1, 26), index="ndvi", min_clear=0.5
+        )
+        assert res is not None
+        assert res.before is not None and res.before.pass_date == _PASS
+        assert res.before.day_gap == -11
+        assert res.after is not None and res.after.pass_date == date(2025, 2, 4)
+        assert res.after.day_gap == 9
+        assert res.resolved is not None and res.resolved.scene_id == "S2A_CLEAR_20250204"
+
+        # Relaxing the floor admits the cloudy pass, now the nearest at one day before.
+        relaxed = await field_as_of(
+            session, field_id, requested=date(2025, 1, 26), index="ndvi", min_clear=0.0
+        )
+        assert relaxed is not None and relaxed.resolved is not None
+        assert relaxed.resolved.scene_id == "S2A_CLOUDY_20250125"
+        assert relaxed.resolved.day_gap == -1
+
+        # A request on a pass date resolves to that pass with a zero gap.
+        exact = await field_as_of(session, field_id, requested=_PASS, index="ndvi", min_clear=0.5)
+        assert exact is not None and exact.resolved is not None
+        assert exact.resolved.day_gap == 0
+
+        # A date before all history has no before side; the after pass is resolved.
+        early = await field_as_of(
+            session, field_id, requested=date(2024, 12, 1), index="ndvi", min_clear=0.5
+        )
+        assert early is not None and early.before is None
+        assert early.resolved is not None and early.resolved.pass_date == _PASS
+
+        # Nothing meets an impossible floor: every slot is None - never a fabricated pass
+        # (invariant 4).
+        none_clear = await field_as_of(
+            session, field_id, requested=date(2025, 1, 26), index="ndvi", min_clear=0.99
+        )
+        assert none_clear is not None
+        assert none_clear.before is None and none_clear.after is None
+        assert none_clear.resolved is None
+
+
+async def test_field_as_of_unknown_field_is_404(maker_) -> None:
+    await _seed(maker_)
+    async with maker_() as session:
+        with pytest.raises(HTTPException) as excinfo:
+            await field_as_of_endpoint(uuid.uuid4(), date(2025, 1, 26), _ANALYST, session)
+    assert excinfo.value.status_code == 404
 
 
 async def test_field_interpretations(maker_) -> None:

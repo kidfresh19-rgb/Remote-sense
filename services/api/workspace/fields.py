@@ -1,14 +1,14 @@
 """Field read endpoints: a farm's fields with geometry for the map, per-field/index time
-series, scene passes, the provenance audit log (invariant 5), and the on-demand collect
-trigger."""
+series, scene passes, as-of-date pass resolution (S3.1), the provenance audit log
+(invariant 5), and the on-demand collect trigger."""
 
 from __future__ import annotations
 
 import uuid
 from datetime import date, datetime
-from typing import Any
+from typing import Annotated, Any
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Query, status
 from geoalchemy2.shape import to_shape
 from pydantic import BaseModel
 from rs_core.models import Analysis, Farm, Field
@@ -45,6 +45,31 @@ class TimeseriesPoint(BaseModel):
 class SceneOut(BaseModel):
     scene_id: str
     pass_date: date
+    clear_fraction: float
+
+
+class ResolvedPass(BaseModel):
+    """One usable pass resolved from an as-of-date request. `day_gap` is signed days from the
+    requested date (zero or negative = on/before, positive = after), so the UI can state the
+    true acquisition date and the gap honestly (invariant 4)."""
+
+    scene_id: str
+    pass_date: date
+    day_gap: int
+    clear_fraction: float
+
+
+class AsOfResolution(BaseModel):
+    """An arbitrary calendar date resolved against a field's stored passes (S3.1, L3): the
+    nearest usable pass on each side of the date, plus the policy's pick. All three slots are
+    None-able; when no stored pass qualifies, nothing is fabricated."""
+
+    requested_date: date
+    index: str
+    min_clear: float
+    before: ResolvedPass | None
+    after: ResolvedPass | None
+    resolved: ResolvedPass | None
 
 
 class AuditRecordOut(BaseModel):
@@ -131,6 +156,7 @@ async def field_scenes(session: AsyncSession, field_id: uuid.UUID) -> list[Scene
         select(
             Analysis.scene_id,
             Analysis.pass_date,
+            Analysis.clear_fraction,
             func.row_number()
             .over(partition_by=Analysis.pass_date, order_by=Analysis.clear_fraction.desc())
             .label("rn"),
@@ -140,12 +166,99 @@ async def field_scenes(session: AsyncSession, field_id: uuid.UUID) -> list[Scene
     )
     rows = (
         await session.execute(
-            select(subq.c.scene_id, subq.c.pass_date)
+            select(subq.c.scene_id, subq.c.pass_date, subq.c.clear_fraction)
             .where(subq.c.rn == 1)
             .order_by(subq.c.pass_date)
         )
     ).all()
-    return [SceneOut(scene_id=scene_id, pass_date=pass_date) for scene_id, pass_date in rows]
+    return [
+        SceneOut(scene_id=scene_id, pass_date=pass_date, clear_fraction=clear_fraction)
+        for scene_id, pass_date, clear_fraction in rows
+    ]
+
+
+def choose_nearer_pass(
+    before: ResolvedPass | None, after: ResolvedPass | None
+) -> ResolvedPass | None:
+    """The as-of resolution policy (S3.1): of the nearest usable pass on each side of the
+    requested date, pick the one fewer days away; a tie goes to `before`, because the past is
+    the safer claim for "as of" semantics. Both sides still travel in the response so a client
+    can offer the other one. ⚑ CONFIRM: nearer-of-either-side (tie -> before) chosen over
+    nearest-before-only and pure bracketing; revisit with the user."""
+    if before is None:
+        return after
+    if after is None:
+        return before
+    return before if abs(before.day_gap) <= abs(after.day_gap) else after
+
+
+async def field_as_of(
+    session: AsyncSession,
+    field_id: uuid.UUID,
+    *,
+    requested: date,
+    index: str,
+    min_clear: float,
+) -> AsOfResolution | None:
+    """Resolve an arbitrary calendar date to this field's nearest usable passes (S3.1, L3).
+    Usable means a stored analysis at the field's CURRENT geometry version whose per-AOI
+    clear-pixel fraction meets `min_clear` - the SCL-derived fraction travels with every
+    analysis row (invariant 3), so resolution never trusts scene-level cloud. Works the same
+    over backfilled and live-collected rows. Returns None for an unknown field; never
+    fabricates a pass (invariant 4)."""
+    geometry_version = (
+        await session.execute(select(Field.geometry_version).where(Field.id == field_id))
+    ).scalar_one_or_none()
+    if geometry_version is None:
+        return None
+
+    def usable():
+        return select(Analysis.scene_id, Analysis.pass_date, Analysis.clear_fraction).where(
+            Analysis.field_id == field_id,
+            Analysis.index_name == index,
+            Analysis.geometry_version == geometry_version,
+            Analysis.clear_fraction >= min_clear,
+        )
+
+    # The clearest scene wins on a date with several passes, mirroring field_scenes' dedup.
+    before_row = (
+        await session.execute(
+            usable()
+            .where(Analysis.pass_date <= requested)
+            .order_by(Analysis.pass_date.desc(), Analysis.clear_fraction.desc())
+            .limit(1)
+        )
+    ).first()
+    after_row = (
+        await session.execute(
+            usable()
+            .where(Analysis.pass_date > requested)
+            .order_by(Analysis.pass_date.asc(), Analysis.clear_fraction.desc())
+            .limit(1)
+        )
+    ).first()
+
+    def as_pass(row: Any) -> ResolvedPass | None:
+        if row is None:
+            return None
+        scene_id, pass_date, clear_fraction = row
+        return ResolvedPass(
+            scene_id=scene_id,
+            pass_date=pass_date,
+            day_gap=(pass_date - requested).days,
+            clear_fraction=clear_fraction,
+        )
+
+    before = as_pass(before_row)
+    after = as_pass(after_row)
+    return AsOfResolution(
+        requested_date=requested,
+        index=index,
+        min_clear=min_clear,
+        before=before,
+        after=after,
+        resolved=choose_nearer_pass(before, after),
+    )
 
 
 async def field_audit(session: AsyncSession, field_id: uuid.UUID) -> list[AuditRecordOut]:
@@ -207,6 +320,26 @@ async def field_scenes_endpoint(
     field_id: uuid.UUID, principal: ViewPrincipal, session: SessionDep
 ) -> list[SceneOut]:
     return await field_scenes(session, field_id)
+
+
+@router.get("/fields/{field_id}/as-of")
+async def field_as_of_endpoint(
+    field_id: uuid.UUID,
+    requested: Annotated[date, Query(alias="date")],
+    principal: ViewPrincipal,
+    session: SessionDep,
+    index: str = "ndvi",
+    min_clear: Annotated[float, Query(ge=0.0, le=1.0)] = 0.5,
+) -> AsOfResolution:
+    """Resolve `?date=` to the field's nearest usable passes for `index` (S3.1). `min_clear`
+    is the per-AOI clear-fraction floor a pass must meet to count (0 admits every stored pass);
+    the default matches the alerting floor, below which a pass is not a reliable signal."""
+    resolution = await field_as_of(
+        session, field_id, requested=requested, index=index, min_clear=min_clear
+    )
+    if resolution is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "field not found")
+    return resolution
 
 
 @router.get("/fields/{field_id}/audit")

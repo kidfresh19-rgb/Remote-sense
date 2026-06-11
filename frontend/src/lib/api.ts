@@ -39,6 +39,28 @@ export interface TimeseriesPoint {
 export interface Scene {
   scene_id: string;
   pass_date: string;
+  clear_fraction: number;
+}
+
+/** One usable pass resolved from an as-of-date request (GET /fields/{id}/as-of). `day_gap` is
+ *  signed days from the requested date: zero or negative = on/before, positive = after. */
+export interface ResolvedPass {
+  scene_id: string;
+  pass_date: string;
+  day_gap: number;
+  clear_fraction: number;
+}
+
+/** An arbitrary calendar date resolved against a field's stored passes. Mirrors AsOfResolution
+ *  in services/api/workspace/fields.py: the nearest usable pass on each side plus the policy's
+ *  pick; every slot is null when no stored pass qualifies (nothing is ever fabricated). */
+export interface AsOfResolution {
+  requested_date: string;
+  index: string;
+  min_clear: number;
+  before: ResolvedPass | null;
+  after: ResolvedPass | null;
+  resolved: ResolvedPass | null;
 }
 
 export interface RecentActivity {
@@ -221,6 +243,12 @@ export const api = {
     ),
   scenes: (fieldId: string, token: string, signal?: AbortSignal) =>
     get<Scene[]>(`/fields/${fieldId}/scenes`, token, signal),
+  asOf: (fieldId: string, date: string, index: string, token: string, signal?: AbortSignal) =>
+    get<AsOfResolution>(
+      `/fields/${fieldId}/as-of?date=${encodeURIComponent(date)}&index=${encodeURIComponent(index)}`,
+      token,
+      signal,
+    ),
   interpretations: (fieldId: string, token: string, signal?: AbortSignal) =>
     get<Interpretation[]>(`/fields/${fieldId}/interpretations`, token, signal),
   reviewInterpretation: (

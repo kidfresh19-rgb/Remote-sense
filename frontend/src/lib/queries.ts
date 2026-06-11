@@ -48,6 +48,17 @@ export function useScenes(fieldId: string | null, collecting = false) {
   });
 }
 
+/** Resolve an arbitrary calendar date to the field's nearest usable passes (S3.1). Enabled only
+ *  while a date is requested; SceneList's effect applies the resolved pass to the workspace. */
+export function useAsOf(fieldId: string | null, date: string | null, index: IndexKey) {
+  const { token } = useToken();
+  return useQuery({
+    queryKey: ["as-of", fieldId, date, index],
+    queryFn: ({ signal }) => api.asOf(fieldId!, date!, index, token!, signal),
+    enabled: !!token && !!fieldId && !!date,
+  });
+}
+
 export function useInterpretations(fieldId: string | null) {
   const { token } = useToken();
   return useQuery({
