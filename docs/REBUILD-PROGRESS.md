@@ -86,11 +86,20 @@ Branch: `feat/imagery-agronomy-tiers-0-2`. Push target: Azure DevOps `origin`.
 
 ## Next (from the backlog, in order)
 
-- **S3.1 as-of-date farm view** - the first integrating vertical rebuild slice (L3 nearest-clear-pass
-  resolution, L4 composites + index, L5 render, L6 date-picker UI). Settle the nearest-before vs
-  either-side vs bracketing policy here.
+- **S3.1 remainder:** L4 false-color / NIR composite through the worker's visual-emission path
+  (plan sketched in `docs/plan/S3.1-as-of-date-view.md`), and the user's call on the ⚑ CONFIRM
+  resolution policy (nearer-of-either-side, tie -> before).
 - Later: S1.3 load-test harness (with S4.7 SLOs), Phase 4 scale items, doc hygiene D1, and the
   parked FROZEN-CANDIDATE confirmation for `POST /ingest/farm` (external-team fact).
+
+## State (2026-06-11, third pass)
+
+- **S3.1 spine DONE** (`docs/plan/S3.1-as-of-date-view.md`): `GET /fields/{id}/as-of` resolves an
+  arbitrary date to the nearest usable pass each side (per-AOI clear floor, current geometry
+  version, never fabricated), policy = nearer side, tie -> before (⚑ CONFIRM); the workspace
+  Scenes panel gained the Jump-to-date control with honest true-date + day-gap labeling and a
+  one-click flip to the other side; pass rows now show % clear. Suite 390 passed / 4 skipped,
+  coverage 88.82%, frontend build clean.
 
 ## Flagged decisions / defaults taken while AFK
 
