@@ -141,3 +141,26 @@ do. Serialize dependent work, parallelize independent calls, one slice per agent
 **Context and token discipline.** Agents return the decision, a diff summary, and `file:line`
 anchors, never raw file dumps. Read ranges, not whole files. Prefer the dedicated file and search
 tools over shell. Plan-gate before multi-file work. Leave the durable artifact, drop the scratch.
+
+## Agent skills
+
+The installed Matt Pocock engineering skills (`to-prd`, `to-issues`, `triage`, `tdd`, `diagnose`,
+`improve-codebase-architecture`, `zoom-out`) read this repo's tracker, label, and domain
+configuration from `docs/agents/`. Re-run `/setup-matt-pocock-skills` only to switch trackers or
+restart from scratch.
+
+### Issue tracker
+
+Local markdown: PRDs in `docs/prd/NNNN-*.md`, implementation slices in `docs/backlog/NNNN-*.md`,
+open items in `TODO.md` (groomed with `/triage`). No hosted tracker. See
+`docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five canonical roles use their default strings (`needs-triage`, `needs-info`,
+`ready-for-agent`, `ready-for-human`, `wontfix`), recorded as a `Status:` line per file. See
+`docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: `CONTEXT.md` and `docs/adr/` at the repo root. See `docs/agents/domain.md`.
