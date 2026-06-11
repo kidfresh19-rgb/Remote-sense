@@ -61,9 +61,9 @@ Auth: `Authorization: Bearer <JWT>` (RBAC). May change freely as long as the fro
 
 ### INTERNAL-OPS / INFRA (not external)
 
-`POST /publish/farm/{canonical_farm_id}`, `GET /pipeline/health` (`operations.py`), `GET /healthz`,
-`GET /readyz`. Note `POST /publish/farm/{id}` and `POST /farms/{id}/publish` are duplicate publish
-triggers, flagged for consolidation in the S2.1 reevaluation. Not frozen.
+`GET /pipeline/health` (`operations.py`), `GET /healthz`, `GET /readyz`. Not frozen. The former
+`POST /publish/farm/{id}` duplicate publish trigger was folded into the workspace's
+`POST /farms/{id}/publish` (S2.1 consolidation, 2026-06-11).
 
 ## Auth headers
 

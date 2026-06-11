@@ -241,7 +241,8 @@ The PDF exporter stays parked on the PDF stack; **GeoTIFF export landed 2026-06-
 partial) landed 2026-06-01**: RBAC (`rs_core/rbac.py` - view/annotate/run-analysis/publish +
 viewer/analyst/publisher/admin roles, permissions derived server-side), stdlib HS256 JWT
 verification (alg-pinned, constant-time, `exp`-checked) + the `require(permission)` dependency
-(`services/api/auth.py`), and the RBAC-gated `POST /publish/farm/{id}` (publish) +
+(`services/api/auth.py`), and the RBAC-gated `POST /publish/farm/{id}` (publish; later folded
+into the workspace's `POST /farms/{id}/publish` in the S2.1 consolidation, 2026-06-11) +
 `GET /pipeline/health` (view; coverage + dead-letter summary, R-4). **Log-based health alerting
 landed 2026-06-02** (`rs_core/alerts.py` evaluates the summary; the health endpoint logs fired
 alerts as structured warnings for a log/webhook notifier, R-4). Load/scale testing and

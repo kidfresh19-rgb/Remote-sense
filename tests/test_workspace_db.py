@@ -33,6 +33,7 @@ from services.api.workspace import (
     list_annotations_endpoint,
     list_farms,
     list_fields,
+    publish_farm_endpoint,
 )
 
 _TEST_DB_URL = os.environ.get(
@@ -224,6 +225,7 @@ async def test_field_audit(maker_) -> None:
 
 
 _ANALYST = Principal(subject="analyst-1", roles=frozenset({Role.ANALYST}))
+_PUBLISHER = Principal(subject="publisher-1", roles=frozenset({Role.PUBLISHER}))
 
 
 async def test_annotation_create_list_delete(maker_) -> None:
@@ -290,6 +292,61 @@ async def test_field_collect_unknown_field_is_404(maker_, monkeypatch) -> None:
         with pytest.raises(HTTPException) as excinfo:
             await field_collect_endpoint(uuid.uuid4(), _ANALYST, session)
     assert excinfo.value.status_code == 404
+
+
+async def test_publish_farm_enqueues_for_existing_farm(maker_, monkeypatch) -> None:
+    # The single publish trigger (the operations-side duplicate was folded in here). The gateway
+    # config check is pinned green so the test is independent of the local RS_GATEWAY_* env.
+    import services.worker.tasks as tasks
+
+    await _seed(maker_)
+    enqueued: dict = {}
+    monkeypatch.setattr(tasks.publish_farm_task, "delay", lambda fid: enqueued.update(fid=fid))
+    monkeypatch.setattr("services.api.workspace.publish.gateway_config_error", lambda s: None)
+    async with maker_() as session:
+        result = await publish_farm_endpoint("FARM-W1", _PUBLISHER, session)
+    assert result.status == "enqueued"
+    assert result.canonical_farm_id == "FARM-W1"
+    assert result.by == "publisher-1"  # the verified token subject, not client input
+    assert isinstance(result.dry_run, bool)  # adapter-dependent; only the shape is pinned here
+    assert enqueued["fid"] == "FARM-W1"
+
+
+async def test_publish_farm_unknown_farm_is_404(maker_, monkeypatch) -> None:
+    import services.worker.tasks as tasks
+
+    await _seed(maker_)
+    # A 404 must short-circuit before any enqueue, so a missing farm never schedules a push.
+    monkeypatch.setattr(
+        tasks.publish_farm_task,
+        "delay",
+        lambda fid: pytest.fail("must not enqueue for a missing farm"),
+    )
+    async with maker_() as session:
+        with pytest.raises(HTTPException) as excinfo:
+            await publish_farm_endpoint("FARM-NOPE", _PUBLISHER, session)
+    assert excinfo.value.status_code == 404
+
+
+async def test_publish_farm_misconfigured_gateway_is_503(maker_, monkeypatch) -> None:
+    # A gateway configured for real delivery but missing its URL/key must fail fast with 503
+    # instead of enqueuing a push that can never deliver.
+    import services.worker.tasks as tasks
+
+    await _seed(maker_)
+    monkeypatch.setattr(
+        tasks.publish_farm_task,
+        "delay",
+        lambda fid: pytest.fail("must not enqueue with a misconfigured gateway"),
+    )
+    monkeypatch.setattr(
+        "services.api.workspace.publish.gateway_config_error",
+        lambda s: "agritrack gateway needs RS_AGRITRACK_BASE_URL",
+    )
+    async with maker_() as session:
+        with pytest.raises(HTTPException) as excinfo:
+            await publish_farm_endpoint("FARM-W1", _PUBLISHER, session)
+    assert excinfo.value.status_code == 503
 
 
 def test_create_annotation_empty_body_is_422() -> None:

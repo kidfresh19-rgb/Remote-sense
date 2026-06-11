@@ -1,6 +1,6 @@
 """Farm publish endpoints: enqueue a gateway push for one farm and poll its delivery status.
-The S2.1 triage flags this pair for consolidation with operations.py POST /publish/farm/{id};
-keeping it isolated here makes that follow-up surgical."""
+The single publish trigger: the operations-side duplicate (POST /publish/farm/{id}) was folded
+in here (S2.1 consolidation, 2026-06-11)."""
 
 from __future__ import annotations
 
