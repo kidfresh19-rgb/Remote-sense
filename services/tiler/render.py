@@ -9,6 +9,13 @@ from typing import cast
 
 from rs_analysis import get_colormap
 
+# Visual composites: a fixed per-channel reflectance stretch, no colormap. The fcc red channel
+# is NIR, which runs brighter over vegetation than the visible bands, so it gets a wider range.
+_COMPOSITE_RANGES: dict[str, tuple[tuple[float, float], ...]] = {
+    "rgb": ((0.0, 0.3), (0.0, 0.3), (0.0, 0.3)),
+    "fcc": ((0.0, 0.45), (0.0, 0.3), (0.0, 0.3)),
+}
+
 
 class RasterStackUnavailable(RuntimeError):
     """The raster stack (`rasterio` / `rio-tiler`, the `geo` extra) is not installed - the host
@@ -23,8 +30,8 @@ class TileUnavailable(RuntimeError):
 def render_params(index: str) -> dict[str, object]:
     """The rescale range + colormap name a tile of `index` is rendered with (matplotlib / rio-tiler
     convention), read from the locked display range. Raises KeyError for an unknown index."""
-    if index == "rgb":
-        return {"colormap_name": None, "rescale": (0.0, 0.3)}
+    if index in _COMPOSITE_RANGES:
+        return {"colormap_name": None, "rescale": _COMPOSITE_RANGES[index]}
     colormap = get_colormap(index)
     return {"colormap_name": colormap.colormap, "rescale": (colormap.vmin, colormap.vmax)}
 
@@ -68,8 +75,8 @@ def render_tile(
     except RasterioIOError as exc:
         raise TileUnavailable(f"no readable {index} COG at the source") from exc
 
-    if index == "rgb":
-        image.rescale(in_range=((0.0, 0.3), (0.0, 0.3), (0.0, 0.3)))
+    if index in _COMPOSITE_RANGES:
+        image.rescale(in_range=_COMPOSITE_RANGES[index])
         return image.render(img_format="PNG")
 
     params = render_params(index)

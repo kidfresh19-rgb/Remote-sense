@@ -16,6 +16,7 @@ interface WorkspaceState {
   compareDate: string | null;
   showRaster: boolean;
   showRgb: boolean;
+  showFcc: boolean; // false color (NIR/red/green): vegetation renders red
   customAOI: Geometry | null; // user-defined analysis boundary
 }
 
@@ -36,6 +37,7 @@ type Action =
   | { type: "restoreView"; view: RestoreView }
   | { type: "toggleRaster" }
   | { type: "toggleRgb" }
+  | { type: "toggleFcc" }
   | { type: "setCustomAOI"; geometry: Geometry | null };
 
 const initialState: WorkspaceState = {
@@ -47,6 +49,7 @@ const initialState: WorkspaceState = {
   compareDate: null,
   showRaster: false,
   showRgb: false,
+  showFcc: false,
   customAOI: null,
 };
 
@@ -63,6 +66,7 @@ function reducer(state: WorkspaceState, action: Action): WorkspaceState {
         requestedDate: null,
         compareDate: null,
         showRgb: false,
+        showFcc: false,
       };
     case "selectField":
       if (action.fieldId === state.fieldId) return state;
@@ -73,6 +77,7 @@ function reducer(state: WorkspaceState, action: Action): WorkspaceState {
         requestedDate: null,
         compareDate: null,
         showRgb: false,
+        showFcc: false,
       };
     case "setIndex":
       return { ...state, index: action.index };
@@ -98,6 +103,7 @@ function reducer(state: WorkspaceState, action: Action): WorkspaceState {
         requestedDate: null,
         compareDate: null,
         showRgb: false,
+        showFcc: false,
       };
     case "toggleRaster":
       const nextShowRaster = !state.showRaster;
@@ -105,6 +111,7 @@ function reducer(state: WorkspaceState, action: Action): WorkspaceState {
         ...state,
         showRaster: nextShowRaster,
         showRgb: nextShowRaster ? false : state.showRgb,
+        showFcc: nextShowRaster ? false : state.showFcc,
       };
     case "toggleRgb":
       const nextShowRgb = !state.showRgb;
@@ -112,6 +119,15 @@ function reducer(state: WorkspaceState, action: Action): WorkspaceState {
         ...state,
         showRgb: nextShowRgb,
         showRaster: nextShowRgb ? false : state.showRaster,
+        showFcc: nextShowRgb ? false : state.showFcc,
+      };
+    case "toggleFcc":
+      const nextShowFcc = !state.showFcc;
+      return {
+        ...state,
+        showFcc: nextShowFcc,
+        showRaster: nextShowFcc ? false : state.showRaster,
+        showRgb: nextShowFcc ? false : state.showRgb,
       };
     case "setCustomAOI":
       return { ...state, customAOI: action.geometry };
@@ -131,6 +147,7 @@ interface WorkspaceContextValue extends WorkspaceState {
   restoreView: (view: RestoreView) => void;
   toggleRaster: () => void;
   toggleRgb: () => void;
+  toggleFcc: () => void;
   setCustomAOI: (geometry: Geometry | null) => void;
 }
 
@@ -151,6 +168,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       restoreView: (view) => dispatch({ type: "restoreView", view }),
       toggleRaster: () => dispatch({ type: "toggleRaster" }),
       toggleRgb: () => dispatch({ type: "toggleRgb" }),
+      toggleFcc: () => dispatch({ type: "toggleFcc" }),
       setCustomAOI: (geometry) => dispatch({ type: "setCustomAOI", geometry }),
     }),
     [state],

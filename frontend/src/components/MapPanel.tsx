@@ -1,4 +1,4 @@
-import { CaretLeft, CaretRight, Columns, Stack, X, Lightning, Eye } from "@phosphor-icons/react";
+import { CaretLeft, CaretRight, Columns, Stack, X, Lightning, Eye, Plant } from "@phosphor-icons/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { Field } from "@/lib/api";
@@ -37,8 +37,10 @@ export function MapPanel({
     compareDate,
     showRaster,
     showRgb,
+    showFcc,
     toggleRaster,
     toggleRgb,
+    toggleFcc,
     setCompareDate,
     customAOI,
     setCustomAOI,
@@ -162,6 +164,7 @@ export function MapPanel({
           sceneId={activeSceneId}
           showRaster={showRaster}
           showRgb={showRgb}
+          showFcc={showFcc}
           customAOI={customAOI}
           marker={searchMarker}
           drawMode={drawMode}
@@ -234,6 +237,15 @@ export function MapPanel({
           <Eye size={18} />
         </IconButton>
         <IconButton
+          label={showFcc ? "Hide false color (NIR)" : "Show false color (NIR)"}
+          active={showFcc}
+          onClick={toggleFcc}
+          disabled={!selectedField}
+          className="border border-border bg-panel"
+        >
+          <Plant size={18} />
+        </IconButton>
+        <IconButton
           label={comparing ? "Exit comparison" : "Compare two passes"}
           active={comparing}
           onClick={toggleCompare}
@@ -293,8 +305,8 @@ export function MapPanel({
         {inspectorOpen ? <CaretRight size={12} weight="bold" /> : <CaretLeft size={12} weight="bold" />}
       </button>
 
-      {/* Index legend */}
-      {selectedField && !showRgb ? (
+      {/* Index legend — meaningless over the visual composites, so hidden with either */}
+      {selectedField && !showRgb && !showFcc ? (
         <div className="absolute bottom-3 left-3 z-20">
           <IndexLegend meta={indexMeta(index)} />
         </div>
@@ -342,6 +354,7 @@ function SingleSceneMap({
   sceneId,
   showRaster,
   showRgb,
+  showFcc,
   customAOI,
   marker,
   drawMode,
@@ -354,6 +367,7 @@ function SingleSceneMap({
   sceneId: string | null;
   showRaster: boolean;
   showRgb: boolean;
+  showFcc: boolean;
   customAOI: import("geojson").Geometry | null;
   marker: [number, number] | null;
   drawMode: boolean;
@@ -371,6 +385,7 @@ function SingleSceneMap({
     sceneId,
     showRaster,
     showRgb,
+    showFcc,
     customAOI,
     marker,
     drawMode,

@@ -89,7 +89,8 @@ async def collect_field(
         for resolution_m, names in resolution_groups.items():
             bands = sorted({band for name in names for band in get_index(name).bands})
             if emit_rasters and resolution_m == 10:
-                bands = sorted(set(bands) | {"B04", "B03", "B02"})
+                # Visual-composite bands: true color (B04/B03/B02) plus the NIR for false color.
+                bands = sorted(set(bands) | {"B08", "B04", "B03", "B02"})
             fetched = await adapter.fetch(scene, aoi, bands=bands, resolution_m=float(resolution_m))
             processing_mode = fetched.provenance.processing_mode.value
 
@@ -116,22 +117,31 @@ async def collect_field(
 
         if emit_rasters and fetched_bands_10m is None:
             fetched_10m = await adapter.fetch(
-                scene, aoi, bands=["B04", "B03", "B02"], resolution_m=10.0
+                scene, aoi, bands=["B08", "B04", "B03", "B02"], resolution_m=10.0
             )
             fetched_bands_10m = fetched_10m.data.bands
             transform_10m = fetched_10m.data.transform
             crs_10m = fetched_10m.data.crs
 
         if emit_rasters and fetched_bands_10m is not None:
+            nir = fetched_bands_10m.get("B08")
             red = fetched_bands_10m.get("B04")
             green = fetched_bands_10m.get("B03")
             blue = fetched_bands_10m.get("B02")
             if red is not None and green is not None and blue is not None:
                 # A fetch that returned bands always carries its grid; narrow the Optionals.
                 assert transform_10m is not None and crs_10m is not None
-                rgb_stack = np.stack([red, green, blue], axis=0)
                 rasters["rgb"] = IndexRaster(
-                    array=rgb_stack,
+                    array=np.stack([red, green, blue], axis=0),
+                    transform=transform_10m,
+                    crs=crs_10m,
+                )
+            # False color (B08/B04/B03, NIR first): vegetation renders red. A visual composite
+            # like rgb - no stats and no analysis row, just a COG for the workspace toggle.
+            if nir is not None and red is not None and green is not None:
+                assert transform_10m is not None and crs_10m is not None
+                rasters["fcc"] = IndexRaster(
+                    array=np.stack([nir, red, green], axis=0),
                     transform=transform_10m,
                     crs=crs_10m,
                 )
