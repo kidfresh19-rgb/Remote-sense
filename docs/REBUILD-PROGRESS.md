@@ -10,7 +10,26 @@ Branch: `feat/imagery-agronomy-tiers-0-2`. Push target: Azure DevOps `origin`.
 2. Read in order: PRD 0001, ADR 0008, `CONTRACT.md`, backlog 0001.
 3. Continue from "Next" below.
 
-## State (2026-06-11)
+## State (2026-06-11, second pass)
+
+- **Triage item 5 assessed: keep both.** `rs_core/alerts.py` (pure rulebook) and
+  `rs_sync/agritrack.py` (one adapter, invariant-1-shaped) need no split. Doc:
+  `docs/plan/S2.1-item5-and-publish-consolidation.md`.
+- **Publish consolidation DONE.** The workspace `POST /farms/{id}/publish` is the single
+  publish trigger (frontend already called it; richer 404/503/typed response); the operations
+  duplicate removed; RBAC tests repointed; the workspace publish endpoints gained their first
+  direct tests (202 / 404 / 503). Suite is now 387 passed / 4 skipped.
+- **Phase 1 quality gates DONE (S1.1, S1.2, S1.4, S1.5)** - measured first, landed green. Doc:
+  `docs/plan/S1-quality-gates.md`:
+  - S1.1 mypy gate, baseline fixed to **zero** (was 28 errors / 13 files); `[tool.mypy]` in
+    pyproject; CI runs `mypy` after the full install.
+  - S1.2 coverage floor **85%** (measured 88.73%); pytest-cov wired into both CIs.
+  - S1.4 pip-audit (clean after a setuptools upgrade) + gitleaks full-history scan (clean, 75
+    commits) in both CIs; checkouts switched to full depth for the history scan.
+  - S1.5 merge policy: every gate in one pipeline, red = no merge; CLAUDE.md section 0 updated.
+  - S1.3 (load-test harness) stays queued; SLO numbers come with S4.7.
+
+## State (2026-06-11, first pass)
 
 - **Phase 0 safety net built and green** (S0.1, S0.2, S0.4 done; S0.3 folded per-slice). Details in
   the 2026-06-10 state below.
@@ -67,15 +86,11 @@ Branch: `feat/imagery-agronomy-tiers-0-2`. Push target: Azure DevOps `origin`.
 
 ## Next (from the backlog, in order)
 
-- **Triage item 5 (assess-only):** read `rs_core/alerts.py` (327) and `rs_sync/agritrack.py` (270);
-  split only if reading shows real tangling.
-- **Publish-endpoint consolidation** (behavior slice, prepared by item 3): `workspace/publish.py
-  POST /farms/{id}/publish` vs `operations.py POST /publish/farm/{id}`, both 202, neither frozen.
-  Decide the surviving URL (frontend calls the workspace one) and fold the other.
-- **Phase 1 quality gates:** static type-check (S1.1), coverage floor (S1.2), supply-chain scanning
-  (S1.4), merge policy (S1.5). CI (`.github/workflows/ci.yml`) already runs `pytest tests` plus
-  `ruff check .` plus `ruff format --check .` on PR to `develop`/`main`; these gates extend it.
-- **Then the vertical rebuild slices**, starting with the as-of-date farm view (S3.1).
+- **S3.1 as-of-date farm view** - the first integrating vertical rebuild slice (L3 nearest-clear-pass
+  resolution, L4 composites + index, L5 render, L6 date-picker UI). Settle the nearest-before vs
+  either-side vs bracketing policy here.
+- Later: S1.3 load-test harness (with S4.7 SLOs), Phase 4 scale items, doc hygiene D1, and the
+  parked FROZEN-CANDIDATE confirmation for `POST /ingest/farm` (external-team fact).
 
 ## Flagged decisions / defaults taken while AFK
 
