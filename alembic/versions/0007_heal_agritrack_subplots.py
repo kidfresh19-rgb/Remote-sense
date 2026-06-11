@@ -11,6 +11,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 import sqlalchemy as sa
+
 from alembic import op
 
 revision: str = "0007_heal_agritrack_subplots"
@@ -21,28 +22,33 @@ depends_on: str | Sequence[str] | None = None
 
 def upgrade() -> None:
     conn = op.get_bind()
-    
+
     # Find all fields that have a duplicated prefix (e.g. 9.9.21)
     result = conn.execute(
-        sa.text("SELECT id, farm_id, canonical_field_id FROM field WHERE canonical_field_id LIKE '%.%'")
+        sa.text(
+            "SELECT id, farm_id, canonical_field_id FROM field WHERE canonical_field_id LIKE '%.%'"
+        )
     )
     fields = result.fetchall()
-    
+
     for field_id, farm_id, canonical_id in fields:
         parts = canonical_id.split(".")
         if len(parts) >= 3 and parts[0] == parts[1]:
             corrected_id = f"{parts[0]}.{'.'.join(parts[2:])}"
-            
+
             # Check if the corrected field already exists for this farm
             res_exists = conn.execute(
-                sa.text("SELECT id FROM field WHERE farm_id = :farm_id AND canonical_field_id = :canonical_id"),
-                {"farm_id": farm_id, "canonical_id": corrected_id}
+                sa.text(
+                    "SELECT id FROM field WHERE farm_id = :farm_id "
+                    "AND canonical_field_id = :canonical_id"
+                ),
+                {"farm_id": farm_id, "canonical_id": corrected_id},
             )
             exists_row = res_exists.fetchone()
-            
+
             if exists_row:
                 target_field_id = exists_row[0]
-                
+
                 # Move analyses (delete duplicates if they would cause constraint violations)
                 conn.execute(
                     sa.text("""
@@ -57,13 +63,13 @@ def upgrade() -> None:
                             AND a2.formula_version = a1.formula_version
                         )
                     """),
-                    {"dup_id": field_id, "target_id": target_field_id}
+                    {"dup_id": field_id, "target_id": target_field_id},
                 )
                 conn.execute(
                     sa.text("UPDATE analysis SET field_id = :target_id WHERE field_id = :dup_id"),
-                    {"dup_id": field_id, "target_id": target_field_id}
+                    {"dup_id": field_id, "target_id": target_field_id},
                 )
-                
+
                 # Move interpretations
                 conn.execute(
                     sa.text("""
@@ -77,19 +83,21 @@ def upgrade() -> None:
                             AND i2.prompt_version = i1.prompt_version
                         )
                     """),
-                    {"dup_id": field_id, "target_id": target_field_id}
+                    {"dup_id": field_id, "target_id": target_field_id},
                 )
                 conn.execute(
-                    sa.text("UPDATE interpretation SET field_id = :target_id WHERE field_id = :dup_id"),
-                    {"dup_id": field_id, "target_id": target_field_id}
+                    sa.text(
+                        "UPDATE interpretation SET field_id = :target_id WHERE field_id = :dup_id"
+                    ),
+                    {"dup_id": field_id, "target_id": target_field_id},
                 )
-                
+
                 # Move annotations
                 conn.execute(
                     sa.text("UPDATE annotation SET field_id = :target_id WHERE field_id = :dup_id"),
-                    {"dup_id": field_id, "target_id": target_field_id}
+                    {"dup_id": field_id, "target_id": target_field_id},
                 )
-                
+
                 # Move field_collection_state
                 conn.execute(
                     sa.text("""
@@ -101,13 +109,16 @@ def upgrade() -> None:
                             AND fcs2.geometry_version = fcs1.geometry_version
                         )
                     """),
-                    {"dup_id": field_id, "target_id": target_field_id}
+                    {"dup_id": field_id, "target_id": target_field_id},
                 )
                 conn.execute(
-                    sa.text("UPDATE field_collection_state SET field_id = :target_id WHERE field_id = :dup_id"),
-                    {"dup_id": field_id, "target_id": target_field_id}
+                    sa.text(
+                        "UPDATE field_collection_state SET field_id = :target_id "
+                        "WHERE field_id = :dup_id"
+                    ),
+                    {"dup_id": field_id, "target_id": target_field_id},
                 )
-                
+
                 # Move field_geometry_version
                 conn.execute(
                     sa.text("""
@@ -119,23 +130,25 @@ def upgrade() -> None:
                             AND fgv2.version = fgv1.version
                         )
                     """),
-                    {"dup_id": field_id, "target_id": target_field_id}
+                    {"dup_id": field_id, "target_id": target_field_id},
                 )
                 conn.execute(
-                    sa.text("UPDATE field_geometry_version SET field_id = :target_id WHERE field_id = :dup_id"),
-                    {"dup_id": field_id, "target_id": target_field_id}
+                    sa.text(
+                        "UPDATE field_geometry_version SET field_id = :target_id "
+                        "WHERE field_id = :dup_id"
+                    ),
+                    {"dup_id": field_id, "target_id": target_field_id},
                 )
-                
+
                 # Delete duplicate field
-                conn.execute(
-                    sa.text("DELETE FROM field WHERE id = :dup_id"),
-                    {"dup_id": field_id}
-                )
+                conn.execute(sa.text("DELETE FROM field WHERE id = :dup_id"), {"dup_id": field_id})
             else:
                 # Rename the field
                 conn.execute(
-                    sa.text("UPDATE field SET canonical_field_id = :corrected_id WHERE id = :dup_id"),
-                    {"dup_id": field_id, "corrected_id": corrected_id}
+                    sa.text(
+                        "UPDATE field SET canonical_field_id = :corrected_id WHERE id = :dup_id"
+                    ),
+                    {"dup_id": field_id, "corrected_id": corrected_id},
                 )
 
 

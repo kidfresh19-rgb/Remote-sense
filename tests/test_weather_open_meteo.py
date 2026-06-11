@@ -1,8 +1,8 @@
-"""Contract and integration tests for the Open-Meteo weather adapter. Zero network: mock transport."""
+"""Contract and integration tests for the Open-Meteo weather adapter. Zero network: mock
+transport."""
 
 from __future__ import annotations
 
-import json
 from datetime import date
 
 import httpx

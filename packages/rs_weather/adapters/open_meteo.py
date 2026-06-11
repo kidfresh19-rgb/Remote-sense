@@ -4,12 +4,13 @@ resilient against transient network and 429/5xx errors using tenacity retries.""
 
 from __future__ import annotations
 
-from datetime import date, datetime, UTC
-import httpx
-from tenacity import AsyncRetrying, retry_if_exception, stop_after_attempt, wait_exponential
+from datetime import UTC, date, datetime
 
+import httpx
 from rs_core.config import Settings
 from rs_core.logging import get_logger
+from tenacity import AsyncRetrying, retry_if_exception, stop_after_attempt, wait_exponential
+
 from rs_weather.port import WeatherPort
 from rs_weather.types import DailyWeather, Location, WeatherProvenance, WeatherSeries
 
@@ -87,7 +88,9 @@ class OpenMeteoWeatherAdapter(WeatherPort):
                 with attempt:
                     data = await _call()
         except Exception as e:
-            log.error("open_meteo.daily_failed", location=location, start=start, end=end, error=str(e))
+            log.error(
+                "open_meteo.daily_failed", location=location, start=start, end=end, error=str(e)
+            )
             raise
 
         return self._parse_response(location, data, forecast=False)

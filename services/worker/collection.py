@@ -81,7 +81,7 @@ async def collect_field(
         rasters: dict[str, IndexRaster] = {}
         provider = scene.provider
         processing_mode = "mock"
-        
+
         fetched_bands_10m = None
         transform_10m = None
         crs_10m = None
@@ -92,7 +92,7 @@ async def collect_field(
                 bands = sorted(set(bands) | {"B04", "B03", "B02"})
             fetched = await adapter.fetch(scene, aoi, bands=bands, resolution_m=float(resolution_m))
             processing_mode = fetched.provenance.processing_mode.value
-            
+
             if resolution_m == 10:
                 fetched_bands_10m = fetched.data.bands
                 transform_10m = fetched.data.transform
@@ -113,9 +113,11 @@ async def collect_field(
                         transform=fetched.data.transform,
                         crs=fetched.data.crs,
                     )
-        
+
         if emit_rasters and fetched_bands_10m is None:
-            fetched_10m = await adapter.fetch(scene, aoi, bands=["B04", "B03", "B02"], resolution_m=10.0)
+            fetched_10m = await adapter.fetch(
+                scene, aoi, bands=["B04", "B03", "B02"], resolution_m=10.0
+            )
             fetched_bands_10m = fetched_10m.data.bands
             transform_10m = fetched_10m.data.transform
             crs_10m = fetched_10m.data.crs

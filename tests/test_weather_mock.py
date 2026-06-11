@@ -44,9 +44,11 @@ async def test_forecast_returns_n_days_flagged_forecast():
 
 def test_registry_returns_mock_and_open_meteo():
     from rs_weather.adapters.open_meteo import OpenMeteoWeatherAdapter
+
     assert isinstance(
         get_weather_adapter(Settings(weather_adapter=WeatherAdapter.MOCK)), MockWeatherAdapter
     )
     assert isinstance(
-        get_weather_adapter(Settings(weather_adapter=WeatherAdapter.OPEN_METEO)), OpenMeteoWeatherAdapter
+        get_weather_adapter(Settings(weather_adapter=WeatherAdapter.OPEN_METEO)),
+        OpenMeteoWeatherAdapter,
     )

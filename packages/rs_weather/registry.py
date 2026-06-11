@@ -20,6 +20,7 @@ def get_weather_adapter(settings: Settings | None = None) -> WeatherPort:
     # behind an injected httpx client like the CDSE STAC client (T1.1 follow-on).
     if adapter is WeatherAdapter.OPEN_METEO:
         from rs_weather.adapters.open_meteo import OpenMeteoWeatherAdapter
+
         return OpenMeteoWeatherAdapter(settings)
 
     raise ValueError(f"Unknown weather adapter: {adapter!r}")
