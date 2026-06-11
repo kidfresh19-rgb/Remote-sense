@@ -42,6 +42,8 @@ Thumbs.db
 
 # Generated reports / local artifacts
 *.docx
+.coverage
+coverage.json
 
 # Nested scratch repo (never track)
 /remote-sense/

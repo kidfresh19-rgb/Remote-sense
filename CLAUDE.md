@@ -29,7 +29,9 @@ frozen external boundary. Full plan: `docs/adr/0008-ordered-reimplementation-fro
   pre-computed tiles) stand. Improve interior structure where the reevaluation calls for it; moving
   an invariant still needs its own ADR.
 - **Every green light is committed.** A slice is done only when `ruff check`, `ruff format --check`,
-  and `pytest` are all clean. Small Conventional Commits; push each green slice.
+  `mypy`, and `pytest` are all clean. CI additionally enforces the 85% coverage floor, `pip-audit`,
+  and a gitleaks secret scan; a red CI means no merge (S1.5). Small Conventional Commits; push each
+  green slice.
 
 ---
 

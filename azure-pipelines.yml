@@ -1,7 +1,9 @@
 # Azure Pipelines mirror of .github/workflows/ci.yml. This is the config that actually runs on push:
 # origin is Azure DevOps (dev.azure.com/cai-hit/remote-sense), where GitHub Actions never execute. It
 # runs ruff plus the full suite (raster + DB-gated) so the ~20 gated suites stop depending on someone
-# bringing the stack up by hand. See docs/improvement-plan.md (Tier 0.4).
+# bringing the stack up by hand. See docs/improvement-plan.md (Tier 0.4). Rebuild Phase 1 (S1.5
+# merge policy) extends it with mypy (S1.1), the 85% coverage floor (S1.2), and pip-audit +
+# gitleaks (S1.4): a red run means no merge.
 #
 # The `trigger` below fires CI on pushes to develop/main. The `pr` block is honored only for GitHub/
 # Bitbucket repos; for Azure Repos Git, PR validation is wired up via a Build Validation branch policy
@@ -31,6 +33,9 @@ variables:
   RS_REDIS_URL: redis://localhost:6379/0
 
 steps:
+  - checkout: self
+    fetchDepth: 0 # gitleaks scans the full history
+
   - task: UsePythonVersion@0
     inputs:
       versionSpec: "3.11"
@@ -57,6 +62,10 @@ steps:
   - script: docker exec postgres createdb -U rs remote_sense_test
     displayName: Create the isolated test database
 
+  # pip-audit audits this environment, so the agent's bundled setuptools must be current.
+  - script: pip install -U pip setuptools
+    displayName: Upgrade packaging tools
+
   # rasterio / rio-tiler / pyproj / shapely install from manylinux wheels, so the raster-gated suites
   # run here without a host GDAL toolchain.
   - script: pip install -e ".[geo,interpret,storage,dev]"
@@ -67,5 +76,17 @@ steps:
       ruff format --check .
     displayName: Ruff lint and format
 
-  - script: pytest tests -q
-    displayName: Run the full suite (no-infra + raster + DB-gated)
+  # Runs after the full install so dependency types match a developer machine.
+  - script: mypy
+    displayName: Mypy static type gate (S1.1)
+
+  - script: pytest tests -q --cov=packages --cov=services --cov-fail-under=85
+    displayName: Run the full suite with the coverage floor (S1.2)
+
+  - script: |
+      pip install pip-audit
+      pip-audit --skip-editable
+    displayName: pip-audit dependency scan (S1.4)
+
+  - script: docker run --rm -v "$(Build.SourcesDirectory):/repo" zricethezav/gitleaks:latest detect --source /repo --no-banner --redact
+    displayName: Gitleaks secret scan (S1.4)
