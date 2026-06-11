@@ -14,8 +14,10 @@ from __future__ import annotations
 
 import uuid
 from datetime import date, datetime
+from typing import Any
 
 from geoalchemy2 import Geometry
+from geoalchemy2.elements import WKBElement
 from sqlalchemy import (
     Boolean,
     Date,
@@ -52,7 +54,7 @@ class Farm(Base):
     name: Mapped[str | None] = mapped_column(String(256), nullable=True)
     region: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
-    boundary: Mapped[object | None] = mapped_column(_MULTIPOLYGON_4326, nullable=True)
+    boundary: Mapped[WKBElement | None] = mapped_column(_MULTIPOLYGON_4326, nullable=True)
     centroid_lon: Mapped[float] = mapped_column(Float)
     centroid_lat: Mapped[float] = mapped_column(Float)
 
@@ -87,7 +89,7 @@ class Field(Base):
     name: Mapped[str | None] = mapped_column(String(256), nullable=True)
     crop: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
-    boundary: Mapped[object] = mapped_column(_MULTIPOLYGON_4326)
+    boundary: Mapped[WKBElement] = mapped_column(_MULTIPOLYGON_4326)
     geometry_version: Mapped[int] = mapped_column(Integer, default=1)
     derived_from_farm: Mapped[bool] = mapped_column(Boolean, default=False)
     # Set true on creation and whenever the boundary changes; the pipeline (Phase 3) clears
@@ -123,7 +125,7 @@ class FieldGeometryVersion(Base):
         UUID(as_uuid=True), ForeignKey("field.id", ondelete="CASCADE"), index=True
     )
     version: Mapped[int] = mapped_column(Integer)
-    boundary: Mapped[object] = mapped_column(_MULTIPOLYGON_4326)
+    boundary: Mapped[WKBElement] = mapped_column(_MULTIPOLYGON_4326)
     area_m2: Mapped[float] = mapped_column(Float)
 
     valid_from: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -278,7 +280,7 @@ class Interpretation(Base):
     # Grounding Context (weather/activity telemetry)
     gdd_accumulation: Mapped[float | None] = mapped_column(Float, nullable=True)
     total_precipitation: Mapped[float | None] = mapped_column(Float, nullable=True)
-    recent_activities: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    recent_activities: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB, nullable=True)
 
     # The model's words; the structured fields below are grounded in the numbers, not the model.
     narrative: Mapped[str] = mapped_column(Text)

@@ -5,8 +5,9 @@ from __future__ import annotations
 
 import uuid
 from datetime import date
+from typing import Any, cast
 
-from sqlalchemy import delete, select
+from sqlalchemy import CursorResult, delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from rs_core.models import Annotation
@@ -60,4 +61,5 @@ async def delete_annotation(
     result = await session.execute(
         delete(Annotation).where(Annotation.id == annotation_id, Annotation.field_id == field_id)
     )
-    return bool(result.rowcount)
+    # session.execute is typed as the base Result; a DELETE always yields a CursorResult.
+    return bool(cast("CursorResult[Any]", result).rowcount)

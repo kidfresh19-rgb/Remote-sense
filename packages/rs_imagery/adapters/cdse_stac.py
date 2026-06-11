@@ -213,7 +213,7 @@ class CdseStacClient:
         """The scenes covering the AOI in range, sorted chronologically (oldest first) so the
         pipeline plans backfill in pass order."""
         body = self._search_body(aoi, time_range, max_scene_cloud_pct, limit)
-        payload = await self._retrying(self._post_search, body)
+        payload: dict[str, Any] = await self._retrying(self._post_search, body)
         items = [item for f in payload.get("features", []) if (item := parse_item(f)) is not None]
         items.sort(key=lambda i: i.sensing_datetime)
         log.info("cdse.stac.search", returned=len(items), collection=self._collection)

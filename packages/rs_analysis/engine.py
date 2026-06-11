@@ -100,6 +100,7 @@ def analyze_index(
     raw = spec.compute(reflectance)
     clipped = clip_to_range(raw, *spec.valid_range)
 
+    include: np.ndarray | None
     if scl is not None:
         include = clear_mask(scl)
         if aoi_mask is not None:

@@ -5,6 +5,7 @@ it with rio-tiler, which needs the raster stack (the `geo` extra, in-container o
 from __future__ import annotations
 
 import os
+from typing import cast
 
 from rs_analysis import get_colormap
 
@@ -72,7 +73,7 @@ def render_tile(
         return image.render(img_format="PNG")
 
     params = render_params(index)
-    vmin, vmax = params["rescale"]  # type: ignore[misc]
+    vmin, vmax = cast("tuple[float, float]", params["rescale"])
     colormap = default_cmaps.get(str(params["colormap_name"]).lower())
 
     image.rescale(in_range=((vmin, vmax),))

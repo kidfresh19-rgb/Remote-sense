@@ -9,11 +9,37 @@ from __future__ import annotations
 
 import uuid
 from datetime import date
+from typing import TypedDict
 
 from rs_analysis import AnalysisOutput
 from rs_core.models import Analysis
 from rs_core.repositories import upsert_analysis
 from sqlalchemy.ext.asyncio import AsyncSession
+
+
+class AnalysisUpsertKwargs(TypedDict):
+    """The exact keyword arguments `upsert_analysis` accepts, typed so that `**` unpacking the
+    mapping into the call type-checks against its signature."""
+
+    field_id: uuid.UUID
+    scene_id: str
+    pass_date: date
+    index_name: str
+    formula_version: str
+    geometry_version: int
+    provider: str
+    provider_scene_id: str
+    processing_mode: str
+    resolution_m: float
+    clear_fraction: float
+    mean: float | None
+    min_val: float | None
+    max_val: float | None
+    std: float | None
+    p10: float | None
+    p90: float | None
+    confidence: str | None
+    cog_uri: str | None
 
 
 def analysis_upsert_kwargs(
@@ -27,7 +53,7 @@ def analysis_upsert_kwargs(
     provider_scene_id: str,
     processing_mode: str,
     cog_uri: str | None = None,
-) -> dict[str, object]:
+) -> AnalysisUpsertKwargs:
     """Flatten an `AnalysisOutput` (which nests its stats in a `ZonalStats`) plus the scene's
     provenance into the keyword arguments `upsert_analysis` expects. Pure - no DB - so the
     mapping is unit-testable on its own."""

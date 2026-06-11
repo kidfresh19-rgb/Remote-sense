@@ -15,7 +15,7 @@ from rs_core.models import Analysis, Farm, Field, FieldGeometryVersion
 
 class FarmAnalyticsSummary(TypedDict):
     canonical_farm_id: str
-    farm_name: str
+    farm_name: str | None
     region: str | None
     total_fields: int
     total_area_hectares: float
@@ -135,18 +135,18 @@ async def get_farm_analytics_summary(
             farm_vigour = classify("ndvi", overall_health_score).label
             overall_health = vigour_to_status(farm_vigour)
 
-    return {
-        "canonical_farm_id": canonical_farm_id,
-        "farm_name": farm_info.name,
-        "region": farm_info.region,
-        "total_fields": total_fields,
-        "total_area_hectares": round(total_area_m2 / 10000.0, 2),
-        "crops": crops,
-        "latest_pass_date": latest_pass_date,
-        "overall_health": overall_health,
-        "overall_health_score": overall_health_score,
-        "field_status_counts": field_status_counts,
-    }
+    return FarmAnalyticsSummary(
+        canonical_farm_id=canonical_farm_id,
+        farm_name=farm_info.name,
+        region=farm_info.region,
+        total_fields=total_fields,
+        total_area_hectares=round(total_area_m2 / 10000.0, 2),
+        crops=crops,
+        latest_pass_date=latest_pass_date,
+        overall_health=overall_health,
+        overall_health_score=overall_health_score,
+        field_status_counts=field_status_counts,
+    )
 
 
 async def get_farm_analytics_timeseries(
@@ -194,7 +194,7 @@ async def get_farm_analytics_timeseries(
     for r in rows:
         grouped[(r.pass_date, r.scene_id)].append(r)
 
-    points = []
+    points: list[FarmAnalyticsTimeSeriesPoint] = []
     from rs_interpret import classify, vigour_to_status
 
     for (pass_date, scene_id), records in sorted(grouped.items(), key=lambda x: x[0][0]):
@@ -216,23 +216,22 @@ async def get_farm_analytics_timeseries(
                     status_areas[status] += area
 
         if total_area > 0:
-            distribution_pct = {}
+            distribution_pct: dict[str, float] | None = None
             if index.lower() == "ndvi":
-                for k, v in status_areas.items():
-                    distribution_pct[k] = round((v / total_area) * 100.0, 1)
-            else:
-                distribution_pct = None
+                distribution_pct = {
+                    k: round((v / total_area) * 100.0, 1) for k, v in status_areas.items()
+                }
 
             points.append(
-                {
-                    "pass_date": pass_date,
-                    "scene_id": scene_id,
-                    "area_weighted_mean": round(weighted_val_sum / total_area, 4),
-                    "clear_fraction": round(weighted_clear_sum / total_area, 4),
-                    "analyzed_fields": len(records),
-                    "analyzed_area_hectares": round(total_area / 10000.0, 2),
-                    "health_distribution_pct": distribution_pct,
-                }
+                FarmAnalyticsTimeSeriesPoint(
+                    pass_date=pass_date,
+                    scene_id=scene_id,
+                    area_weighted_mean=round(weighted_val_sum / total_area, 4),
+                    clear_fraction=round(weighted_clear_sum / total_area, 4),
+                    analyzed_fields=len(records),
+                    analyzed_area_hectares=round(total_area / 10000.0, 2),
+                    health_distribution_pct=distribution_pct,
+                )
             )
     return points
 
@@ -258,7 +257,7 @@ async def get_farm_analytics_anomalies(
     ).scalar()
 
     if not latest_pass_date:
-        return {"pass_date": None, "farm_average": None, "anomalies": []}
+        return FarmAnalyticsAnomalies(pass_date=None, farm_average=None, anomalies=[])
 
     analyses = (
         await session.execute(
@@ -294,7 +293,7 @@ async def get_farm_analytics_anomalies(
 
     farm_mean = weighted_ndvi_sum / total_area if total_area > 0 else 0.0
 
-    anomalies = []
+    anomalies: list[FarmAnomaly] = []
     from rs_interpret import classify, vigour_to_status
 
     for row in analyses:
@@ -344,23 +343,23 @@ async def get_farm_analytics_anomalies(
                 details.append(drop_detail)
 
             anomalies.append(
-                {
-                    "field_id": str(row.field_id),
-                    "canonical_field_id": row.canonical_field_id,
-                    "name": row.name,
-                    "crop": row.crop,
-                    "field_area_hectares": round((row.area_m2 or 0.0) / 10000.0, 2),
-                    "index_name": "ndvi",
-                    "field_value": round(row.mean, 4),
-                    "farm_average": round(farm_mean, 4),
-                    "status": status,
-                    "anomaly_type": "/".join(anomaly_types),
-                    "detail": "; ".join(details),
-                }
+                FarmAnomaly(
+                    field_id=str(row.field_id),
+                    canonical_field_id=row.canonical_field_id,
+                    name=row.name,
+                    crop=row.crop,
+                    field_area_hectares=round((row.area_m2 or 0.0) / 10000.0, 2),
+                    index_name="ndvi",
+                    field_value=round(row.mean, 4),
+                    farm_average=round(farm_mean, 4),
+                    status=status,
+                    anomaly_type="/".join(anomaly_types),
+                    detail="; ".join(details),
+                )
             )
 
-    return {
-        "pass_date": latest_pass_date,
-        "farm_average": round(farm_mean, 4),
-        "anomalies": anomalies,
-    }
+    return FarmAnalyticsAnomalies(
+        pass_date=latest_pass_date,
+        farm_average=round(farm_mean, 4),
+        anomalies=anomalies,
+    )

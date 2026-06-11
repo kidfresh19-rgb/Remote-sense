@@ -127,6 +127,8 @@ async def collect_field(
             green = fetched_bands_10m.get("B03")
             blue = fetched_bands_10m.get("B02")
             if red is not None and green is not None and blue is not None:
+                # A fetch that returned bands always carries its grid; narrow the Optionals.
+                assert transform_10m is not None and crs_10m is not None
                 rgb_stack = np.stack([red, green, blue], axis=0)
                 rasters["rgb"] = IndexRaster(
                     array=rgb_stack,
