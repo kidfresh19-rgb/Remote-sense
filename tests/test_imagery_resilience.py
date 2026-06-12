@@ -239,10 +239,12 @@ def test_sync_bucket_waits_for_refill_then_proceeds() -> None:
 
 
 # -- settings factories ------------------------------------------------------------------------
+# Every Settings here passes _env_file=None: a developer's real .env (e.g. a configured CDSE
+# rate limit) must never flip these outcomes, in either direction.
 
 
 def test_buckets_are_off_until_a_rate_is_configured() -> None:
-    settings = Settings()
+    settings = Settings(_env_file=None)
     assert async_bucket_from_settings(settings) is None
     assert sync_bucket_from_settings(settings) is None
 
@@ -252,13 +254,13 @@ def test_empty_env_values_fall_back_to_defaults(monkeypatch: pytest.MonkeyPatch)
     # must treat that as unset, not crash at boot (env_ignore_empty).
     monkeypatch.setenv("RS_CDSE_RATE_LIMIT_RPS", "")
     monkeypatch.setenv("RS_COG_RETENTION_MONTHS", "")
-    settings = Settings()
+    settings = Settings(_env_file=None)
     assert settings.cdse_rate_limit_rps is None
     assert settings.cog_retention_months is None
 
 
 def test_buckets_build_from_a_configured_rate() -> None:
-    settings = Settings(cdse_rate_limit_rps=2.0, cdse_rate_limit_burst=8.0)
+    settings = Settings(_env_file=None, cdse_rate_limit_rps=2.0, cdse_rate_limit_burst=8.0)
     assert async_bucket_from_settings(settings) is not None
     assert sync_bucket_from_settings(settings) is not None
 
@@ -267,7 +269,9 @@ def test_buckets_build_from_a_configured_rate() -> None:
 
 
 def _stac_settings() -> Settings:
-    return Settings(cdse_stac_url="https://stac.test", cdse_stac_collection="sentinel-2-l2a")
+    return Settings(
+        _env_file=None, cdse_stac_url="https://stac.test", cdse_stac_collection="sentinel-2-l2a"
+    )
 
 
 def _aoi() -> AOI:
