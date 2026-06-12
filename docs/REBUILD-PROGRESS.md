@@ -86,14 +86,45 @@ Branch: `feat/imagery-agronomy-tiers-0-2`. Push target: Azure DevOps `origin`.
 
 ## Next (from the backlog, in order)
 
-- **Phase 4 remainder**: S4.1 partition/index the analysis table, S4.7 real SLO numbers +
-  load-test run (harness exists, S1.3), S4.2/S4.4 deployment-shaped scaling (autoscaling,
-  replicas/pooling). S4.6 ingest auth is effectively owner-blocked: a required auth header on
-  `POST /ingest/farm` is a non-additive change to a FROZEN-CANDIDATE route.
+- **Phase 4 remainder**: S4.7 real SLO numbers + load-test run (harness exists, S1.3),
+  S4.2/S4.4 deployment-shaped scaling (autoscaling, replicas/pooling). S4.6 ingest auth is
+  effectively owner-blocked: a required auth header on `POST /ingest/farm` is a non-additive
+  change to a FROZEN-CANDIDATE route.
 - Owner-blocked: the ⚑ CONFIRM as-of-date resolution policy (nearer side, tie -> before), the
-  ⚑ COG retention horizon default (= backfill depth), the ⚑ CDSE rate limit (governance ships
-  off until the real account quota is known), the `POST /ingest/farm` FROZEN-CANDIDATE
+  ⚑ COG retention horizon default (= backfill depth), the `POST /ingest/farm` FROZEN-CANDIDATE
   confirmation, live CDSE (D2/D6), and agronomist sign-off.
+
+## State (2026-06-12, fourth pass)
+
+- **S4.1 analysis partitioning DONE** (R15/R18): `analysis` is RANGE-partitioned by month on
+  `pass_date` (PG16). The primary key widens to (id, pass_date) and `uq_analysis_identity`
+  gains `pass_date` as its trailing column; scientific identity stays the 5-tuple because
+  pass_date is functionally dependent on the scene's immutable sensing date. Indexes
+  consolidated: the four single-column indexes became one composite
+  (field_id, index_name, pass_date) - every read path leads with field_id or bounds pass_date;
+  scene_id keeps its FK but loses its index (no reverse read path; scenes are never deleted).
+  Migration 0008 rebuilds in place (rename aside -> partitioned successor -> copy -> drop),
+  seeding monthly partitions over [oldest stored pass, today+3mo] plus an `analysis_default`
+  catch-all; rehearsed on a scratch DB with 2019/2025/2026 rows: upgrade routes correctly,
+  downgrade restores the flat original (names included), re-upgrade clean. New
+  `services/worker/partitions.py`: pure month planner (one slack month behind the backfill
+  horizon to a 3-month lookahead, reusing `backfill_window` so the depths never drift) +
+  idempotent `ensure_analysis_partitions` (per-month savepoints; a month DEFAULT already holds
+  is reported skipped, never fatal); weekly beat Sun 02:30 UTC, ahead of the prune. `create_all`
+  environments (the DB-gated tests) get the DEFAULT partition from an after_create hook on the
+  model. Two casualties handled: `(xmax = 0)` is illegal in RETURNING through a partitioned
+  parent, so the upsert's created-vs-refreshed signal is now `(created_at = now())`
+  (created_at is insert-only); retention's `session.get` takes the composite (id, pass_date).
+  Doc: `docs/plan/S4.1-partition-analysis.md`. Tests: 8 pure planner + 4 DB-gated partition
+  tests; suite 441 passed / 4 skipped; ruff + mypy clean.
+- **⚑ CDSE rate limit RESOLVED** (the S4.5 remainder): a CDSE general account allows 300
+  Process-API requests/min - the binding limit for the one bucket shared by STAC, Process and
+  windowed reads. Production value 4 rps / burst 10 (80% of quota; no 60-second window can
+  exceed 250 requests), set live in `.env` and shipped as the `.env.example` default; the code
+  default stays None because the rate belongs to the deployed account.
+- Hermeticity fix found by the live rate limit: the S4.5 settings-factory tests built
+  `Settings()` against the developer's real `.env`, so a configured rate limit flipped their
+  outcomes; they now pass `_env_file=None`.
 
 ## State (2026-06-12, third pass)
 
