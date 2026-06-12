@@ -121,7 +121,9 @@ async def prune_cogs(
     stale = 0
     for row in prunable:
         store.delete(row.cog_key)
-        analysis = await session.get(Analysis, row.analysis_id)
+        # Composite key since the table was partitioned (S4.1); pass_date routes the lookup
+        # straight to one partition.
+        analysis = await session.get(Analysis, (row.analysis_id, row.pass_date))
         if analysis is not None:
             analysis.cog_uri = None
         current = current_versions.get(row.field_id)

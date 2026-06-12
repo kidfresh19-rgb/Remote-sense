@@ -30,11 +30,16 @@ celery.conf.update(
 
 # Forward-fill runs on Sentinel-2 cadence (~5 days); the scheduler checks daily and enqueues only
 # the fields actually due, plus any flagged for backfill (services.worker.tasks.scan_and_enqueue).
-# COG retention (S4.3) prunes weekly, off-peak and after the daily scan window.
+# Weekly off-peak maintenance: partition upkeep (S4.1) first - months must exist before anything
+# writes into them - then the COG retention prune (S4.3), both clear of the daily scan window.
 celery.conf.beat_schedule = {
     "collection-scan-and-enqueue": {
         "task": "collection.scan_and_enqueue",
         "schedule": crontab(hour=2, minute=0),
+    },
+    "maintenance-ensure-analysis-partitions": {
+        "task": "maintenance.ensure_analysis_partitions",
+        "schedule": crontab(day_of_week="sun", hour=2, minute=30),
     },
     "maintenance-prune-cogs": {
         "task": "maintenance.prune_cogs",

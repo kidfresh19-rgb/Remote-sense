@@ -19,15 +19,18 @@ from typing import Any
 from geoalchemy2 import Geometry
 from geoalchemy2.elements import WKBElement
 from sqlalchemy import (
+    DDL,
     Boolean,
     Date,
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
     UniqueConstraint,
+    event,
     func,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
@@ -161,7 +164,17 @@ class SceneMetadata(Base):
 class Analysis(Base):
     """Index-agnostic zonal-stats row (PLAN §5). Populated by the analysis engine (Phase 2);
     the schema lands now so ingestion, provenance and idempotency are settled before any
-    value is written. Uniqueness makes re-processing additive and idempotent."""
+    value is written. Uniqueness makes re-processing additive and idempotent.
+
+    RANGE-partitioned by month on `pass_date` (S4.1; PRD 0001 R15/R18): scale is data volume -
+    hundreds of thousands of farms accruing passes indefinitely, rows never deleted - so each
+    month stays a small, separately-indexed table and date-bounded reads skip cold history.
+    Postgres requires the partition key inside the primary key and every unique constraint,
+    hence the composite key and the trailing column of `uq_analysis_identity`; the scientific
+    identity is still the five leading columns, because `pass_date` is derived from the scene's
+    immutable `sensing_datetime` - one scene, one date. Partitions: migration 0008 seeds the
+    months around its run, the weekly `maintenance.ensure_analysis_partitions` task keeps the
+    window rolling, and `analysis_default` (created with the parent, below) catches the rest."""
 
     __tablename__ = "analysis"
     __table_args__ = (
@@ -171,19 +184,24 @@ class Analysis(Base):
             "index_name",
             "geometry_version",
             "formula_version",
+            "pass_date",
             name="uq_analysis_identity",
         ),
+        # The workhorse read index: every hot path leads with field_id and orders or bounds
+        # pass_date (timeseries, as-of resolution, audit, farm-level joins). scene_id carries
+        # no index on purpose - no read path filters by scene alone, and scene_metadata rows
+        # are immutable and never deleted, so the FK needs no supporting scan.
+        Index("ix_analysis_field_index_date", "field_id", "index_name", "pass_date"),
+        {"postgresql_partition_by": "RANGE (pass_date)"},
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
     field_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("field.id", ondelete="CASCADE"), index=True
+        UUID(as_uuid=True), ForeignKey("field.id", ondelete="CASCADE")
     )
-    scene_id: Mapped[str] = mapped_column(
-        String(256), ForeignKey("scene_metadata.scene_id"), index=True
-    )
-    pass_date: Mapped[date] = mapped_column(Date, index=True)
-    index_name: Mapped[str] = mapped_column(String(32), index=True)
+    scene_id: Mapped[str] = mapped_column(String(256), ForeignKey("scene_metadata.scene_id"))
+    pass_date: Mapped[date] = mapped_column(Date, primary_key=True)
+    index_name: Mapped[str] = mapped_column(String(32))
 
     mean: Mapped[float | None] = mapped_column(Float, nullable=True)
     min_val: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -206,6 +224,17 @@ class Analysis(Base):
     confidence: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+# A partitioned parent holds no rows itself, so somewhere must own partition DDL. Deployed
+# databases get monthly partitions from migration 0008 plus the weekly maintenance task;
+# environments stood up by `Base.metadata.create_all` (the DB-gated tests) get this DEFAULT
+# catch-all so inserts work with zero ceremony. Postgres drops it with the parent.
+event.listen(
+    Analysis.__table__,
+    "after_create",
+    DDL("CREATE TABLE IF NOT EXISTS analysis_default PARTITION OF analysis DEFAULT"),
+)
 
 
 class FieldCollectionState(Base):

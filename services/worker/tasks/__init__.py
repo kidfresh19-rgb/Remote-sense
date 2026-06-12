@@ -26,7 +26,7 @@ from services.worker.tasks.collection import (
     scan_and_enqueue,
 )
 from services.worker.tasks.interpret import interpret_field_pass_task
-from services.worker.tasks.maintenance import prune_cogs_task
+from services.worker.tasks.maintenance import ensure_analysis_partitions_task, prune_cogs_task
 from services.worker.tasks.sync import publish_farm_task
 
 __all__ = [
@@ -37,6 +37,7 @@ __all__ = [
     "collect_pass",
     "collect_pass_task",
     "due_field_ids",
+    "ensure_analysis_partitions_task",
     "field_to_aoi",
     "forward_fill_field",
     "interpret_field_pass_task",

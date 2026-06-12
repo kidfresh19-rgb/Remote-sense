@@ -16,9 +16,11 @@ from rs_core.models import Analysis
 
 # The analysis identity (PLAN §5): one row per field/scene/index at a given geometry + formula
 # version. Re-processing the same identity must converge, never duplicate, so the upsert keys on
-# this constraint and refreshes only the computed payload + provenance listed here.
+# this constraint and refreshes only the computed payload + provenance listed here. `pass_date`
+# is deliberately absent: since partitioning (S4.1) it rides in the arbiter constraint as the
+# partition key, so the conflict only fires when the stored value already matches - and Postgres
+# refuses an ON CONFLICT update that would move a row across partitions.
 _ANALYSIS_MUTABLE = (
-    "pass_date",
     "mean",
     "min_val",
     "max_val",
@@ -37,14 +39,19 @@ _ANALYSIS_MUTABLE = (
 
 def _analysis_upsert_stmt(values: dict[str, object]) -> Insert:
     """Build the INSERT ... ON CONFLICT DO UPDATE for one analysis row. Factored out so the value
-    mapping and the conflict target are unit-testable with no database. RETURNING `(xmax = 0)`
-    reports whether this call inserted (True) or refreshed an existing row (False) - the standard
-    Postgres idiom for telling the two apart in a single statement."""
+    mapping and the conflict target are unit-testable with no database. RETURNING
+    `(created_at = now())` reports whether this call inserted (True) or refreshed an existing row
+    (False): `created_at` is only ever written by the insert default and the refresh SET list
+    never touches it, so equality with the transaction timestamp marks a fresh row. The classic
+    `(xmax = 0)` idiom is off the table - Postgres refuses system columns in RETURNING through a
+    partitioned parent (S4.1). One caveat: re-upserting an identity inside the very transaction
+    that created it would also report True; the pipeline writes each identity once per run, in
+    its own transaction, so that case does not arise."""
     stmt = pg_insert(Analysis).values(**values)
     return stmt.on_conflict_do_update(
         constraint="uq_analysis_identity",
         set_={col: stmt.excluded[col] for col in _ANALYSIS_MUTABLE},
-    ).returning(literal_column("(xmax = 0)"))
+    ).returning(literal_column("(created_at = now())"))
 
 
 async def upsert_analysis(

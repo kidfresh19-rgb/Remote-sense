@@ -44,8 +44,10 @@ def test_upsert_targets_identity_constraint_with_do_update() -> None:
     assert "insert into analysis" in sql
     assert "on conflict on constraint uq_analysis_identity" in sql
     assert "do update" in sql
-    # created/updated detection via the standard Postgres system-column idiom.
-    assert "(xmax = 0)" in sql
+    # created/updated detection; system columns (xmax) are unavailable through a partitioned
+    # parent, so the idiom compares the insert-only created_at with the transaction timestamp.
+    assert "(created_at = now())" in sql
+    assert "xmax" not in sql
 
 
 def test_upsert_carries_every_value_as_a_bind_param() -> None:
@@ -56,11 +58,13 @@ def test_upsert_carries_every_value_as_a_bind_param() -> None:
 
 def test_upsert_refreshes_payload_but_never_the_identity() -> None:
     # DO UPDATE SET must refresh the computed payload + provenance, never the identity keys (they
-    # define the row) nor the surrogate id / created_at.
+    # define the row), the partition key (an ON CONFLICT update may not move a row across
+    # partitions), nor the surrogate id / created_at.
     identity = {"field_id", "scene_id", "index_name", "geometry_version", "formula_version"}
     assert identity.isdisjoint(_ANALYSIS_MUTABLE)
     assert "mean" in _ANALYSIS_MUTABLE
     assert "clear_fraction" in _ANALYSIS_MUTABLE
+    assert "pass_date" not in _ANALYSIS_MUTABLE
     assert "id" not in _ANALYSIS_MUTABLE
     assert "created_at" not in _ANALYSIS_MUTABLE
 
