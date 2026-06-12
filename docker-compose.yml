@@ -104,7 +104,11 @@ services:
       context: .
       args:
         INSTALL_EXTRAS: "[geo,storage]"
-    command: celery -A services.worker.celery_app.celery worker -l info
+    # S4.2: the pool autoscales between min and max processes with queue depth (max,min - sized
+    # per host via RS_WORKER_AUTOSCALE in .env). Horizontal scale-out is
+    # `docker compose up -d --scale worker=N`: enqueue-time dedup/locking (R-1) keeps concurrent
+    # workers from double-processing a scene, and migrations stay in the one-shot migrate service.
+    command: celery -A services.worker.celery_app.celery worker -l info --autoscale=${RS_WORKER_AUTOSCALE:-4,1}
     env_file: .env
     depends_on:
       redis:

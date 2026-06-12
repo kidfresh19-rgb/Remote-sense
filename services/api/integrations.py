@@ -14,7 +14,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from pydantic import BaseModel, ConfigDict
 from rs_core.config import Settings, get_settings
-from rs_core.db import get_session
+from rs_core.db import get_read_session, get_session
 from rs_core.logging import get_logger
 from rs_core.repositories import published_narratives_for_farm
 from rs_core.schemas import FarmIn, FarmIngestReport, FieldIn
@@ -188,10 +188,13 @@ async def farm_satellite_results(
     return to_satellite_results(build_payload(canonical_farm_id, results, narratives=narratives))
 
 
+# Rides the read engine (S4.4): results are pushed additively, so replica lag only delays how
+# soon a brand-new result appears in a recovery pull, never its correctness. The docstring is
+# the frozen route's OpenAPI description and must stay byte-identical (tests/contract).
 @router.get("/data", response_model=list[SatelliteResult])
 async def mobile_data(
     farm_id: str,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_read_session),
     _: None = Depends(require_agritrack_key),
 ) -> list[SatelliteResult]:
     """Pull a farm's stored satellite results in the AgriTrack contract shape (ADR 0006 section 4);

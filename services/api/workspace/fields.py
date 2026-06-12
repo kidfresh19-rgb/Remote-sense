@@ -16,7 +16,12 @@ from shapely.geometry import mapping
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from services.api.workspace.deps import RunAnalysisPrincipal, SessionDep, ViewPrincipal
+from services.api.workspace.deps import (
+    ReadSessionDep,
+    RunAnalysisPrincipal,
+    SessionDep,
+    ViewPrincipal,
+)
 
 router = APIRouter(tags=["workspace"])
 
@@ -301,23 +306,28 @@ async def field_audit(session: AsyncSession, field_id: uuid.UUID) -> list[AuditR
     ]
 
 
+# The GET endpoints below are pure analytical reads, so they ride ReadSessionDep (S4.4): the
+# replica when configured, the primary otherwise. The collect trigger keeps the primary session
+# so a just-ingested field is always visible to it.
+
+
 @router.get("/farms/{canonical_farm_id}/fields")
 async def list_fields_endpoint(
-    canonical_farm_id: str, principal: ViewPrincipal, session: SessionDep
+    canonical_farm_id: str, principal: ViewPrincipal, session: ReadSessionDep
 ) -> list[FieldOut]:
     return await list_fields(session, canonical_farm_id)
 
 
 @router.get("/fields/{field_id}/timeseries")
 async def field_timeseries_endpoint(
-    field_id: uuid.UUID, index: str, principal: ViewPrincipal, session: SessionDep
+    field_id: uuid.UUID, index: str, principal: ViewPrincipal, session: ReadSessionDep
 ) -> list[TimeseriesPoint]:
     return await field_timeseries(session, field_id, index)
 
 
 @router.get("/fields/{field_id}/scenes")
 async def field_scenes_endpoint(
-    field_id: uuid.UUID, principal: ViewPrincipal, session: SessionDep
+    field_id: uuid.UUID, principal: ViewPrincipal, session: ReadSessionDep
 ) -> list[SceneOut]:
     return await field_scenes(session, field_id)
 
@@ -327,7 +337,7 @@ async def field_as_of_endpoint(
     field_id: uuid.UUID,
     requested: Annotated[date, Query(alias="date")],
     principal: ViewPrincipal,
-    session: SessionDep,
+    session: ReadSessionDep,
     index: str = "ndvi",
     min_clear: Annotated[float, Query(ge=0.0, le=1.0)] = 0.5,
 ) -> AsOfResolution:
@@ -344,7 +354,7 @@ async def field_as_of_endpoint(
 
 @router.get("/fields/{field_id}/audit")
 async def field_audit_endpoint(
-    field_id: uuid.UUID, principal: ViewPrincipal, session: SessionDep
+    field_id: uuid.UUID, principal: ViewPrincipal, session: ReadSessionDep
 ) -> list[AuditRecordOut]:
     return await field_audit(session, field_id)
 

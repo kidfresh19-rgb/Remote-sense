@@ -66,6 +66,17 @@ class Settings(BaseSettings):
 
     # PostgreSQL + PostGIS
     database_url: str = "postgresql+psycopg://rs:rs@localhost:5432/remote_sense"
+    # Connection pooling (S4.4). Defaults match SQLAlchemy's own; tune per deployment via env.
+    # pre-ping is always on (rs_core.db), so recycled/dead connections never reach a request.
+    db_pool_size: int = 5
+    db_max_overflow: int = 10
+    db_pool_timeout_s: float = 30.0
+    db_pool_recycle_s: int = 1800
+    # ⚑ CONFIRM (S4.4): a streaming-replica DSN for analytical reads. Empty = reads stay on the
+    # primary (the only mode until a replica is provisioned). When set, the read-routed
+    # endpoints (field/farm reads, the mobile data pull) may lag the primary by the replication
+    # delay; review-workflow and annotation reads stay on the primary for read-after-write.
+    database_read_url: str = ""
 
     # Redis (cache, Celery broker, quota counters)
     redis_url: str = "redis://localhost:6379/0"

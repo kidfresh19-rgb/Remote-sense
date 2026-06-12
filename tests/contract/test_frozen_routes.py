@@ -13,7 +13,7 @@ from collections.abc import AsyncIterator, Iterator
 import pytest
 from fastapi.testclient import TestClient
 from rs_core.config import Settings, get_settings
-from rs_core.db import get_session
+from rs_core.db import get_read_session, get_session
 
 from services.api.main import app
 
@@ -31,6 +31,7 @@ async def _no_session() -> AsyncIterator[None]:
 
 def _client(api_key: str) -> Iterator[TestClient]:
     app.dependency_overrides[get_session] = _no_session
+    app.dependency_overrides[get_read_session] = _no_session  # /data reads ride this (S4.4)
     app.dependency_overrides[get_settings] = lambda: Settings(agritrack_api_key=api_key)
     try:
         yield TestClient(app, raise_server_exceptions=False)

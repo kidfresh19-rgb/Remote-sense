@@ -26,6 +26,11 @@ celery.conf.update(
     task_acks_late=True,
     timezone="UTC",
     enable_utc=True,
+    # S4.2: collection tasks run seconds to minutes, so a process must never hoard a prefetch
+    # window of them while siblings idle; one reserved task per process pairs with acks_late
+    # for fair dispatch and clean redelivery. Process-count autoscaling is the worker command's
+    # --autoscale flag (docker-compose), sized per host via RS_WORKER_AUTOSCALE.
+    worker_prefetch_multiplier=1,
 )
 
 # Forward-fill runs on Sentinel-2 cadence (~5 days); the scheduler checks daily and enqueues only

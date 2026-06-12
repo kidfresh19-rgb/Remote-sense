@@ -12,7 +12,15 @@ from rs_core.alerts import (
     evaluate_health,
 )
 from rs_core.config import Settings, get_settings
-from rs_core.db import Base, get_engine, get_session, get_sessionmaker
+from rs_core.db import (
+    Base,
+    get_engine,
+    get_read_engine,
+    get_read_session,
+    get_read_sessionmaker,
+    get_session,
+    get_sessionmaker,
+)
 from rs_core.logging import configure_logging, get_logger
 from rs_core.models import (
     Analysis,
@@ -78,6 +86,9 @@ __all__ = [
     "get_settings",
     "Base",
     "get_engine",
+    "get_read_engine",
+    "get_read_session",
+    "get_read_sessionmaker",
     "get_session",
     "get_sessionmaker",
     "configure_logging",

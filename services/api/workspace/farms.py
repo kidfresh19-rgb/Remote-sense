@@ -12,7 +12,7 @@ from rs_core.models import Farm
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from services.api.workspace.deps import SessionDep, ViewPrincipal
+from services.api.workspace.deps import ReadSessionDep, ViewPrincipal
 
 router = APIRouter(tags=["workspace"])
 
@@ -54,5 +54,6 @@ async def list_farms(session: AsyncSession) -> list[FarmOut]:
 
 
 @router.get("/farms")
-async def list_farms_endpoint(principal: ViewPrincipal, session: SessionDep) -> list[FarmOut]:
+async def list_farms_endpoint(principal: ViewPrincipal, session: ReadSessionDep) -> list[FarmOut]:
+    # An analytical read (S4.4): rides the replica when one is configured.
     return await list_farms(session)
