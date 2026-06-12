@@ -37,11 +37,14 @@ def gdal_s3_env(settings: Settings) -> dict[str, str]:
 
 
 class CogStore(Protocol):
-    """Where derived index COGs live. The pipeline puts; the tiler reads (via GDAL, out of band)."""
+    """Where derived index COGs live. The pipeline puts, the retention job deletes (S4.3); the
+    tiler reads (via GDAL, out of band)."""
 
     def put(self, key: str, data: bytes) -> None: ...
 
     def exists(self, key: str) -> bool: ...
+
+    def delete(self, key: str) -> None: ...
 
 
 class S3CogStore:
@@ -69,6 +72,11 @@ class S3CogStore:
         except Exception:
             return False
         return True
+
+    def delete(self, key: str) -> None:
+        # S3/MinIO semantics: deleting an absent key succeeds, which is what makes the
+        # retention job idempotent across partial runs.
+        self._client.delete_object(Bucket=self._bucket, Key=key)
 
 
 def cog_store_from_settings(settings: Settings) -> CogStore | None:

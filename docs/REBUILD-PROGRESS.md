@@ -86,11 +86,28 @@ Branch: `feat/imagery-agronomy-tiers-0-2`. Push target: Azure DevOps `origin`.
 
 ## Next (from the backlog, in order)
 
-- **Phase 4 scale items**, folded in where each first touches a module: S4.1 partition/index the
-  analysis table, S4.3 COG retention/expiry, S4.5 CDSE token-bucket + breaker, S4.6 ingest auth.
-- Doc hygiene D1 (reconcile PLAN.md's outbound-contact wording with `/api/v1/mobile/data`).
+- **Phase 4 remainder**: S4.1 partition/index the analysis table, S4.5 CDSE token-bucket +
+  breaker quota governance, S4.6 ingest auth (DI-1), S4.7 real SLO numbers + load-test run
+  (harness exists, S1.3), S4.2/S4.4 deployment-shaped scaling (autoscaling, replicas/pooling).
 - Owner-blocked: the ⚑ CONFIRM as-of-date resolution policy (nearer side, tie -> before), the
-  `POST /ingest/farm` FROZEN-CANDIDATE confirmation, live CDSE (D2/D6), and agronomist sign-off.
+  ⚑ COG retention horizon default (= backfill depth), the `POST /ingest/farm` FROZEN-CANDIDATE
+  confirmation, live CDSE (D2/D6), and agronomist sign-off.
+
+## State (2026-06-12, second pass)
+
+- **D1 doc hygiene DONE**: PLAN.md's "the only outbound contact is one HTTP POST" reconciled with
+  the `/api/v1/mobile/data` pull: same geometry-free `GatewayPayload` on both paths, per
+  `CONTRACT.md`.
+- **S4.3 COG retention DONE** (the policy half of risk S-1; D7 did raw-band discard). New
+  `services/worker/retention.py`: pure `select_prunable` decision (mirrors planning.py) over two
+  prongs - COGs at a stale geometry version (unreachable since the tiler route carries the
+  current one) and passes older than the retention horizon; `prune_cogs` orchestrator deletes
+  from the store and NULLs `analysis.cog_uri` (idempotent: S3 delete of an absent key succeeds,
+  re-runs converge; stats/provenance rows never touched). `CogStore` gained `delete`;
+  `maintenance.prune_cogs` Celery task + weekly beat (Sun 03:00 UTC); config
+  `cog_retention_months` (⚑ CONFIRM: None = match `backfill_months`, so previews exist exactly
+  for the advertised history depth). Tests: pure policy (7) + DB-gated end-to-end incl.
+  idempotency (2), all green against real PostGIS.
 
 ## State (2026-06-11, third pass)
 

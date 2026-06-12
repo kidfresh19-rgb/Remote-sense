@@ -1,7 +1,7 @@
 """Celery task surface for the worker, one submodule per wire namespace: collection.*,
-interpret.*, sync.*, analysis.*. Every task carries an explicit name=, so the registered wire
-name never depends on the module path, and celery_app's autodiscover imports this package to
-register them all.
+interpret.*, sync.*, analysis.*, maintenance.*. Every task carries an explicit name=, so the
+registered wire name never depends on the module path, and celery_app's autodiscover imports
+this package to register them all.
 
 The tasks are deliberately thin: they resolve config -> session/redis/adapter and delegate to
 injectable async orchestrators (testable against the mock adapter + a real session + a fake
@@ -26,6 +26,7 @@ from services.worker.tasks.collection import (
     scan_and_enqueue,
 )
 from services.worker.tasks.interpret import interpret_field_pass_task
+from services.worker.tasks.maintenance import prune_cogs_task
 from services.worker.tasks.sync import publish_farm_task
 
 __all__ = [
@@ -41,6 +42,7 @@ __all__ = [
     "interpret_field_pass_task",
     "plan_backfill_scenes",
     "prepare_and_run",
+    "prune_cogs_task",
     "publish_farm_task",
     "run_collection",
     "scan_and_enqueue",
