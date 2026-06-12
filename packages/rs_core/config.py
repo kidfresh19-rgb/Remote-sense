@@ -86,9 +86,12 @@ class Settings(BaseSettings):
     cog_retention_months: int | None = None
 
     # CDSE (endpoint deliberately unspecified in code; provided via env)
-    # ⚑ CONFIRM (S4.5): the real account rate once live CDSE creds exist. None = quota governance
-    # off (reactive 429 backoff still applies); the burst is the bucket capacity. One budget is
-    # shared by STAC search, Process API renders, and windowed/metadata reads across all workers.
+    # Quota confirmed 2026-06-12 (S4.5 resolved): a CDSE general account allows 300 Process-API
+    # requests/min, the binding limit for the one budget shared by STAC search, Process API
+    # renders, and windowed/metadata reads across all workers. Production runs 4 rps (80% of
+    # quota; with burst 10 no 60s window can exceed 250). None = governance off (reactive 429
+    # backoff still applies) - the default stays None because the value belongs to the deployed
+    # account, so .env carries it, not code.
     cdse_rate_limit_rps: float | None = None
     cdse_rate_limit_burst: float = 10.0
     cdse_token_url: str = ""
