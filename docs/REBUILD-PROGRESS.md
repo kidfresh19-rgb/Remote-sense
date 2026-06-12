@@ -86,12 +86,33 @@ Branch: `feat/imagery-agronomy-tiers-0-2`. Push target: Azure DevOps `origin`.
 
 ## Next (from the backlog, in order)
 
-- **Phase 4 remainder**: S4.2/S4.4 deployment-shaped scaling (autoscaling, replicas/pooling).
-  S4.6 ingest auth is effectively owner-blocked: a required auth header on `POST /ingest/farm`
-  is a non-additive change to a FROZEN-CANDIDATE route.
-- Owner-blocked: the ⚑ CONFIRM as-of-date resolution policy (nearer side, tie -> before), the
+- **Every runnable backlog slice is done** (Phases 0-4). What remains is owner-blocked or
+  needs new infrastructure: S4.6 ingest auth (a required auth header on `POST /ingest/farm`
+  is a non-additive change to a FROZEN-CANDIDATE route), and the ⚑ S4.4 replica provisioning
+  (set `RS_DATABASE_READ_URL` when a streaming replica exists; the routing is already wired).
+- Owner-blocked confirms: the ⚑ as-of-date resolution policy (nearer side, tie -> before), the
   ⚑ COG retention horizon default (= backfill depth), the `POST /ingest/farm` FROZEN-CANDIDATE
   confirmation, live CDSE (D2/D6), and agronomist sign-off.
+
+## State (2026-06-12, sixth pass)
+
+- **S4.2 + S4.4 runnable core DONE** (R15/R18); doc: `docs/plan/S4.2-S4.4-scaling.md`. S4.2:
+  the compose worker autoscales (`--autoscale=${RS_WORKER_AUTOSCALE:-4,1}`, verified in the
+  boot banner), `worker_prefetch_multiplier=1` pairs with acks_late so long collection tasks
+  dispatch fairly and redeliver cleanly, and `--scale worker=N` is documented safe (enqueue-time
+  dedup/locking; migrations in the one-shot migrate service). Queue separation considered and
+  skipped at current volumes. S4.4: pool tuning is env-driven (`RS_DB_POOL_*`, pure
+  `engine_kwargs`), and reads are replica-ready behind ⚑ `RS_DATABASE_READ_URL` (empty =
+  `get_read_engine()` IS the primary engine, zero cost): analytical reads (field timeseries /
+  scenes / as-of / audit, farm + field lists, the frozen mobile data pull) ride
+  `ReadSessionDep`; read-after-write surfaces (annotations, review queue, publish status,
+  collect trigger) stay on the primary. The contract gate earned its keep twice: a docstring
+  edit on `/api/v1/mobile/data` failed the OpenAPI diff (docstrings ARE the frozen description;
+  reverted byte-identical, note moved to a comment), and the frozen-route auth tests now
+  override `get_read_session` alongside `get_session`. Tests: +6 hermetic scaling-config tests;
+  suite 449 passed / 4 skipped; ruff + mypy clean; live probes green (autoscale banner,
+  /farms, timeseries through the read path). **Phase 4 is closed** except the S4.6 / replica
+  items above.
 
 ## State (2026-06-12, fifth pass)
 
