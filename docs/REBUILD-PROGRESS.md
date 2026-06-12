@@ -86,11 +86,11 @@ Branch: `feat/imagery-agronomy-tiers-0-2`. Push target: Azure DevOps `origin`.
 
 ## Next (from the backlog, in order)
 
-- **S3.1 remainder:** L4 false-color / NIR composite through the worker's visual-emission path
-  (plan sketched in `docs/plan/S3.1-as-of-date-view.md`), and the user's call on the ⚑ CONFIRM
-  resolution policy (nearer-of-either-side, tie -> before).
-- Later: S1.3 load-test harness (with S4.7 SLOs), Phase 4 scale items, doc hygiene D1, and the
-  parked FROZEN-CANDIDATE confirmation for `POST /ingest/farm` (external-team fact).
+- **Phase 4 scale items**, folded in where each first touches a module: S4.1 partition/index the
+  analysis table, S4.3 COG retention/expiry, S4.5 CDSE token-bucket + breaker, S4.6 ingest auth.
+- Doc hygiene D1 (reconcile PLAN.md's outbound-contact wording with `/api/v1/mobile/data`).
+- Owner-blocked: the ⚑ CONFIRM as-of-date resolution policy (nearer side, tie -> before), the
+  `POST /ingest/farm` FROZEN-CANDIDATE confirmation, live CDSE (D2/D6), and agronomist sign-off.
 
 ## State (2026-06-11, third pass)
 
@@ -100,6 +100,20 @@ Branch: `feat/imagery-agronomy-tiers-0-2`. Push target: Azure DevOps `origin`.
   Scenes panel gained the Jump-to-date control with honest true-date + day-gap labeling and a
   one-click flip to the other side; pass rows now show % clear. Suite 390 passed / 4 skipped,
   coverage 88.82%, frontend build clean.
+
+## State (2026-06-12)
+
+- **S1.3 load-test harness DONE** (the last queued Phase 1 item), so Phase 1 quality-gate
+  scaffolding is now complete (S1.1-S1.5). New `services/loadtest/` package: a pure
+  latency/throughput summary (`stats.py`, nearest-rank percentiles), SLO targets + pass/fail
+  evaluation (`slo.py`), an async concurrency-bounded runner driving an injected operation
+  (`runner.py`), the three placeholder SLO scenarios (tile latency, per-field analysis time,
+  backfill throughput) with httpx op factories (`scenarios.py`), and a `python -m services.loadtest`
+  CLI that exits non-zero on an SLO breach (`__main__.py`). SLO numbers are ⚑ CONFIRM placeholders
+  until S4.7. Unit-tested with synthetic timings + httpx MockTransport, zero network/DB:
+  `tests/test_loadtest.py` (10 tests). Gates green: ruff clean, mypy clean (114 files), 10/10 new
+  tests pass. Also: the FCC commit `2cc5626` closed S3.1's L4 false-color remainder, leaving only
+  the ⚑ resolution-policy confirm.
 
 ## Flagged decisions / defaults taken while AFK
 
