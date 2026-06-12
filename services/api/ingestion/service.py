@@ -1,12 +1,15 @@
 """The ingestion orchestrator and its entrypoint: validation, working-CRS resolution (DI-2),
 and the idempotent farm/field upsert, reported as one FarmIngestReport. POST /ingest/farm is
-EXTERNAL-FROZEN (CONTRACT.md): its route, schemas, status codes, and operation id must not
-change."""
+EXTERNAL-FROZEN (CONTRACT.md, confirmed 2026-06-12: the live gateway still calls it): its
+route, schemas, status codes, and operation id must not change."""
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, status
+import hmac
+
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from geoalchemy2.shape import from_shape
+from rs_core.config import Settings, get_settings
 from rs_core.db import get_session
 from rs_core.geo import parse_epsg, utm_epsg_for
 from rs_core.logging import get_logger
@@ -28,6 +31,44 @@ from services.api.ingestion.validation import (
 log = get_logger("ingestion")
 
 router = APIRouter(prefix="/ingest", tags=["ingestion"])
+
+
+async def require_ingest_key(
+    request: Request,
+    settings: Settings = Depends(get_settings),
+) -> None:
+    """S4.6 (DI-1): gate ingestion on the same shared `X-Api-Key` the gateway already presents
+    to the mobile routes - no new credential, header, or scheme (rebuild constraint). The route
+    is EXTERNAL-FROZEN, so a required header must arrive as a two-step migration: with
+    enforcement OFF (the default) keyless calls behave exactly as before and this only logs
+    what enforcement WOULD do; ⚑ CONFIRM flip `RS_INGEST_REQUIRE_KEY=true` once the gateway
+    team confirms they send the key on `/ingest/farm` (they already hold it for `/api/v1/
+    mobile/sync`). The header is read from the raw request, never declared as a parameter, so
+    the frozen OpenAPI schema stays byte-identical in both modes."""
+    provided = request.headers.get("X-Api-Key")
+
+    def matches() -> bool:
+        # Bytes, not str: compare_digest raises TypeError on non-ASCII str, and Starlette
+        # decodes headers as latin-1, so a garbage key must compare false, never 500 - log-only
+        # mode promises keyless-era behavior for every request.
+        if not provided:
+            return False
+        return hmac.compare_digest(provided.encode(), settings.agritrack_api_key.encode())
+
+    if not settings.ingest_require_key:
+        if provided is None:
+            log.info("ingest.keyless_call")
+        elif not settings.agritrack_api_key or not matches():
+            # Would 401 under enforcement: surface the mismatch now, while it is still harmless,
+            # so the flip is observable-safe (flip only once these stop appearing).
+            log.warning("ingest.key_mismatch")
+        return
+    if not settings.agritrack_api_key:
+        raise HTTPException(
+            status.HTTP_500_INTERNAL_SERVER_ERROR, "AgriTrack API key is not configured"
+        )
+    if not matches():
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid or missing X-Api-Key")
 
 
 async def ingest_farm(session: AsyncSession, payload: FarmIn) -> FarmIngestReport:
@@ -154,7 +195,9 @@ async def ingest_farm(session: AsyncSession, payload: FarmIn) -> FarmIngestRepor
 
 @router.post("/farm", response_model=FarmIngestReport, status_code=status.HTTP_200_OK)
 async def ingest_farm_endpoint(
-    payload: FarmIn, session: AsyncSession = Depends(get_session)
+    payload: FarmIn,
+    session: AsyncSession = Depends(get_session),
+    _: None = Depends(require_ingest_key),
 ) -> FarmIngestReport:
     """Ingest one farm. Idempotent under retries; bad geometry is rejected with 422.
 

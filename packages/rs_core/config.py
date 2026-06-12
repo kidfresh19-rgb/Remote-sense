@@ -138,6 +138,12 @@ class Settings(BaseSettings):
     # /integrations/satellite/results, and required on inbound /api/v1/mobile/* calls.
     agritrack_base_url: str = ""
     agritrack_api_key: str = ""
+    # ⚑ CONFIRM (S4.6 / DI-1): enforce the same shared X-Api-Key on POST /ingest/farm. The route
+    # is EXTERNAL-FROZEN (confirmed 2026-06-12: the gateway still calls it), so enforcement
+    # ships OFF: keyless calls work unchanged and only log. Flip to true once the gateway team
+    # confirms they send the key on ingest; ingest.keyless_call / ingest.key_mismatch logs
+    # must have gone quiet first.
+    ingest_require_key: bool = False
 
     # Arrival notification (confirmed 2026-06-03: DB polling; webhook/LISTEN-NOTIFY swap in later).
     arrival_source: ArrivalSource = ArrivalSource.DB_POLL
