@@ -22,8 +22,10 @@ timeline, and pushes selected results back to the gateway — keyed to the canon
 additive, geometry never returned.
 
 It is the intelligence layer; **AgriTrack** is the delivery layer. The two never couple in
-real time — the only outbound contact is one HTTP POST. AgriTrack field-activity logs are
-correlated against satellite observations as a differentiator.
+real time: results cross the wire only as the additive, geometry-free `GatewayPayload`, either
+pushed by us (one HTTP POST) or pulled by the gateway (`GET /api/v1/mobile/data`), the same
+payload on both paths so they never diverge (see `CONTRACT.md`). AgriTrack field-activity logs
+are correlated against satellite observations as a differentiator.
 
 Sentinel-2 is an **archive-query** system, not a commandable satellite: the app searches
 existing passes, it does not task captures.
