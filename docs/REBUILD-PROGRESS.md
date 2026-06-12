@@ -86,13 +86,28 @@ Branch: `feat/imagery-agronomy-tiers-0-2`. Push target: Azure DevOps `origin`.
 
 ## Next (from the backlog, in order)
 
-- **Every runnable backlog slice is done** (Phases 0-4). What remains is owner-blocked or
-  needs new infrastructure: S4.6 ingest auth (a required auth header on `POST /ingest/farm`
-  is a non-additive change to a FROZEN-CANDIDATE route), and the ⚑ S4.4 replica provisioning
-  (set `RS_DATABASE_READ_URL` when a streaming replica exists; the routing is already wired).
+- **Every backlog slice is done** (Phases 0-4; S4.6's enforcement flip is config, not code).
+  What remains is external-fact-gated or needs new infrastructure: the ⚑ S4.6 enforcement flip
+  (`RS_INGEST_REQUIRE_KEY=true` once the gateway team confirms they send `X-Api-Key` on ingest
+  and the `ingest.keyless_call` / `ingest.key_mismatch` logs are quiet), and the ⚑ S4.4 replica
+  provisioning (set `RS_DATABASE_READ_URL` when a streaming replica exists; routing is wired).
 - Owner-blocked confirms: the ⚑ as-of-date resolution policy (nearer side, tie -> before), the
-  ⚑ COG retention horizon default (= backfill depth), the `POST /ingest/farm` FROZEN-CANDIDATE
-  confirmation, live CDSE (D2/D6), and agronomist sign-off.
+  ⚑ COG retention horizon default (= backfill depth), live CDSE (D2/D6), and agronomist
+  sign-off.
+
+## State (2026-06-12, seventh pass)
+
+- **FROZEN-CANDIDATE resolved + S4.6 ingest auth DONE** (DI-1, R13). Owner confirmed the live
+  gateway still calls `POST /ingest/farm`, so it is EXTERNAL-FROZEN permanently (CONTRACT.md
+  updated). A required header would be non-additive on a frozen route, so auth shipped as the
+  two-step migration: the route now verifies the same shared `X-Api-Key` the gateway already
+  presents to `/api/v1/mobile/*` (no new credential/header/scheme, per the rebuild constraint),
+  read from the raw request so the frozen OpenAPI stays byte-identical. Enforcement sits behind
+  ⚑ `RS_INGEST_REQUIRE_KEY` (ships false): keyless calls behave exactly as before and log
+  `ingest.keyless_call`; a key that would fail logs `ingest.key_mismatch` so the flip is
+  observable-safe. When true: 401 on missing/wrong key, fail-closed 500 when unconfigured,
+  mirroring the mobile routes. Both modes pinned zero-DB in
+  `tests/contract/test_ingest_auth.py` (6 tests).
 
 ## State (2026-06-12, sixth pass)
 
@@ -223,8 +238,9 @@ Branch: `feat/imagery-agronomy-tiers-0-2`. Push target: Azure DevOps `origin`.
 
 ## Flagged decisions / defaults taken while AFK
 
-- `POST /ingest/farm` is tagged **FROZEN-CANDIDATE**: confirm whether the live gateway calls it or
-  only `/api/v1/mobile/sync` (external-team fact). If internal, it leaves the frozen set.
+- ~~`POST /ingest/farm` is tagged **FROZEN-CANDIDATE**~~ RESOLVED 2026-06-12: the owner confirmed
+  the live gateway still calls it -> EXTERNAL-FROZEN permanently; S4.6 auth shipped as the
+  optional-then-enforced migration (see the seventh-pass state above).
 - Duplicate publish endpoints (`operations.py /publish/farm/{id}` and `workspace.py
   /farms/{id}/publish`, both 202) flagged for consolidation in S2.1. Not frozen.
 - SLO numbers (pillar 4) set during S1.3/S4.7. As-of-date between-pass policy set during S3.1. Tracker

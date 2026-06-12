@@ -32,12 +32,19 @@ Resolved from the live OpenAPI snapshot (21 paths) and the router sources.
 |---|---|---|---|
 | `POST /api/v1/mobile/sync` | AgriTrack inbound farm/field/sub-plot onboarding (`integrations.py`) | `X-Api-Key` | AgriTrack farm shape (`_FarmSyncIn` family) -> `FarmIngestReport` |
 | `GET /api/v1/mobile/data` | AgriTrack results pull | `X-Api-Key` | (query) -> `list[SatelliteResult]` |
-| `POST /ingest/farm` | Generic vendor-neutral ingestion (`ingestion.py`) | none today (DI-1 open) | `FarmIn` -> `FarmIngestReport` |
+| `POST /ingest/farm` | Generic vendor-neutral ingestion (`ingestion.py`) | `X-Api-Key` accepted; enforcement behind `RS_INGEST_REQUIRE_KEY` (⚑ ships off) | `FarmIn` -> `FarmIngestReport` |
 
-> **FROZEN-CANDIDATE: `POST /ingest/farm`.** Confirm whether the live gateway calls `/ingest/farm`
-> or only `/api/v1/mobile/sync`. If only the latter, `/ingest/farm` is internal and can leave the
-> frozen set. Tagged frozen for now so the rebuild cannot silently break it. (Owner / gateway-team
-> fact; taken as frozen by default while the owner is away.)
+> **RESOLVED 2026-06-12: `POST /ingest/farm` is EXTERNAL-FROZEN.** The owner confirmed the live
+> gateway still calls it, so it stays in the frozen set permanently. That also fixes the S4.6 /
+> DI-1 auth shape: a required header would be a non-additive change, so auth lands as a two-step
+> migration. Step one (shipped): the route accepts the same shared `X-Api-Key` the gateway
+> already presents to `/api/v1/mobile/*` - read from the raw request, never declared, so the
+> frozen OpenAPI schema is byte-identical - and with `RS_INGEST_REQUIRE_KEY=false` (the default)
+> keyless calls behave exactly as before, with `ingest.keyless_call` / `ingest.key_mismatch`
+> logged. Step two (⚑ CONFIRM, external fact): once the gateway team confirms they send the key
+> on ingest and those logs are quiet, flip `RS_INGEST_REQUIRE_KEY=true`; missing/wrong key then
+> 401s and an unconfigured key fails closed at 500, mirroring the mobile routes. Both modes are
+> pinned by `tests/contract/test_ingest_auth.py`.
 
 ### EXTERNAL-FROZEN (outbound wire format, emitted by us, not a served route)
 
