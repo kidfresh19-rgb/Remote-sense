@@ -127,3 +127,20 @@ async def test_http_get_op_records_success_and_failure() -> None:
         bad = await run_load(http_get_op(client, "/down"), total=3, concurrency=2)
         assert bad.failures == 3
         assert bad.latencies_ms == []
+
+
+def test_parse_headers_builds_a_header_dict() -> None:
+    from services.loadtest.__main__ import parse_headers
+
+    parsed = parse_headers(["Authorization: Bearer abc", "X-Extra:  spaced  "])
+    assert parsed == {"Authorization": "Bearer abc", "X-Extra": "spaced"}
+    assert parse_headers([]) == {}
+
+
+def test_parse_headers_rejects_malformed_pairs() -> None:
+    from services.loadtest.__main__ import parse_headers
+
+    with pytest.raises(SystemExit):
+        parse_headers(["no-colon-here"])
+    with pytest.raises(SystemExit):
+        parse_headers([": value-without-name"])
