@@ -86,13 +86,30 @@ Branch: `feat/imagery-agronomy-tiers-0-2`. Push target: Azure DevOps `origin`.
 
 ## Next (from the backlog, in order)
 
-- **Phase 4 remainder**: S4.7 real SLO numbers + load-test run (harness exists, S1.3),
-  S4.2/S4.4 deployment-shaped scaling (autoscaling, replicas/pooling). S4.6 ingest auth is
-  effectively owner-blocked: a required auth header on `POST /ingest/farm` is a non-additive
-  change to a FROZEN-CANDIDATE route.
+- **Phase 4 remainder**: S4.2/S4.4 deployment-shaped scaling (autoscaling, replicas/pooling).
+  S4.6 ingest auth is effectively owner-blocked: a required auth header on `POST /ingest/farm`
+  is a non-additive change to a FROZEN-CANDIDATE route.
 - Owner-blocked: the ⚑ CONFIRM as-of-date resolution policy (nearer side, tie -> before), the
   ⚑ COG retention horizon default (= backfill depth), the `POST /ingest/farm` FROZEN-CANDIDATE
   confirmation, live CDSE (D2/D6), and agronomist sign-off.
+
+## State (2026-06-12, fifth pass)
+
+- **S4.7 real SLO numbers + load-test run DONE** (R12/R15/R16), measured against the dev stack
+  on real data (858 live-CDSE passes); full record + repeatable commands:
+  `docs/plan/S4.7-slo-numbers.md`. Thresholds (≈2x measured latency, ≈half measured
+  throughput) now live in `services/loadtest/scenarios.py`, no longer placeholders: tile p95
+  <= 400 ms (measured 177.7), p99 <= 800 ms (181.5); farm ingest >= 40 rps (89.5), p95 <= 500 ms
+  (213.5); backfill enqueue >= 100 rps (251.1, worker stopped + queue purged so nothing reached
+  CDSE); per-field analysis p95 <= 60 s (derived from pipeline history + the 4 rps quota math;
+  the HTTP run is staging-only because each trigger spends real quota). The R16 data-in proof:
+  at the measured ingest rate, 250k farm payloads re-ingest in ~47 minutes via the idempotent
+  `unchanged` path (verified zero DB mutation). Pipeline reality from history: full 18-month
+  field backfills ran 12-57 min (1.7-10.2 passes/min); the 4 rps CDSE budget caps the pipeline
+  near 24 passes/min, above every measured rate, so governance does not bind at current
+  concurrency. Harness gained `--header` + `--json-file` + the `ingest` SLO set. Suite 443
+  passed / 4 skipped; ruff + mypy clean. With S4.1 and S4.5 done this closes every
+  runnable-here Phase 4 item; S4.2/S4.4 are deployment-shaped, S4.6 owner-blocked.
 
 ## State (2026-06-12, fourth pass)
 
