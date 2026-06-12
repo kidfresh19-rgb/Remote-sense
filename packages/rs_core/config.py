@@ -42,8 +42,15 @@ class ArrivalSource(StrEnum):
 
 
 class Settings(BaseSettings):
+    # env_ignore_empty: .env.example documents "empty = use the default" (e.g.
+    # RS_COG_RETENTION_MONTHS=, RS_CDSE_RATE_LIMIT_RPS=); without it an empty value crashes the
+    # numeric-optional fields at boot instead of falling back.
     model_config = SettingsConfigDict(
-        env_file=".env", env_prefix="RS_", extra="ignore", case_sensitive=False
+        env_file=".env",
+        env_prefix="RS_",
+        extra="ignore",
+        case_sensitive=False,
+        env_ignore_empty=True,
     )
 
     # App
@@ -79,6 +86,11 @@ class Settings(BaseSettings):
     cog_retention_months: int | None = None
 
     # CDSE (endpoint deliberately unspecified in code; provided via env)
+    # ⚑ CONFIRM (S4.5): the real account rate once live CDSE creds exist. None = quota governance
+    # off (reactive 429 backoff still applies); the burst is the bucket capacity. One budget is
+    # shared by STAC search, Process API renders, and windowed/metadata reads across all workers.
+    cdse_rate_limit_rps: float | None = None
+    cdse_rate_limit_burst: float = 10.0
     cdse_token_url: str = ""
     cdse_client_id: str = ""
     cdse_client_secret: str = ""

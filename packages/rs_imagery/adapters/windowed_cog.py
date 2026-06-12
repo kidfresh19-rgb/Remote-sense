@@ -31,6 +31,7 @@ from rs_imagery.adapters.cdse_stac import (
 )
 from rs_imagery.auth import CdseOAuth2Client
 from rs_imagery.port import AccessPort
+from rs_imagery.resilience import CircuitBreaker, sync_bucket_from_settings
 from rs_imagery.types import (
     AOI,
     BandStack,
@@ -241,6 +242,11 @@ class RasterioWindowSource:
             raise ValueError("RS_CDSE_S3_ENDPOINT is not configured; cannot read CDSE rasters.")
         self._settings = settings
         self._s3_client = None  # boto3 S3 client for the eodata store, built once on first use
+        # Quota governance (S4.5): every windowed/metadata read draws from the same cross-worker
+        # CDSE budget as the STAC search; the breaker stops a melting eodata store from burning
+        # each task's full retry loop.
+        self._bucket = sync_bucket_from_settings(settings)
+        self._breaker = CircuitBreaker()
 
     def _gdal_env(self) -> dict[str, str]:
         s = self._settings
@@ -287,7 +293,10 @@ class RasterioWindowSource:
     def read_window(
         self, href: str, *, aoi: AOI, resolution_m: float, resampling: str = "bilinear"
     ) -> ReadWindow:
-        return self._make_retrying()(
+        if self._bucket is not None:
+            self._bucket.acquire()
+        return self._breaker.call_sync(
+            self._make_retrying(),
             self._read_window_once,
             href,
             aoi=aoi,
@@ -356,9 +365,11 @@ class RasterioWindowSource:
         transient S3 faults with backoff (R-3, the metadata-read analogue of the windowed-read
         retry). A plain http(s) href falls back to a retrying GET. boto3 is the `storage` extra,
         installed alongside `geo` on the COG-emitting worker where this adapter runs."""
+        if self._bucket is not None:
+            self._bucket.acquire()
         if href.startswith("s3://"):
-            return self._read_s3_bytes(href)
-        return self._read_http_bytes(href)
+            return self._breaker.call_sync(self._read_s3_bytes, href)
+        return self._breaker.call_sync(self._read_http_bytes, href)
 
     def _s3(self):
         """The boto3 S3 client for the CDSE eodata store, built once. Caching it preserves

@@ -86,12 +86,32 @@ Branch: `feat/imagery-agronomy-tiers-0-2`. Push target: Azure DevOps `origin`.
 
 ## Next (from the backlog, in order)
 
-- **Phase 4 remainder**: S4.1 partition/index the analysis table, S4.5 CDSE token-bucket +
-  breaker quota governance, S4.6 ingest auth (DI-1), S4.7 real SLO numbers + load-test run
-  (harness exists, S1.3), S4.2/S4.4 deployment-shaped scaling (autoscaling, replicas/pooling).
+- **Phase 4 remainder**: S4.1 partition/index the analysis table, S4.7 real SLO numbers +
+  load-test run (harness exists, S1.3), S4.2/S4.4 deployment-shaped scaling (autoscaling,
+  replicas/pooling). S4.6 ingest auth is effectively owner-blocked: a required auth header on
+  `POST /ingest/farm` is a non-additive change to a FROZEN-CANDIDATE route.
 - Owner-blocked: the ⚑ CONFIRM as-of-date resolution policy (nearer side, tie -> before), the
-  ⚑ COG retention horizon default (= backfill depth), the `POST /ingest/farm` FROZEN-CANDIDATE
+  ⚑ COG retention horizon default (= backfill depth), the ⚑ CDSE rate limit (governance ships
+  off until the real account quota is known), the `POST /ingest/farm` FROZEN-CANDIDATE
   confirmation, live CDSE (D2/D6), and agronomist sign-off.
+
+## State (2026-06-12, third pass)
+
+- **S4.5 CDSE quota governance DONE** (R-3/R18; the reactive 429/read backoff from D6 was already
+  complete). New `packages/rs_imagery/resilience.py`: a cross-worker Redis **token bucket** (one
+  `cdse:quota` budget shared by STAC search, Process API renders, and windowed/metadata reads;
+  pure `refill_and_consume` reference math + an atomic Lua mirror, pinned by a Redis-gated parity
+  test; fails OPEN when Redis is down) and a per-process **circuit breaker** (stdlib state
+  machine, CLOSED/OPEN/HALF_OPEN on *final* failures, refuses fast for the cool-off; deliberately
+  not pybreaker - sync-oriented, optional extra not installed on workers, and zero-infra
+  testability per §3). Wired into `CdseStacClient`, `ProcessClient`, and `RasterioWindowSource`;
+  config `cdse_rate_limit_rps` (⚑ CONFIRM: None = off until the real account quota is known) +
+  `cdse_rate_limit_burst`. Also fixed a latent boot-breaker: `Settings` now sets
+  `env_ignore_empty`, so the empty values `.env.example` documents (e.g.
+  `RS_COG_RETENTION_MONTHS=`) fall back to defaults instead of crashing the numeric-optional
+  fields. Tests: 17 no-infra (math, breaker, fakes mirroring the Lua, STAC wiring incl.
+  breaker-open fast-refusal) + 2 Redis-gated (Lua parity, real round-trip), all green; ruff +
+  mypy clean.
 
 ## State (2026-06-12, second pass)
 
