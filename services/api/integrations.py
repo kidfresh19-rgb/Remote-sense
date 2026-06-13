@@ -14,7 +14,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from pydantic import BaseModel, ConfigDict
 from rs_core.config import Settings, get_settings
-from rs_core.db import get_session
+from rs_core.db import get_read_session, get_session
 from rs_core.logging import get_logger
 from rs_core.repositories import published_narratives_for_farm
 from rs_core.schemas import FarmIn, FarmIngestReport, FieldIn
@@ -81,6 +81,11 @@ def to_farm_ins(sync: AgriTrackSyncIn) -> list[FarmIn]:
     (`"{field_id}.{plot_id}"`), so both are analysed and results can be reported at field and
     sub-plot scope (ADR 0006). AgriTrack sends GeoJSON in EPSG:4326 (the FieldIn/FarmIn
     default)."""
+    farmer_id = (
+        str(sync.farmer.agritrack_id)
+        if sync.farmer and sync.farmer.agritrack_id is not None
+        else None
+    )
     farms: list[FarmIn] = []
     for farm in sync.farms:
         fields: list[FieldIn] = []
@@ -97,9 +102,14 @@ def to_farm_ins(sync: AgriTrackSyncIn) -> list[FarmIn]:
                 )
             for plot in f.sub_plots:
                 if plot.boundary is not None:
+                    plot_id_str = str(plot.plot_id)
+                    if plot_id_str.startswith(f"{field_key}."):
+                        subplot_key = plot_id_str
+                    else:
+                        subplot_key = f"{field_key}.{plot_id_str}"
                     fields.append(
                         FieldIn(
-                            canonical_field_id=f"{field_key}.{plot.plot_id}",
+                            canonical_field_id=subplot_key,
                             name=plot.name,
                             crop=plot.crop,
                             geometry=plot.boundary,
@@ -108,6 +118,7 @@ def to_farm_ins(sync: AgriTrackSyncIn) -> list[FarmIn]:
         farms.append(
             FarmIn(
                 canonical_farm_id=str(farm.farm_id),
+                agritrack_farmer_id=farmer_id,
                 name=farm.name,
                 region=farm.location,
                 boundary=farm.boundary,
@@ -177,10 +188,13 @@ async def farm_satellite_results(
     return to_satellite_results(build_payload(canonical_farm_id, results, narratives=narratives))
 
 
+# Rides the read engine (S4.4): results are pushed additively, so replica lag only delays how
+# soon a brand-new result appears in a recovery pull, never its correctness. The docstring is
+# the frozen route's OpenAPI description and must stay byte-identical (tests/contract).
 @router.get("/data", response_model=list[SatelliteResult])
 async def mobile_data(
     farm_id: str,
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_read_session),
     _: None = Depends(require_agritrack_key),
 ) -> list[SatelliteResult]:
     """Pull a farm's stored satellite results in the AgriTrack contract shape (ADR 0006 section 4);

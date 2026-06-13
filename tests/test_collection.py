@@ -101,8 +101,10 @@ async def test_collect_field_emits_index_rasters_when_requested() -> None:
     )
     assert results
     rasters = results[0].rasters
-    assert set(rasters) == {"ndvi", "ndre"}
+    assert set(rasters) == {"ndvi", "ndre", "rgb", "fcc"}
     assert rasters["ndvi"].array.ndim == 2
+    assert rasters["rgb"].array.ndim == 3 and rasters["rgb"].array.shape[0] == 3
+    assert rasters["fcc"].array.ndim == 3 and rasters["fcc"].array.shape[0] == 3
     assert rasters["ndvi"].crs  # carries the grid CRS for the COG
     assert len(rasters["ndre"].transform) == 6
 

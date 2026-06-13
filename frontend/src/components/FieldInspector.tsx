@@ -8,6 +8,7 @@ import {
   Stack,
 } from "@phosphor-icons/react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { motion, AnimatePresence } from "motion/react";
 
 import { cn } from "@/lib/format";
 import { useCollectField, useFields } from "@/lib/queries";
@@ -88,7 +89,7 @@ export function FieldInspector() {
   };
 
   return (
-    <aside className="flex min-h-0 flex-col border-t border-border bg-panel lg:border-l lg:border-t-0">
+    <aside className="flex min-h-0 flex-col border-t border-border bg-panel lg:border-l lg:border-t-0 h-full">
       <div className="flex items-start justify-between gap-2 border-b border-border px-3 py-2">
         <div className="min-w-0">
           <h2 className="truncate text-sm font-semibold text-fg">{label}</h2>
@@ -145,21 +146,32 @@ export function FieldInspector() {
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto">
-        {tab === "series" ? (
-          <IndexTimeseriesChart
-            fieldId={fieldId}
-            collecting={collecting}
-            onCollect={handleCollect}
-          />
-        ) : tab === "passes" ? (
-          <SceneList fieldId={fieldId} collecting={collecting} />
-        ) : tab === "read" ? (
-          <InterpretationPanel fieldId={fieldId} />
-        ) : tab === "notes" ? (
-          <AnnotationsPanel fieldId={fieldId} />
-        ) : (
-          <AuditPanel fieldId={fieldId} />
-        )}
+        <AnimatePresence mode="wait">
+          <motion.div
+            key={tab}
+            initial={{ opacity: 0, y: 4 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -4 }}
+            transition={{ duration: 0.12, ease: "easeOut" }}
+            className="min-h-full flex flex-col"
+          >
+            {tab === "series" ? (
+              <IndexTimeseriesChart
+                fieldId={fieldId}
+                collecting={collecting}
+                onCollect={handleCollect}
+              />
+            ) : tab === "passes" ? (
+              <SceneList fieldId={fieldId} collecting={collecting} />
+            ) : tab === "read" ? (
+              <InterpretationPanel fieldId={fieldId} />
+            ) : tab === "notes" ? (
+              <AnnotationsPanel fieldId={fieldId} />
+            ) : (
+              <AuditPanel fieldId={fieldId} />
+            )}
+          </motion.div>
+        </AnimatePresence>
       </div>
     </aside>
   );

@@ -3,7 +3,8 @@ name: CI
 # There was no CI before this: the ~20 DB-gated and raster-gated suites only ran when someone
 # brought up the stack by hand, which previously let a cascade of raster bugs slip through. This
 # runs ruff plus the full suite (raster + DB-gated) on every push and PR. See docs/improvement-plan.md
-# (Tier 0.4).
+# (Tier 0.4). Rebuild Phase 1 (S1.5 merge policy) extends it with mypy (S1.1), the 85% coverage
+# floor (S1.2), and pip-audit + gitleaks (S1.4): a red run means no merge.
 
 on:
   push:
@@ -60,6 +61,8 @@ jobs:
       PGPASSWORD: rs
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # gitleaks scans the full history
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -67,9 +70,21 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y postgresql-client
       - name: Create the isolated test database
         run: createdb -h localhost -U rs remote_sense_test
+      - name: Upgrade packaging tools
+        # pip-audit audits this environment, so the runner's bundled setuptools must be current.
+        run: pip install -U pip setuptools
       - name: Install the package (raster + interpret + storage + dev extras)
         # rasterio / rio-tiler / pyproj / shapely install from manylinux wheels, so the raster-gated
         # suites run here without a host GDAL toolchain.
         run: pip install -e ".[geo,interpret,storage,dev]"
-      - name: Run the full suite (no-infra + raster + DB-gated)
-        run: pytest tests -q
+      - name: Mypy static type gate (S1.1)
+        # Runs after the full install so dependency types match a developer machine.
+        run: mypy
+      - name: Run the full suite with the coverage floor (S1.2)
+        run: pytest tests -q --cov=packages --cov=services --cov-fail-under=85
+      - name: pip-audit dependency scan (S1.4)
+        run: |
+          pip install pip-audit
+          pip-audit --skip-editable
+      - name: Gitleaks secret scan (S1.4)
+        run: docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:latest detect --source /repo --no-banner --redact

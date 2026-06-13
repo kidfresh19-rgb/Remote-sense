@@ -120,6 +120,35 @@ function InterpretationCard({
         {read.published ? <Badge tone="accent">published</Badge> : null}
       </div>
 
+      {(read.gdd_accumulation !== undefined || read.total_precipitation !== undefined || read.recent_activities?.length) && (
+        <div className="grid grid-cols-3 gap-2 py-1.5 px-2.5 bg-panel-2/30 rounded-md border border-border/30 text-xs my-1">
+          <div className="flex flex-col">
+            <span className="text-[9px] font-bold text-muted uppercase tracking-wider">14d Heat (GDD)</span>
+            <span className="font-semibold text-fg">
+              {read.gdd_accumulation != null ? `${read.gdd_accumulation.toFixed(1)} °C-day` : "—"}
+            </span>
+          </div>
+          <div className="flex flex-col">
+            <span className="text-[9px] font-bold text-muted uppercase tracking-wider">14d Rain</span>
+            <span className="font-semibold text-fg">
+              {read.total_precipitation != null ? `${read.total_precipitation.toFixed(1)} mm` : "—"}
+            </span>
+          </div>
+          <div className="flex flex-col">
+            <span className="text-[9px] font-bold text-muted uppercase tracking-wider">30d Farm Events</span>
+            <span className="font-semibold text-fg">
+              {read.recent_activities != null && read.recent_activities.length > 0 ? (
+                <span className="cursor-help" title={read.recent_activities.map(a => `${a.date}: ${a.activity}`).join("\n")}>
+                  {read.recent_activities.length} {read.recent_activities.length === 1 ? "event" : "events"}
+                </span>
+              ) : (
+                "—"
+              )}
+            </span>
+          </div>
+        </div>
+      )}
+
       {editing ? (
         <textarea
           value={draft}

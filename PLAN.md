@@ -22,8 +22,10 @@ timeline, and pushes selected results back to the gateway — keyed to the canon
 additive, geometry never returned.
 
 It is the intelligence layer; **AgriTrack** is the delivery layer. The two never couple in
-real time — the only outbound contact is one HTTP POST. AgriTrack field-activity logs are
-correlated against satellite observations as a differentiator.
+real time: results cross the wire only as the additive, geometry-free `GatewayPayload`, either
+pushed by us (one HTTP POST) or pulled by the gateway (`GET /api/v1/mobile/data`), the same
+payload on both paths so they never diverge (see `CONTRACT.md`). AgriTrack field-activity logs
+are correlated against satellite observations as a differentiator.
 
 Sentinel-2 is an **archive-query** system, not a commandable satellite: the app searches
 existing passes, it does not task captures.
@@ -241,7 +243,8 @@ The PDF exporter stays parked on the PDF stack; **GeoTIFF export landed 2026-06-
 partial) landed 2026-06-01**: RBAC (`rs_core/rbac.py` - view/annotate/run-analysis/publish +
 viewer/analyst/publisher/admin roles, permissions derived server-side), stdlib HS256 JWT
 verification (alg-pinned, constant-time, `exp`-checked) + the `require(permission)` dependency
-(`services/api/auth.py`), and the RBAC-gated `POST /publish/farm/{id}` (publish) +
+(`services/api/auth.py`), and the RBAC-gated `POST /publish/farm/{id}` (publish; later folded
+into the workspace's `POST /farms/{id}/publish` in the S2.1 consolidation, 2026-06-11) +
 `GET /pipeline/health` (view; coverage + dead-letter summary, R-4). **Log-based health alerting
 landed 2026-06-02** (`rs_core/alerts.py` evaluates the summary; the health endpoint logs fired
 alerts as structured warnings for a log/webhook notifier, R-4). Load/scale testing and

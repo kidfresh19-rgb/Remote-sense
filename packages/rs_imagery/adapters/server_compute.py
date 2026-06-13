@@ -35,6 +35,11 @@ from rs_imagery.adapters.cdse_metadata import parse_scene_metadata
 from rs_imagery.adapters.cdse_stac import CdseStacClient, StacItem, resolve_metadata_href
 from rs_imagery.auth import CdseOAuth2Client
 from rs_imagery.port import AccessPort
+from rs_imagery.resilience import (
+    AsyncTokenBucket,
+    CircuitBreaker,
+    async_bucket_from_settings,
+)
 from rs_imagery.types import (
     AOI,
     BandStack,
@@ -145,6 +150,8 @@ class ProcessClient:
         *,
         client: httpx.AsyncClient | None = None,
         oauth: CdseOAuth2Client | None = None,
+        bucket: AsyncTokenBucket | None = None,
+        breaker: CircuitBreaker | None = None,
         max_attempts: int = 4,
         wait_min: float = 1.0,
         wait_max: float = 20.0,
@@ -156,6 +163,10 @@ class ProcessClient:
         self._client = client or httpx.AsyncClient(timeout=120.0)
         self._owns_client = client is None
         self._oauth = oauth
+        # Quota governance (S4.5): renders draw from the same cross-worker CDSE budget as the
+        # STAC search and the windowed reads; the breaker refuses fast while CDSE is down.
+        self._bucket = bucket if bucket is not None else async_bucket_from_settings(settings)
+        self._breaker = breaker if breaker is not None else CircuitBreaker()
         self._retrying = AsyncRetrying(
             retry=retry_if_exception(_is_transient),
             wait=wait_exponential(multiplier=wait_multiplier, min=wait_min, max=wait_max),
@@ -172,7 +183,9 @@ class ProcessClient:
             resp.raise_for_status()
             return resp.content
 
-        return await self._retrying(_post)
+        if self._bucket is not None:
+            await self._bucket.acquire()
+        return await self._breaker.call(self._retrying, _post)
 
     async def aclose(self) -> None:
         if self._owns_client:

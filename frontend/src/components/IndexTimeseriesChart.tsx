@@ -4,7 +4,7 @@ import { MagnifyingGlassMinus } from "@phosphor-icons/react";
 
 import { dateValue, formatDate, formatDateShort, formatNumber, formatPercent } from "@/lib/format";
 import { colorForValue, indexMeta } from "@/lib/indices";
-import { useTimeseries } from "@/lib/queries";
+import { useTimeseries, useInterpretations } from "@/lib/queries";
 import { useWorkspace } from "@/state/workspace";
 
 import { ErrorState, LoadingRows } from "./states";
@@ -26,11 +26,54 @@ export function IndexTimeseriesChart({
   const { index, passDate, setPassDate } = useWorkspace();
   const meta = indexMeta(index);
   const query = useTimeseries(fieldId, index, collecting);
+  const { data: interpretations } = useInterpretations(fieldId);
 
   const points = useMemo(
     () => (query.data ?? []).filter((p) => p.mean !== null),
     [query.data],
   );
+
+  const interpMap = useMemo(() => {
+    const map = new Map<string, any>();
+    if (interpretations) {
+      for (const interp of interpretations) {
+        map.set(interp.pass_date, interp);
+      }
+    }
+    return map;
+  }, [interpretations]);
+
+  const allActivities = useMemo(() => {
+    const map = new Map<string, { date: string; activity: string; detail?: string | null }>();
+    if (interpretations) {
+      for (const interp of interpretations) {
+        if (interp.recent_activities) {
+          for (const act of interp.recent_activities) {
+            map.set(`${act.date}-${act.activity}`, act);
+          }
+        }
+      }
+    }
+    return Array.from(map.values()).sort((a, b) => a.date.localeCompare(b.date));
+  }, [interpretations]);
+
+  const rainValues = useMemo(() => {
+    return points
+      .map((p) => interpMap.get(p.pass_date)?.total_precipitation)
+      .filter((v): v is number => v !== undefined && v !== null);
+  }, [points, interpMap]);
+
+  const gddValues = useMemo(() => {
+    return points
+      .map((p) => interpMap.get(p.pass_date)?.gdd_accumulation)
+      .filter((v): v is number => v !== undefined && v !== null);
+  }, [points, interpMap]);
+
+  const maxRain = useMemo(() => Math.max(10, ...rainValues), [rainValues]);
+  const maxGdd = useMemo(() => Math.max(50, ...gddValues), [gddValues]);
+
+  const syRain = (v: number) => H - PAD.b - (v / maxRain) * (H - PAD.t - PAD.b) * 0.35;
+  const syGdd = (v: number) => PAD.t + (1 - v / maxGdd) * (H - PAD.t - PAD.b);
 
   // States for interaction
   const [hoveredPoint, setHoveredPoint] = useState<typeof points[0] | null>(null);
@@ -112,6 +155,18 @@ export function IndexTimeseriesChart({
       band.push(`${sx(xs[i]).toFixed(1)},${sy(zoomedPoints[i].p10 ?? zoomedPoints[i].mean!).toFixed(1)}`);
     }
     return `M ${band.join(" L ")} Z`;
+  })();
+
+  const gddPath = (() => {
+    const segments = [];
+    for (let i = 0; i < zoomedPoints.length; i++) {
+      const p = zoomedPoints[i];
+      const interp = interpMap.get(p.pass_date);
+      if (interp && interp.gdd_accumulation != null) {
+        segments.push(`${segments.length === 0 ? "M" : "L"} ${sx(xs[i]).toFixed(1)} ${syGdd(interp.gdd_accumulation).toFixed(1)}`);
+      }
+    }
+    return segments.join(" ");
   })();
 
   const selectedPoint = points.find((p) => p.pass_date === passDate) ?? points[points.length - 1];
@@ -201,16 +256,26 @@ export function IndexTimeseriesChart({
     <div className="p-3 select-none">
       <div className="flex items-center justify-between mb-2">
         <h3 className="text-xs font-semibold text-fg uppercase tracking-wider">{meta.long}</h3>
-        {zoomRange && (
-          <button
-            onClick={() => setZoomRange(null)}
-            className="flex items-center gap-1 text-[10px] font-medium text-accent hover:opacity-80 transition-opacity"
-            title="Reset Zoom (Double click chart)"
-          >
-            <MagnifyingGlassMinus size={12} />
-            <span>Reset zoom</span>
-          </button>
-        )}
+        <div className="flex items-center gap-3 text-[9px] text-muted font-medium">
+          <div className="flex items-center gap-1">
+            <span className="inline-block w-2.5 h-1.5 bg-[#3b82f6] opacity-30 rounded-sm"></span>
+            <span>Rain (14d)</span>
+          </div>
+          <div className="flex items-center gap-1">
+            <span className="inline-block w-3 h-0.5 border-t border-dashed border-[#f59e0b]"></span>
+            <span>GDD (14d)</span>
+          </div>
+          {zoomRange && (
+            <button
+              onClick={() => setZoomRange(null)}
+              className="flex items-center gap-1 text-[10px] font-semibold text-accent hover:opacity-80 transition-opacity ml-1"
+              title="Reset Zoom (Double click chart)"
+            >
+              <MagnifyingGlassMinus size={12} />
+              <span>Reset zoom</span>
+            </button>
+          )}
+        </div>
       </div>
 
       <div className="relative border border-border/40 rounded-lg overflow-hidden bg-panel-2/30 p-2">
@@ -257,6 +322,81 @@ export function IndexTimeseriesChart({
               </text>
             </g>
           ))}
+
+          {/* Cumulative Rainfall (Bars) */}
+          {zoomedPoints.map((p, i) => {
+            const interp = interpMap.get(p.pass_date);
+            if (!interp || interp.total_precipitation == null) return null;
+            const x = sx(xs[i]);
+            const y = syRain(interp.total_precipitation);
+            const barWidth = 8;
+            return (
+              <rect
+                key={`rain-${p.pass_date}`}
+                x={x - barWidth / 2}
+                y={y}
+                width={barWidth}
+                height={Math.max(0, H - PAD.b - y)}
+                fill="#3b82f6"
+                opacity={0.15}
+                rx={1}
+              />
+            );
+          })}
+
+          {/* GDD Accumulation (Line) */}
+          {gddPath && (
+            <motion.path
+              d={gddPath}
+              animate={{ d: gddPath }}
+              transition={{ type: "spring", stiffness: 100, damping: 15 }}
+              fill="none"
+              stroke="#f59e0b"
+              strokeWidth={1.5}
+              strokeDasharray="4 2"
+              opacity={0.7}
+            />
+          )}
+
+          {/* AgriTrack Activity Vertical Markers */}
+          {allActivities.map((act) => {
+            const actTime = dateValue(act.date);
+            if (actTime < minX || actTime > maxX) return null;
+            const x = sx(actTime);
+            
+            // Determine activity label and colors
+            const label = act.activity;
+            let color = "#10b981"; // green
+            if (act.activity === "fertilizer") color = "#a855f7"; // purple
+            else if (act.activity === "irrigation") color = "#0ea5e9"; // blue
+            else if (act.activity === "spray") color = "#f43f5e"; // rose
+            else if (act.activity === "planting") color = "#10b981"; // green
+            
+            return (
+              <g key={`act-${act.date}-${act.activity}`} opacity={0.65}>
+                <line
+                  x1={x}
+                  x2={x}
+                  y1={PAD.t}
+                  y2={H - PAD.b}
+                  stroke={color}
+                  strokeWidth={1}
+                  strokeDasharray="3 3"
+                />
+                <circle cx={x} cy={PAD.t + 4} r={3.5} fill={color} stroke="var(--panel)" strokeWidth={1} />
+                <text
+                  x={x + 5}
+                  y={PAD.t + 10}
+                  fontSize={6.5}
+                  fill={color}
+                  fontWeight="bold"
+                  className="uppercase tracking-wider select-none font-sans"
+                >
+                  {label}
+                </text>
+              </g>
+            );
+          })}
 
           {/* Band Path (Gradient Area) */}
           {bandPath && (
@@ -382,6 +522,26 @@ export function IndexTimeseriesChart({
               <span className="text-muted">Clear:</span>
               <span className="font-mono text-fg">{formatPercent(hoveredPoint.clear_fraction)}</span>
             </div>
+            {(() => {
+              const interp = interpMap.get(hoveredPoint.pass_date);
+              if (!interp) return null;
+              return (
+                <>
+                  {interp.gdd_accumulation != null && (
+                    <div className="flex justify-between border-t border-border/20 pt-0.5 mt-0.5">
+                      <span className="text-muted">GDD:</span>
+                      <span className="font-mono text-fg">{interp.gdd_accumulation.toFixed(1)}°C-d</span>
+                    </div>
+                  )}
+                  {interp.total_precipitation != null && (
+                    <div className="flex justify-between">
+                      <span className="text-muted">Rain:</span>
+                      <span className="font-mono text-fg">{interp.total_precipitation.toFixed(1)}mm</span>
+                    </div>
+                  )}
+                </>
+              );
+            })()}
           </div>
         )}
       </div>

@@ -44,6 +44,7 @@ class FarmIn(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     canonical_farm_id: str = Field(min_length=1)
+    agritrack_farmer_id: str | None = None
     name: str | None = None
     region: str | None = None
     boundary: dict[str, Any] | None = None

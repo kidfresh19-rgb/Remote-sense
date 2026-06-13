@@ -19,11 +19,8 @@ async def fetch_farm_results_with_farm_averages(
     session: AsyncSession, canonical_farm_id: str
 ) -> list[IndexResult]:
     """Fetch all field-level index results for a farm, dynamically compute their area-weighted
-
     farm-level averages, and return the combined list (where canonical_field_id=None represents the
-
-    farm-wide average).
-    """
+    farm-wide average)."""
     rows = (
         await session.execute(
             select(
@@ -43,13 +40,13 @@ async def fetch_farm_results_with_farm_averages(
         )
     ).all()
 
+    if not rows:
+        return []
+
     # Field-level results
     field_results = [
         IndexResult.from_analysis(analysis, canonical_field_id=cfid) for analysis, cfid, _ in rows
     ]
-
-    if not rows:
-        return []
 
     # Group by the full provenance tuple (index, pass, provider, scene, formula, mode, resolution).
     grouped = defaultdict(list)

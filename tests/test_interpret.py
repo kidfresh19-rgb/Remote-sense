@@ -94,7 +94,7 @@ async def test_interpret_never_auto_publishes_and_status_is_grounded() -> None:
     assert result.needs_review is True
     assert result.status == "vigorous"  # from the NDVI band, not the model text
     assert result.narrative == "NDVI shows a vigorous canopy."
-    assert result.prompt_version == "interp/v1"
+    assert result.prompt_version == "interp/v2"
     assert result.model == "claude-opus-4-8"
     # the model was handed the static (cacheable) system context + the grounded user block
     system, user = client.calls[0]

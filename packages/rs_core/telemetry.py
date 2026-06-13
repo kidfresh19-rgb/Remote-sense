@@ -11,7 +11,7 @@ active trace/span ids onto every structured log event."""
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from rs_core.config import Settings, get_settings
 from rs_core.logging import get_logger
@@ -117,7 +117,7 @@ class _NoOpSpan:
     def __enter__(self) -> _NoOpSpan:
         return self
 
-    def __exit__(self, *exc: object) -> bool:
+    def __exit__(self, *exc: object) -> Literal[False]:
         return False
 
     def set_attribute(self, *_args: Any, **_kwargs: Any) -> None: ...

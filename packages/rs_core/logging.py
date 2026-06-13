@@ -4,10 +4,13 @@ error rate and quota burn at the rs_imagery boundary (not configured here)."""
 from __future__ import annotations
 
 import logging
+from collections.abc import MutableMapping
+from types import ModuleType
 from typing import Any
 
 import structlog
 
+_otel_trace: ModuleType | None
 try:  # OTel is optional; logs stay valid JSON whether or not tracing is installed.
     from opentelemetry import trace as _otel_trace
 except ModuleNotFoundError:  # pragma: no cover - exercised only when OTel is absent
@@ -15,8 +18,8 @@ except ModuleNotFoundError:  # pragma: no cover - exercised only when OTel is ab
 
 
 def _add_trace_context(
-    _logger: Any, _method_name: str, event_dict: dict[str, Any]
-) -> dict[str, Any]:
+    _logger: Any, _method_name: str, event_dict: MutableMapping[str, Any]
+) -> MutableMapping[str, Any]:
     """structlog processor: stamp the active trace/span ids onto each event so logs and
     traces cross-reference. No-op when OTel is absent or no span is active."""
     if _otel_trace is None:

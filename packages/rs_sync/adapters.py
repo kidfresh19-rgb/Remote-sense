@@ -67,12 +67,21 @@ class HttpGatewayPort(GatewayPort):
         return self._url
 
     async def push(self, payload: GatewayPayload) -> PushResult:
+        if self._client is not None:
+            return await self._push_with_client(self._client, payload)
+        timeout = httpx.Timeout(self._timeout, connect=min(self._timeout, 10.0))
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            return await self._push_with_client(client, payload)
+
+    async def _push_with_client(
+        self, client: httpx.AsyncClient, payload: GatewayPayload
+    ) -> PushResult:
         try:
             async for attempt in push_retrying(
                 max_attempts=self._max_attempts, backoff=self._backoff
             ):
                 with attempt:
-                    response = await self._post(payload)
+                    response = await self._post(client, payload)
         except GATEWAY_PUSH_ERRORS as exc:
             # Transient failures arrive here only after retries are exhausted; a permanent 4xx
             # arrives on the first attempt (retry_transient_push declined it). Either way it is a
@@ -80,21 +89,13 @@ class HttpGatewayPort(GatewayPort):
             return PushResult(ok=False, status="error", detail=describe_push_error(exc))
         return PushResult(ok=True, status=str(response.status_code))
 
-    async def _post(self, payload: GatewayPayload) -> httpx.Response:
+    async def _post(self, client: httpx.AsyncClient, payload: GatewayPayload) -> httpx.Response:
         headers = {
             "Authorization": f"Bearer {self._token}",
             "Idempotency-Key": payload.idempotency_key,
             "Content-Type": "application/json",
         }
         body = payload.model_dump(mode="json")
-        if self._client is not None:
-            response = await self._client.post(
-                self._url, json=body, headers=headers, timeout=self._timeout
-            )
-        else:
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    self._url, json=body, headers=headers, timeout=self._timeout
-                )
+        response = await client.post(self._url, json=body, headers=headers, timeout=self._timeout)
         response.raise_for_status()
         return response

@@ -14,7 +14,7 @@ from collections import defaultdict
 from datetime import date
 
 import httpx
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from rs_sync.payload import GatewayPayload, IndexResult
 from rs_sync.port import GatewayPort, PushResult
@@ -26,15 +26,6 @@ from rs_sync.resilience import (
 
 _RESULTS_PATH = "/integrations/satellite/results"
 
-# The NDVI vigour band (rs_interpret) collapses onto the AgriTrack classification enum. Reusing the
-# agronomy thresholds (classify) rather than duplicating them; the five vigour bands map to four.
-_CLASSIFICATION = {
-    "dense": "healthy",
-    "vigorous": "healthy",
-    "developing": "moderate",
-    "sparse": "stressed",
-    "bare": "critical",
-}
 # classification -> the contract's stress_level (their side maps stress_level onto classification).
 _STRESS = {"healthy": "none", "moderate": "low", "stressed": "moderate", "critical": "high"}
 
@@ -74,7 +65,7 @@ class SatelliteResult(BaseModel):
     analysisDate: str
     extId: str
     metrics: SatelliteMetrics
-    interpretation: SatelliteInterpretation | None = None
+    interpretation: SatelliteInterpretation = Field(default_factory=SatelliteInterpretation)
 
 
 def _decode_field(canonical_field_id: str | None) -> tuple[int | None, int | None, str]:
@@ -110,7 +101,8 @@ def _build_record(
     (ADR 0006); `classification`/`health_score` come from the NDVI vigour band; `cloud_cover_pct`
     is the AOI's non-clear fraction. `narrative` is the published agronomist read, attached as
     `interpretation.notes` (only published reads are passed in, risk #6)."""
-    from rs_interpret import classify  # pure agronomy bands; lazy so rs_sync stays import-light
+    # pure agronomy bands; lazy so rs_sync stays import-light
+    from rs_interpret import classify, vigour_to_status
 
     by_index = {r.index_name.lower(): r for r in rows}
     ndvi = by_index.get("ndvi")
@@ -126,17 +118,13 @@ def _build_record(
     )
     stress_level: str | None = None
     if ndvi is not None and ndvi.mean is not None:
-        classification = _CLASSIFICATION.get(classify("ndvi", ndvi.mean).label)
+        classification = vigour_to_status(classify("ndvi", ndvi.mean).label)
         metrics.classification = classification
         metrics.health_score = round(_clamp01(ndvi.mean), 2)
         if classification is not None:
             stress_level = _STRESS.get(classification)
-    # Build the block when there is either a derived stress level or a published narrative to carry.
-    interpretation = (
-        SatelliteInterpretation(stress_level=stress_level, notes=narrative)
-        if stress_level is not None or narrative is not None
-        else None
-    )
+    # Build the block (always return a valid dictionary, never null, to satisfy the API contract)
+    interpretation = SatelliteInterpretation(stress_level=stress_level, notes=narrative)
 
     field_id, sub_plot_id, scope = _decode_field(canonical_field_id)
     return SatelliteResult(

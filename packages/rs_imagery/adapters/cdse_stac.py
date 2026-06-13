@@ -25,6 +25,11 @@ from tenacity import (
 )
 
 from rs_imagery.auth import CdseOAuth2Client
+from rs_imagery.resilience import (
+    AsyncTokenBucket,
+    CircuitBreaker,
+    async_bucket_from_settings,
+)
 from rs_imagery.types import AOI, SceneRef, TimeRange
 
 log = get_logger("rs_imagery.cdse_stac")
@@ -150,6 +155,8 @@ class CdseStacClient:
         *,
         client: httpx.AsyncClient | None = None,
         oauth: CdseOAuth2Client | None = None,
+        bucket: AsyncTokenBucket | None = None,
+        breaker: CircuitBreaker | None = None,
         max_attempts: int = 4,
         wait_min: float = 1.0,
         wait_max: float = 20.0,
@@ -162,6 +169,10 @@ class CdseStacClient:
         self._client = client or httpx.AsyncClient(timeout=60.0)
         self._owns_client = client is None
         self._oauth = oauth
+        # Quota governance (S4.5): the shared cross-worker request budget plus a breaker so a
+        # down CDSE is refused fast instead of every search burning its retries.
+        self._bucket = bucket if bucket is not None else async_bucket_from_settings(settings)
+        self._breaker = breaker if breaker is not None else CircuitBreaker()
         self._retrying = AsyncRetrying(
             retry=retry_if_exception(_is_transient),
             wait=wait_exponential(multiplier=wait_multiplier, min=wait_min, max=wait_max),
@@ -213,7 +224,9 @@ class CdseStacClient:
         """The scenes covering the AOI in range, sorted chronologically (oldest first) so the
         pipeline plans backfill in pass order."""
         body = self._search_body(aoi, time_range, max_scene_cloud_pct, limit)
-        payload = await self._retrying(self._post_search, body)
+        if self._bucket is not None:
+            await self._bucket.acquire()
+        payload: dict[str, Any] = await self._breaker.call(self._retrying, self._post_search, body)
         items = [item for f in payload.get("features", []) if (item := parse_item(f)) is not None]
         items.sort(key=lambda i: i.sensing_datetime)
         log.info("cdse.stac.search", returned=len(items), collection=self._collection)

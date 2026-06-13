@@ -11,7 +11,7 @@ with an in-memory fake and no real Redis."""
 from __future__ import annotations
 
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable
 from contextlib import asynccontextmanager
 from typing import Protocol
 
@@ -31,13 +31,14 @@ DEFAULT_LOCK_TTL_SECONDS = 600
 
 class LockClient(Protocol):
     """The slice of a `redis.asyncio` client the lock needs. A real client matches structurally;
-    tests pass an in-memory fake."""
+    tests pass an in-memory fake. Declared as sync methods returning Awaitable (not `async def`)
+    because that is how redis.asyncio types its commands; an `async def` fake still matches."""
 
-    async def set(
-        self, name: str, value: str, *, nx: bool = False, ex: int | None = None
-    ) -> bool | None: ...
+    def set(
+        self, name: str, value: str, *, nx: bool = ..., ex: int | None = ...
+    ) -> Awaitable[bool | str | bytes | None]: ...
 
-    async def eval(self, script: str, numkeys: int, *keys_and_args: str) -> object: ...
+    def eval(self, script: str, numkeys: int, *keys_and_args: str) -> Awaitable[object]: ...
 
 
 async def acquire(client: LockClient, key: str, token: str, *, ttl_seconds: int) -> bool:

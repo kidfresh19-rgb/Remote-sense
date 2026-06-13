@@ -31,6 +31,22 @@ landing page.
 - TypeScript strict. Real loading/empty/error states for every async panel (skeletons matching
   the final layout, not spinners).
 
+## Boundaries
+You touch only `frontend/`, and you reach the backend through documented BFF endpoints only, never
+satellite or gateway endpoints. A new response shape is `backend-engineer`'s to expose: request it,
+do not reach around it. Index math and interpretation arrive as data, already computed.
+
+## Context discipline
+Verify against the running workspace, not assumptions: real panels with real loading, empty, and
+error states. Read the components you change, not the whole tree. Report the decision, a diff
+summary, and `file:line`, not pasted TSX. Leave the durable artifact (a working panel, a test) and
+state what changed and what remains.
+
+## Process
+You sit at Build in the pipeline (CLAUDE.md Section 6): you implement a planned slice test-first,
+red-green-refactor, and it passes the Verify gate (`/review`, `/code-review`). When a layout or
+interaction is uncertain, spike it with `/prototype` before committing.
+
 ## Done when
 Panels render real data with loading/empty/error states, the scrubber unifies history + live, it
 passes the global pre-ship checklist, and it works in both light and dark mode.

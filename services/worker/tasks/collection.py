@@ -1,12 +1,6 @@
-"""Live collection tasks (Phase 3, D4-live): the backfill and forward-fill that wire the planning
+"""Live collection (Phase 3, D4-live): the backfill and forward-fill that wire the planning
 kernel, the lock-gated collection, and DB persistence into one resumable unit of work, plus the
-beat scan that enqueues them.
-
-The Celery tasks are deliberately thin: they resolve config -> session/redis/adapter and delegate
-to `run_collection` / `prepare_and_run`, the injectable async orchestrators that hold the logic
-(so they are testable against the mock adapter + a real session + a fake lock, with no broker).
-Each task runs its own event loop (`asyncio.run`) over a per-task NullPool engine, so a forked
-Celery worker never shares an async connection pool across loops."""
+beat scan that enqueues them."""
 
 from __future__ import annotations
 
@@ -17,7 +11,6 @@ from datetime import UTC, date, datetime, timedelta
 
 import redis.asyncio as aioredis
 from geoalchemy2.shape import to_shape
-from rs_analysis import analyze_index, get_index
 from rs_core import (
     CogStore,
     Field,
@@ -40,7 +33,6 @@ from sqlalchemy.pool import NullPool
 
 from services.worker.celery_app import celery
 from services.worker.collection import collect_field_locked
-from services.worker.interpret import interpret_field_pass
 from services.worker.locks import DEFAULT_LOCK_TTL_SECONDS, LockClient
 from services.worker.persistence import persist_analysis_output
 from services.worker.planning import (
@@ -51,7 +43,6 @@ from services.worker.planning import (
     plan_scenes,
     select_forward_fill_due,
 )
-from services.worker.publish import gateway_from_settings, publish_farm
 
 # The core indices stored on every usable pass (PLAN §5). Adding one is a config change here, not
 # a schema migration - the analysis row is index-agnostic.
@@ -498,116 +489,3 @@ def forward_fill_field(field_id: str) -> dict[str, object]:
 def scan_and_enqueue() -> dict[str, int]:
     """Beat entrypoint: enqueue backfill for flagged fields and forward-fill for due ones."""
     return asyncio.run(_scan_and_enqueue())
-
-
-async def _interpret_for_pass(field_id: str, scene_id: str) -> dict[str, object]:
-    from rs_interpret.client import AnthropicInterpretClient  # lazy: needs the `interpret` extra
-
-    settings = get_settings()
-    engine = create_async_engine(settings.database_url, poolclass=NullPool)
-    try:
-        async with async_sessionmaker(engine, expire_on_commit=False)() as session:
-            field = (
-                await session.execute(select(Field).where(Field.id == uuid.UUID(field_id)))
-            ).scalar_one()
-            result = await interpret_field_pass(
-                session,
-                AnthropicInterpretClient(settings),
-                field_id=field.id,
-                scene_id=scene_id,
-                geometry_version=field.geometry_version,
-                crop=field.crop,
-                model_id=settings.anthropic_model,
-            )
-            await session.commit()
-            if result is None:
-                return {"skipped": True}
-            return {"status": result.status, "confidence": result.confidence, "published": False}
-    finally:
-        await engine.dispose()
-
-
-@celery.task(name="interpret.field_pass")
-def interpret_field_pass_task(field_id: str, scene_id: str) -> dict[str, object]:
-    """Draft + store an unpublished agronomic read for one field/pass (L4b). Never publishes."""
-    return asyncio.run(_interpret_for_pass(field_id, scene_id))
-
-
-async def _publish_farm(canonical_farm_id: str) -> dict[str, object]:
-    settings = get_settings()
-    gateway = gateway_from_settings(settings)
-    engine = create_async_engine(settings.database_url, poolclass=NullPool)
-    try:
-        async with async_sessionmaker(engine, expire_on_commit=False)() as session:
-            summary = await publish_farm(session, gateway, canonical_farm_id=canonical_farm_id)
-            await session.commit()
-            return {"results": summary.results, "status": summary.status}
-    finally:
-        await engine.dispose()
-
-
-@celery.task(name="sync.publish_farm")
-def publish_farm_task(canonical_farm_id: str) -> dict[str, object]:
-    """Build + push a farm's additive results to the gateway (L7); record published/dead-letter."""
-    return asyncio.run(_publish_farm(canonical_farm_id))
-
-
-async def _analyse_aoi(geometry: dict[str, object], index_name: str) -> dict[str, object]:
-    """Compute one index over an arbitrary AOI for its most recent usably-clear pass, without
-    persisting anything. Only the few most-recent scenes are fetched (not the whole window) so a
-    single click never fans out to dozens of reads, and the clearest of them is returned."""
-    settings = get_settings()
-    adapter = get_access_adapter(settings)
-    aoi = AOI(geometry=geometry, crs="EPSG:4326")
-    spec = get_index(index_name)
-    now = datetime.now(UTC)
-    scenes = await adapter.search(
-        aoi, TimeRange(start=now - timedelta(days=90), end=now), max_scene_cloud_pct=70.0
-    )
-    if not scenes:
-        return {"status": "no_scenes"}
-
-    bands = sorted(spec.bands)
-    best_scene = None
-    best_out = None
-    for scene in sorted(scenes, key=lambda s: s.sensing_datetime, reverse=True)[:3]:
-        fetched = await adapter.fetch(
-            scene, aoi, bands=bands, resolution_m=float(spec.resolution_m)
-        )
-        out = analyze_index(
-            reflectance=fetched.data.bands,
-            index_name=index_name,
-            resolution_m=int(fetched.data.resolution_m),
-            clear_fraction_override=fetched.clear_fraction,
-        )
-        if best_out is None or out.clear_fraction > best_out.clear_fraction:
-            best_scene, best_out = scene, out
-        if out.clear_fraction >= 0.6:  # clear enough; stop early to stay responsive
-            break
-
-    assert best_scene is not None and best_out is not None
-    s = best_out.stats
-    return {
-        "status": "ok",
-        "index": best_out.index_name,
-        "pass_date": best_scene.sensing_datetime.date().isoformat(),
-        "scene_id": best_scene.scene_id,
-        "mean": s.mean,
-        "min": s.min,
-        "max": s.max,
-        "p10": s.p10,
-        "p90": s.p90,
-        "clear_fraction": best_out.clear_fraction,
-        "confidence": best_out.confidence,
-        "resolution_m": best_out.resolution_m,
-        "pixels": s.count,
-    }
-
-
-@celery.task(name="analysis.analyse_aoi")
-def analyse_aoi_task(geometry: dict[str, object], index_name: str) -> dict[str, object]:
-    """Ad-hoc preview analysis over a custom AOI (the workspace "analyse this area" action): the
-    most recent usable pass's index stats, computed through the same engine as stored analyses but
-    never persisted. No field is created, so it cannot collide with gateway-owned identity
-    (invariant 6)."""
-    return asyncio.run(_analyse_aoi(geometry, index_name))

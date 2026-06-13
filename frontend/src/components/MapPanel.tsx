@@ -1,4 +1,4 @@
-import { CaretLeft, CaretRight, Columns, Stack, X, Lightning } from "@phosphor-icons/react";
+import { CaretLeft, CaretRight, Columns, Stack, X, Lightning, Eye, Plant } from "@phosphor-icons/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { Field } from "@/lib/api";
@@ -36,7 +36,11 @@ export function MapPanel({
     passDate,
     compareDate,
     showRaster,
+    showRgb,
+    showFcc,
     toggleRaster,
+    toggleRgb,
+    toggleFcc,
     setCompareDate,
     customAOI,
     setCustomAOI,
@@ -141,7 +145,7 @@ export function MapPanel({
   };
 
   return (
-    <section className="relative min-h-[55vh] bg-bg lg:min-h-0">
+    <section className="relative min-h-0 h-full bg-bg">
       {/* Map — always mounted so the AOI toolbar and coordinate/geocoder callbacks have a
            live map regardless of field selection state. */}
       {comparing && selectedField ? (
@@ -159,6 +163,8 @@ export function MapPanel({
           index={index}
           sceneId={activeSceneId}
           showRaster={showRaster}
+          showRgb={showRgb}
+          showFcc={showFcc}
           customAOI={customAOI}
           marker={searchMarker}
           drawMode={drawMode}
@@ -222,6 +228,24 @@ export function MapPanel({
           <Stack size={18} />
         </IconButton>
         <IconButton
+          label={showRgb ? "Hide true color imagery" : "Show true color imagery"}
+          active={showRgb}
+          onClick={toggleRgb}
+          disabled={!selectedField}
+          className="border border-border bg-panel"
+        >
+          <Eye size={18} />
+        </IconButton>
+        <IconButton
+          label={showFcc ? "Hide false color (NIR)" : "Show false color (NIR)"}
+          active={showFcc}
+          onClick={toggleFcc}
+          disabled={!selectedField}
+          className="border border-border bg-panel"
+        >
+          <Plant size={18} />
+        </IconButton>
+        <IconButton
           label={comparing ? "Exit comparison" : "Compare two passes"}
           active={comparing}
           onClick={toggleCompare}
@@ -281,8 +305,8 @@ export function MapPanel({
         {inspectorOpen ? <CaretRight size={12} weight="bold" /> : <CaretLeft size={12} weight="bold" />}
       </button>
 
-      {/* Index legend */}
-      {selectedField ? (
+      {/* Index legend — meaningless over the visual composites, so hidden with either */}
+      {selectedField && !showRgb && !showFcc ? (
         <div className="absolute bottom-3 left-3 z-20">
           <IndexLegend meta={indexMeta(index)} />
         </div>
@@ -329,6 +353,8 @@ function SingleSceneMap({
   index,
   sceneId,
   showRaster,
+  showRgb,
+  showFcc,
   customAOI,
   marker,
   drawMode,
@@ -340,6 +366,8 @@ function SingleSceneMap({
   index: IndexKey;
   sceneId: string | null;
   showRaster: boolean;
+  showRgb: boolean;
+  showFcc: boolean;
   customAOI: import("geojson").Geometry | null;
   marker: [number, number] | null;
   drawMode: boolean;
@@ -356,6 +384,8 @@ function SingleSceneMap({
     index,
     sceneId,
     showRaster,
+    showRgb,
+    showFcc,
     customAOI,
     marker,
     drawMode,

@@ -12,7 +12,15 @@ from rs_core.alerts import (
     evaluate_health,
 )
 from rs_core.config import Settings, get_settings
-from rs_core.db import Base, get_engine, get_session, get_sessionmaker
+from rs_core.db import (
+    Base,
+    get_engine,
+    get_read_engine,
+    get_read_session,
+    get_read_sessionmaker,
+    get_session,
+    get_sessionmaker,
+)
 from rs_core.logging import configure_logging, get_logger
 from rs_core.models import (
     Analysis,
@@ -27,6 +35,10 @@ from rs_core.models import (
 )
 from rs_core.rbac import Permission, Principal, Role, permissions_for
 from rs_core.repositories import (
+    FarmAnalyticsAnomalies,
+    FarmAnalyticsSummary,
+    FarmAnalyticsTimeSeriesPoint,
+    FarmAnomaly,
     advance_cursor,
     delete_annotation,
     ensure_collection_state,
@@ -74,6 +86,9 @@ __all__ = [
     "get_settings",
     "Base",
     "get_engine",
+    "get_read_engine",
+    "get_read_session",
+    "get_read_sessionmaker",
     "get_session",
     "get_sessionmaker",
     "configure_logging",
@@ -91,6 +106,10 @@ __all__ = [
     "delete_annotation",
     "ensure_collection_state",
     "get_collection_state",
+    "FarmAnalyticsAnomalies",
+    "FarmAnalyticsSummary",
+    "FarmAnalyticsTimeSeriesPoint",
+    "FarmAnomaly",
     "get_farm_analytics_anomalies",
     "get_farm_analytics_summary",
     "get_farm_analytics_timeseries",

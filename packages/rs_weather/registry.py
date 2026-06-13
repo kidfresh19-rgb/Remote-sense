@@ -19,8 +19,8 @@ def get_weather_adapter(settings: Settings | None = None) -> WeatherPort:
     # A real provider (Open-Meteo is free and key-less) lands behind this same port, with HTTP
     # behind an injected httpx client like the CDSE STAC client (T1.1 follow-on).
     if adapter is WeatherAdapter.OPEN_METEO:
-        raise NotImplementedError(
-            "open_meteo weather adapter is the next step: a real provider behind WeatherPort."
-        )
+        from rs_weather.adapters.open_meteo import OpenMeteoWeatherAdapter
+
+        return OpenMeteoWeatherAdapter(settings)
 
     raise ValueError(f"Unknown weather adapter: {adapter!r}")

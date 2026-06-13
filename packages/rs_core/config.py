@@ -42,8 +42,15 @@ class ArrivalSource(StrEnum):
 
 
 class Settings(BaseSettings):
+    # env_ignore_empty: .env.example documents "empty = use the default" (e.g.
+    # RS_COG_RETENTION_MONTHS=, RS_CDSE_RATE_LIMIT_RPS=); without it an empty value crashes the
+    # numeric-optional fields at boot instead of falling back.
     model_config = SettingsConfigDict(
-        env_file=".env", env_prefix="RS_", extra="ignore", case_sensitive=False
+        env_file=".env",
+        env_prefix="RS_",
+        extra="ignore",
+        case_sensitive=False,
+        env_ignore_empty=True,
     )
 
     # App
@@ -59,6 +66,17 @@ class Settings(BaseSettings):
 
     # PostgreSQL + PostGIS
     database_url: str = "postgresql+psycopg://rs:rs@localhost:5432/remote_sense"
+    # Connection pooling (S4.4). Defaults match SQLAlchemy's own; tune per deployment via env.
+    # pre-ping is always on (rs_core.db), so recycled/dead connections never reach a request.
+    db_pool_size: int = 5
+    db_max_overflow: int = 10
+    db_pool_timeout_s: float = 30.0
+    db_pool_recycle_s: int = 1800
+    # ⚑ CONFIRM (S4.4): a streaming-replica DSN for analytical reads. Empty = reads stay on the
+    # primary (the only mode until a replica is provisioned). When set, the read-routed
+    # endpoints (field/farm reads, the mobile data pull) may lag the primary by the replication
+    # delay; review-workflow and annotation reads stay on the primary for read-after-write.
+    database_read_url: str = ""
 
     # Redis (cache, Celery broker, quota counters)
     redis_url: str = "redis://localhost:6379/0"
@@ -73,8 +91,20 @@ class Settings(BaseSettings):
     # Imagery access layer
     imagery_adapter: ImageryAdapter = ImageryAdapter.MOCK
     backfill_months: int = 18
+    # CONFIRMED 2026-06-13 (S4.3): COG retention horizon. None = match backfill_months, so
+    # index-preview COGs exist exactly for the history depth the workspace advertises; older
+    # passes keep their stats/provenance rows but lose the raster overlay.
+    cog_retention_months: int | None = None
 
     # CDSE (endpoint deliberately unspecified in code; provided via env)
+    # Quota confirmed 2026-06-12 (S4.5 resolved): a CDSE general account allows 300 Process-API
+    # requests/min, the binding limit for the one budget shared by STAC search, Process API
+    # renders, and windowed/metadata reads across all workers. Production runs 4 rps (80% of
+    # quota; with burst 10 no 60s window can exceed 250). None = governance off (reactive 429
+    # backoff still applies) - the default stays None because the value belongs to the deployed
+    # account, so .env carries it, not code.
+    cdse_rate_limit_rps: float | None = None
+    cdse_rate_limit_burst: float = 10.0
     cdse_token_url: str = ""
     cdse_client_id: str = ""
     cdse_client_secret: str = ""
@@ -108,6 +138,12 @@ class Settings(BaseSettings):
     # /integrations/satellite/results, and required on inbound /api/v1/mobile/* calls.
     agritrack_base_url: str = ""
     agritrack_api_key: str = ""
+    # ⚑ CONFIRM (S4.6 / DI-1): enforce the same shared X-Api-Key on POST /ingest/farm. The route
+    # is EXTERNAL-FROZEN (confirmed 2026-06-12: the gateway still calls it), so enforcement
+    # ships OFF: keyless calls work unchanged and only log. Flip to true once the gateway team
+    # confirms they send the key on ingest; ingest.keyless_call / ingest.key_mismatch logs
+    # must have gone quiet first.
+    ingest_require_key: bool = False
 
     # Arrival notification (confirmed 2026-06-03: DB polling; webhook/LISTEN-NOTIFY swap in later).
     arrival_source: ArrivalSource = ArrivalSource.DB_POLL

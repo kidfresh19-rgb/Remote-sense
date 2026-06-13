@@ -178,3 +178,18 @@ def classify(index: str, value: float, crop: str | None = None) -> Band:
         if band.upper is None or value <= band.upper:
             return band
     return bands[-1]
+
+
+def vigour_to_status(vigour_band: str) -> str:
+    """Map the NDVI vigour band to the standard health status classification.
+
+    (dense/vigorous -> healthy, developing -> moderate, sparse -> stressed, bare -> critical)
+    """
+    mapping = {
+        "dense": "healthy",
+        "vigorous": "healthy",
+        "developing": "moderate",
+        "sparse": "stressed",
+        "bare": "critical",
+    }
+    return mapping.get(vigour_band, "healthy")

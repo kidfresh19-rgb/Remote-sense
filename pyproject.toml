@@ -65,6 +65,8 @@ observability = [
 dev = [
     "pytest>=8.2",
     "pytest-asyncio>=0.23",
+    "pytest-cov>=5",
+    "mypy>=1.10",
     "ruff>=0.5",
 ]
 
@@ -76,6 +78,14 @@ line-length = 100
 target-version = "py311"
 # azure/ is a local, git-ignored full mirror of the repo (a deploy-prep copy); never lint it.
 extend-exclude = ["azure"]
+
+# Static type gate (rebuild S1.1): the production tree is mypy-clean and stays that way. Run as
+# plain `mypy` (the paths below are the scope); tests are not yet checked - widening the scope to
+# tests/ is the next ratchet step. ignore_missing_imports covers the untyped geo/celery libs.
+[tool.mypy]
+python_version = "3.11"
+files = ["packages", "services"]
+ignore_missing_imports = true
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "ASYNC"]

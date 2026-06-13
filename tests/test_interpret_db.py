@@ -154,7 +154,7 @@ async def test_interpret_grounds_status_and_stores_unpublished(maker_) -> None:
     assert result.confidence == "high"  # min clear fraction 0.9 -> high
     assert result.needs_review is True
     assert result.published is False
-    assert result.prompt_version == "interp/v1"
+    assert result.prompt_version == "interp/v2"
     assert result.model == "claude-opus-4-8"
     assert client.calls == 1
     assert await _count(maker_) == 1
