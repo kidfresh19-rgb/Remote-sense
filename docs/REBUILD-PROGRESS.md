@@ -2,11 +2,11 @@
 
 Status board for the intelligence-core rebuild. Plan: `docs/prd/0001-intelligence-core-rebuild.md`,
 `docs/adr/0008-ordered-reimplementation-frozen-contract.md`, `docs/backlog/0001-intelligence-core-rebuild-backlog.md`.
-Branch: `feat/imagery-agronomy-tiers-0-2`. Push target: Azure DevOps `origin`.
+Branch: `feat/imagery-agronomy-tiers-0-2`. Push target: Azure DevOps, remote `azure`.
 
 ## Resume on another machine
 
-1. `git pull origin feat/imagery-agronomy-tiers-0-2`
+1. `git pull azure feat/imagery-agronomy-tiers-0-2`
 2. Read in order: PRD 0001, ADR 0008, `CONTRACT.md`, backlog 0001.
 3. Continue from "Next" below.
 
@@ -106,6 +106,18 @@ Branch: `feat/imagery-agronomy-tiers-0-2`. Push target: Azure DevOps `origin`.
   `develop` (52 commits ahead; PR-1 "api connect" content already byte-identical on the branch;
   `git merge-tree` dry run is conflict-free). Post-sync verification on this machine: ruff clean,
   mypy clean (118 files), 450 passed / 11 skipped, coverage 86.75% over the 85% floor.
+
+## State (2026-06-13, second pass)
+
+- **Final fresh pass before the PR-2 merge: buildable scope confirmed closed.** Re-verified on
+  this machine: ruff + format clean, mypy clean (118 files), full suite 450 passed / 11 skipped.
+  Every remaining ⚑ marker is external-confirm (agronomy sign-off; live-CDSE wire details in
+  `cdse_stac.py` / `server_compute.py`; the S4.6 enforcement flag; the S4.4 replica DSN) or a
+  parked adapter (`rs_activity`, `alerts`), none buildable here. One buildable leftover found and
+  fixed: three stale forward-looking comments left after S4.5/S4.7 resolved (the load-test SLO
+  docstrings still read "placeholders until S4.7"; `rs_imagery/resilience` pointed at a resolved
+  "⚑ CONFIRM in config"). Swept in `397c32a` (docs, comment-only; the three touched modules
+  re-tested green), pushed to the PR-2 branch so the record lands with the merge.
 
 ## State (2026-06-12, seventh pass)
 
