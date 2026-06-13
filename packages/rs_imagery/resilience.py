@@ -291,9 +291,9 @@ class CircuitBreaker:
 
 
 def async_bucket_from_settings(settings: Settings) -> AsyncTokenBucket | None:
-    """The shared CDSE bucket for the async clients, or None while no rate is configured (the
-    governance ships off until the real account quota is known, ⚑ CONFIRM in config). Building a
-    redis client here is lazy - no connection happens until the first acquire."""
+    """The shared CDSE bucket for the async clients, or None while no rate is configured - the
+    code default, since the rate belongs to the deployed account and lives in env (see config).
+    Building a redis client here is lazy - no connection happens until the first acquire."""
     if not settings.cdse_rate_limit_rps:
         return None
     import redis.asyncio as aredis

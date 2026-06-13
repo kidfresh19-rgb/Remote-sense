@@ -1,7 +1,7 @@
 """SLO targets for the load-test harness (S1.3) and the pass/fail evaluation of a measured run
 against them. The pairing is pure so it is unit-testable; the actual threshold values live with
-the scenarios that own them (see scenarios.py) and are placeholders until S4.7 sets real numbers
-from a representative load test (PRD 0001, R12)."""
+the scenarios that own them (see scenarios.py), set from the S4.7 load-test run against real
+data (PRD 0001, R12)."""
 
 from __future__ import annotations
 

@@ -1,7 +1,7 @@
-"""Load-test harness (S1.3): a small async load driver plus pure latency/SLO evaluation, so the
-team can stand up load tests with placeholder SLOs now and set the real numbers in S4.7
-(PRD 0001, R12/R15). The measurement core is infra-free and unit-tested; the runner takes an
-injected async operation so it drives either a synthetic coroutine or a real HTTP call."""
+"""Load-test harness (S1.3): a small async load driver plus pure latency/SLO evaluation. The SLO
+numbers were set from the S4.7 load-test run against real data (PRD 0001, R12/R15). The
+measurement core is infra-free and unit-tested; the runner takes an injected async operation so
+it drives either a synthetic coroutine or a real HTTP call."""
 
 from __future__ import annotations
 
