@@ -211,8 +211,8 @@ async def test_field_timeseries_and_scenes(maker_) -> None:
 
 
 def test_choose_nearer_pass_policy() -> None:
-    # ⚑ CONFIRM policy (S3.1): the nearer side wins; a tie goes to before, because the past is
-    # the safer claim for "as of" semantics. No DB needed - this is the pure decision rule.
+    # CONFIRMED policy (S3.1, 2026-06-13): the nearer side wins; a tie goes to before, because
+    # the past is the safer claim for "as of" semantics. No DB needed - the pure decision rule.
     def p(day_gap: int) -> ResolvedPass:
         return ResolvedPass(
             scene_id=f"S{day_gap}", pass_date=_PASS, day_gap=day_gap, clear_fraction=0.9

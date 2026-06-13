@@ -188,8 +188,8 @@ def choose_nearer_pass(
     """The as-of resolution policy (S3.1): of the nearest usable pass on each side of the
     requested date, pick the one fewer days away; a tie goes to `before`, because the past is
     the safer claim for "as of" semantics. Both sides still travel in the response so a client
-    can offer the other one. ⚑ CONFIRM: nearer-of-either-side (tie -> before) chosen over
-    nearest-before-only and pure bracketing; revisit with the user."""
+    can offer the other one. CONFIRMED 2026-06-13: nearer-of-either-side (tie -> before) chosen
+    over nearest-before-only and pure bracketing."""
     if before is None:
         return after
     if after is None:

@@ -91,9 +91,21 @@ Branch: `feat/imagery-agronomy-tiers-0-2`. Push target: Azure DevOps `origin`.
   (`RS_INGEST_REQUIRE_KEY=true` once the gateway team confirms they send `X-Api-Key` on ingest
   and the `ingest.keyless_call` / `ingest.key_mismatch` logs are quiet), and the ⚑ S4.4 replica
   provisioning (set `RS_DATABASE_READ_URL` when a streaming replica exists; routing is wired).
-- Owner-blocked confirms: the ⚑ as-of-date resolution policy (nearer side, tie -> before), the
-  ⚑ COG retention horizon default (= backfill depth), live CDSE (D2/D6), and agronomist
-  sign-off.
+- Owner-blocked confirms: live CDSE (D2) and agronomist sign-off. RESOLVED 2026-06-13: the
+  as-of-date policy (nearer side, tie -> before) and the COG retention default (None = match
+  backfill depth) are both confirmed as shipped; markers cleared from code and tests.
+
+## State (2026-06-13)
+
+- **Two ⚑ confirms RESOLVED by the owner** (markers cleared in `services/api/workspace/fields.py`,
+  `tests/test_workspace_db.py`, `packages/rs_core/config.py`, plan docs): the S3.1 as-of-date
+  resolution policy stays nearer-of-either-side with ties going to before, and the S4.3 COG
+  retention default stays None = match `backfill_months`. S4.6 enforcement stays dark
+  (`RS_INGEST_REQUIRE_KEY=false`) until the gateway team confirms the key and the ingest logs are
+  quiet. **Owner approved landing the branch:** PR from `feat/imagery-agronomy-tiers-0-2` into
+  `develop` (52 commits ahead; PR-1 "api connect" content already byte-identical on the branch;
+  `git merge-tree` dry run is conflict-free). Post-sync verification on this machine: ruff clean,
+  mypy clean (118 files), 450 passed / 11 skipped, coverage 86.75% over the 85% floor.
 
 ## State (2026-06-12, seventh pass)
 

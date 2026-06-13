@@ -91,9 +91,9 @@ class Settings(BaseSettings):
     # Imagery access layer
     imagery_adapter: ImageryAdapter = ImageryAdapter.MOCK
     backfill_months: int = 18
-    # ⚑ CONFIRM (S4.3): COG retention horizon. None = match backfill_months, so index-preview
-    # COGs exist exactly for the history depth the workspace advertises; older passes keep their
-    # stats/provenance rows but lose the raster overlay.
+    # CONFIRMED 2026-06-13 (S4.3): COG retention horizon. None = match backfill_months, so
+    # index-preview COGs exist exactly for the history depth the workspace advertises; older
+    # passes keep their stats/provenance rows but lose the raster overlay.
     cog_retention_months: int | None = None
 
     # CDSE (endpoint deliberately unspecified in code; provided via env)
