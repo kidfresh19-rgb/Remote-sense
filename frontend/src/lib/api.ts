@@ -177,6 +177,12 @@ export interface PublishEnqueued {
   dry_run: boolean;
 }
 
+export interface PipelineHealth {
+  fields: number;
+  awaiting_backfill: number;
+  dead_letters: number;
+}
+
 export class ApiError extends Error {
   readonly status: number;
   constructor(status: number, message: string) {
@@ -286,6 +292,8 @@ export const api = {
     ),
   analyseAOI: (geometry: Geometry, index: string, token: string) =>
     send<AOIAnalysisResult>("POST", "/analyse/aoi", token, { geometry, index }),
+  pipelineHealth: (token: string, signal?: AbortSignal) =>
+    get<PipelineHealth>("/pipeline/health", token, signal),
   collectField: (fieldId: string, token: string) =>
     send<{ status: string; field_id: string; by: string }>(
       "POST",

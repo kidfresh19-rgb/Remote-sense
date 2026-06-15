@@ -38,6 +38,12 @@ weather and farm activity, and pushes reviewed results back to the gateway.
   analyses. Joined on canonical farm ID, pushed additively, geometry never returned.
 - **Interpretation / review-gate** the plain-language agronomic read from `rs_interpret`; always a
   draft an agronomist reviews before it can publish.
+- **Overview dashboard** the landing route (`/`) for analysts: estate-level stat cards, a field
+  health map showing all farm polygons coloured by `overall_health`, analytics cards (health
+  distribution, coverage %, dead-letter count), and a recent-interpretations activity feed.
+  Distinct from the **analyst workspace** (the three-panel cockpit at `/workspace`). These are two
+  separate routes via TanStack Router; the dashboard has its own header with an "Enter Workspace"
+  CTA; the workspace header has a House icon linking back.
 - **Grounding context** the weather (GDD, precipitation) and AgriTrack activity telemetry fused into
   an interpretation so the read reflects field reality, not the index alone (ADR 0007).
 - **Validation matrix** the test suite comparing each index against the Copernicus Browser on known

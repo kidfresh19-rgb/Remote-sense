@@ -1,4 +1,13 @@
-import { ClipboardText, MapTrifold, Moon, SignOut, Sun, CloudArrowUp } from "@phosphor-icons/react";
+import {
+  ClipboardText,
+  CloudArrowUp,
+  House,
+  MapTrifold,
+  Moon,
+  SignOut,
+  Sun,
+} from "@phosphor-icons/react";
+import { useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 
 import { useCanPublish } from "@/auth/permissions";
@@ -16,6 +25,7 @@ export function Header() {
   const { theme, toggle } = useTheme();
   const { index, setIndex } = useWorkspace();
   const canPublish = useCanPublish();
+  const navigate = useNavigate();
   const [queueOpen, setQueueOpen] = useState(false);
   const [pushOpen, setPushOpen] = useState(false);
 
@@ -28,6 +38,12 @@ export function Header() {
       </div>
 
       <div className="flex items-center gap-2">
+        <IconButton
+          label="Dashboard overview"
+          onClick={() => void navigate({ to: "/" })}
+        >
+          <House size={18} />
+        </IconButton>
         {token ? (
           <div className="hidden md:block">
             <SegmentedControl<IndexKey>

@@ -26,16 +26,6 @@ COPY alembic ./alembic
 # value resolves to ".", a populated one to ".[geo]" etc.
 ARG INSTALL_EXTRAS=""
 
-# The geo extra (rasterio/rio-tiler) links GDAL, which needs system libraries that python:3.11-slim
-# omits. Install them only for geo builds so non-geo images stay lean. Without libexpat1
-# (libexpat.so.1) `import rasterio` fails at runtime, so the tiler 503s on every tile and the
-# COG-emitting worker cannot write rasters.
-RUN if echo "$INSTALL_EXTRAS" | grep -q geo; then \
-        apt-get update && \
-        apt-get install -y --no-install-recommends libexpat1 && \
-        rm -rf /var/lib/apt/lists/*; \
-    fi
-
 RUN pip install --no-cache-dir -e ".${INSTALL_EXTRAS}"
 
 # Default command is overridden per-service in docker-compose.yml.

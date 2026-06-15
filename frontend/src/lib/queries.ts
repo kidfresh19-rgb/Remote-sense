@@ -1,9 +1,9 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Geometry } from "geojson";
 
 import { useToken } from "@/auth/TokenProvider";
 
-import { api, ApiError, type ReviewInput } from "./api";
+import { api, ApiError, type Farm, type ReviewInput } from "./api";
 import type { IndexKey } from "./indices";
 
 export function useFarms() {
@@ -189,6 +189,29 @@ export function useAnalyseAOI() {
 
 /** Trigger an on-demand backfill for a field. The work runs on the worker, so callers poll the
  *  field's reads (see `collecting` on useTimeseries/useScenes) to surface results as they land. */
+export function usePipelineHealth() {
+  const { token } = useToken();
+  return useQuery({
+    queryKey: ["pipeline-health"],
+    queryFn: ({ signal }) => api.pipelineHealth(token!, signal),
+    enabled: !!token,
+    refetchInterval: 30_000,
+  });
+}
+
+export function useAllFields(farms: Farm[] | undefined) {
+  const { token } = useToken();
+  return useQueries({
+    queries: (farms ?? []).map((farm) => ({
+      queryKey: ["fields", farm.canonical_farm_id] as const,
+      queryFn: ({ signal }: { signal: AbortSignal }) =>
+        api.fields(farm.canonical_farm_id, token!, signal),
+      enabled: !!token && !!farms,
+      staleTime: 60_000,
+    })),
+  });
+}
+
 export function useCollectField(fieldId: string | null) {
   const { token } = useToken();
   return useMutation({
