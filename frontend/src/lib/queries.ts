@@ -3,7 +3,14 @@ import type { Geometry } from "geojson";
 
 import { useToken } from "@/auth/TokenProvider";
 
-import { api, ApiError, type AOISeriesRequest, type Farm, type ReviewInput } from "./api";
+import {
+  api,
+  ApiError,
+  type AOIPushRequest,
+  type AOISeriesRequest,
+  type Farm,
+  type ReviewInput,
+} from "./api";
 import type { IndexKey } from "./indices";
 
 export function useFarms() {
@@ -193,6 +200,15 @@ export function useAnalyseAOISeries() {
   const { token } = useToken();
   return useMutation({
     mutationFn: (req: AOISeriesRequest) => api.analyseAOISeries(req, token!),
+  });
+}
+
+/** Push the resolved 'ok' passes of a completed AOI Studio job to the gateway under a farm. */
+export function usePushAOIResults() {
+  const { token } = useToken();
+  return useMutation({
+    mutationFn: ({ jobId, req }: { jobId: string; req: AOIPushRequest }) =>
+      api.pushAOIResults(jobId, req, token!),
   });
 }
 

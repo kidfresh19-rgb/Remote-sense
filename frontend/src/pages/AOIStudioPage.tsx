@@ -1,4 +1,5 @@
 import {
+  ArrowSquareOut,
   Crosshair,
   FloppyDisk,
   House,
@@ -27,7 +28,7 @@ import type { AOISeriesMode } from "@/lib/api";
 import { deleteCustomAOI, saveCustomAOI, useCustomAOIs } from "@/lib/customAOIs";
 import { cn } from "@/lib/format";
 import { DEFAULT_INDEX, INDICES, type IndexKey } from "@/lib/indices";
-import { useAnalyseAOISeries, useAOIJob } from "@/lib/queries";
+import { useAnalyseAOISeries, useAOIJob, useFarms, usePushAOIResults } from "@/lib/queries";
 import { useTheme } from "@/lib/theme";
 
 // Mirrors MAX_BATCH_DATES in services/api/workspace/analyse.py — keep them in step.
@@ -90,6 +91,7 @@ function Studio() {
   const [dates, setDates] = useState<string[]>([]);
   const [months, setMonths] = useState(6);
   const [jobId, setJobId] = useState<string | null>(null);
+  const [selectedFarmId, setSelectedFarmId] = useState<string>("");
 
   const [drawMode, setDrawMode] = useState(false);
   const [showCoords, setShowCoords] = useState(false);
@@ -101,10 +103,15 @@ function Studio() {
 
   const run = useAnalyseAOISeries();
   const job = useAOIJob(jobId);
+  const farms = useFarms();
+  const push = usePushAOIResults();
   const busy =
     run.isPending || job.data?.state === "queued" || job.data?.state === "running";
 
+  const result = job.data?.state === "done" ? (job.data.result ?? null) : null;
+  const okPassCount = result?.passes.filter((p) => p.status === "ok").length ?? 0;
   const canRun = !!aoi && !busy && (mode === "backfill" || dates.length > 0);
+  const canPush = !!jobId && result !== null && okPassCount > 0 && !!selectedFarmId && !push.isPending;
 
   const setAoiAndClearPin = (geometry: Geometry) => {
     setMarker(null);
@@ -115,12 +122,18 @@ function Studio() {
 
   const handleRun = () => {
     if (!aoi) return;
+    push.reset();
     run.mutate(
       mode === "dates"
         ? { geometry: aoi, index, mode, dates }
         : { geometry: aoi, index, mode, months },
       { onSuccess: (data) => setJobId(data.job_id) },
     );
+  };
+
+  const handlePush = () => {
+    if (!jobId || !selectedFarmId) return;
+    push.mutate({ jobId, req: { canonical_farm_id: selectedFarmId } });
   };
 
   return (
@@ -223,7 +236,8 @@ function Studio() {
               <Label>Dates ({dates.length})</Label>
               <DateBatchInput dates={dates} onChange={setDates} max={MAX_BATCH_DATES} />
               <p className="text-[11px] text-muted">
-                Each date resolves to its same-day satellite pass, or is marked “no pass.”
+                Each date resolves to its same-day pass; if none exists, the two nearest passes are
+                averaged.
               </p>
             </div>
           ) : (
@@ -248,6 +262,51 @@ function Studio() {
             <p className="text-xs text-critical">
               {run.error instanceof Error ? run.error.message : "Could not start the analysis."}
             </p>
+          ) : null}
+
+          {result !== null && okPassCount > 0 ? (
+            <div className="flex flex-col gap-2 border-t border-border pt-4">
+              <Label>Push to gateway</Label>
+              <select
+                value={selectedFarmId}
+                onChange={(e) => {
+                  setSelectedFarmId(e.target.value);
+                  push.reset();
+                }}
+                className="w-full rounded-md border border-border bg-bg px-2.5 py-1.5 text-xs text-fg focus:outline-none focus:ring-2 focus:ring-accent"
+                aria-label="Farm to push results under"
+              >
+                <option value="">Select a farm…</option>
+                {(farms.data ?? []).map((f) => (
+                  <option key={f.canonical_farm_id} value={f.canonical_farm_id}>
+                    {f.name ?? f.canonical_farm_id}
+                  </option>
+                ))}
+              </select>
+              <Button
+                variant="outline"
+                onClick={handlePush}
+                disabled={!canPush}
+                className="w-full gap-1.5"
+              >
+                <ArrowSquareOut size={14} />
+                {push.isPending
+                  ? "Pushing…"
+                  : `Push ${okPassCount} ${okPassCount === 1 ? "pass" : "passes"} to gateway`}
+              </Button>
+              {push.isSuccess ? (
+                <p className="text-xs text-positive">
+                  {push.data.dry_run
+                    ? `Recorded ${push.data.pushed_passes} passes (dry-run)`
+                    : `Sent ${push.data.pushed_passes} passes`}
+                </p>
+              ) : null}
+              {push.isError ? (
+                <p className="text-xs text-critical">
+                  {push.error instanceof Error ? push.error.message : "Push failed"}
+                </p>
+              ) : null}
+            </div>
           ) : null}
         </aside>
       </div>

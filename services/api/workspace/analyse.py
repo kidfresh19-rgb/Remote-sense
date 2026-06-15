@@ -17,6 +17,7 @@ from pydantic import BaseModel
 from rs_core import get_settings
 
 from services.api.workspace.deps import RunAnalysisPrincipal
+from services.worker.publish import gateway_from_settings, gateway_is_dry_run
 
 router = APIRouter(tags=["workspace"])
 
@@ -28,6 +29,13 @@ MAX_BATCH_DATES = 24
 class AOIAnalysisRequest(BaseModel):
     geometry: dict[str, Any]
     index: str
+
+
+class AOIPushRequest(BaseModel):
+    """Push the resolved 'ok' passes of a completed AOI Studio job to the gateway, tagged to a
+    farm. Only exact same-day passes carry full single-scene provenance and are eligible."""
+
+    canonical_farm_id: str
 
 
 class AOISeriesRequest(BaseModel):
@@ -159,3 +167,79 @@ async def aoi_job_endpoint(
     `{done, total}` progress meter) | `done` (with `result`) | `error` (with `error`). Requires
     `run_analysis`."""
     return await run_in_threadpool(_job_status, job_id)
+
+
+@router.post("/analyse/aoi/jobs/{job_id}/push")
+async def push_aoi_results_endpoint(
+    job_id: str,
+    payload: AOIPushRequest,
+    principal: RunAnalysisPrincipal,
+) -> dict[str, Any]:
+    """Push the 'ok' passes of a completed AOI Studio job to the gateway under a farm's canonical
+    id. Only exact same-day passes (status='ok') are included - they carry the full single-scene
+    provenance that IndexResult requires. Interpolated passes are omitted. Requires `run_analysis`.
+
+    # ⚑ CONFIRM: deliberate relaxation of invariant 6 for AOI Studio - ad-hoc analyses are not
+    persisted to the DB but can be pushed to the gateway tagged to an existing farm."""
+    from celery.result import AsyncResult
+    from rs_sync.payload import IndexResult, build_payload
+
+    from services.worker.celery_app import celery
+
+    def _get_result() -> dict[str, Any] | None:
+        r = AsyncResult(job_id, app=celery)
+        return r.result if r.state == "SUCCESS" else None  # type: ignore[return-value]
+
+    job_result = await run_in_threadpool(_get_result)
+    if job_result is None:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "job is not done yet or was not found; only completed jobs can be pushed",
+        )
+
+    ok_passes = [p for p in job_result.get("passes", []) if p.get("status") == "ok"]
+    if not ok_passes:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "no exact-match passes to push; only 'ok' passes carry full provenance",
+        )
+
+    results = [
+        IndexResult(
+            canonical_field_id=None,
+            index_name=p["index"],
+            pass_date=date.fromisoformat(p["pass_date"]),
+            mean=p.get("mean"),
+            min=p.get("min"),
+            max=p.get("max"),
+            std=None,
+            p10=p.get("p10"),
+            p90=p.get("p90"),
+            clear_fraction=p.get("clear_fraction", 0.0),
+            confidence=p.get("confidence"),
+            resolution_m=float(p.get("resolution_m", 10)),
+            formula_version=p.get("formula_version", "unknown"),
+            provider=p.get("provider", "unknown"),
+            provider_scene_id=p.get("provider_scene_id", p.get("scene_id", "unknown")),
+            processing_mode=p.get("processing_mode", "unknown"),
+        )
+        for p in ok_passes
+    ]
+
+    settings = get_settings()
+    gateway = gateway_from_settings(settings)
+    gw_payload = build_payload(
+        payload.canonical_farm_id,
+        results,
+        generated_at=datetime.now(UTC),
+        destination=gateway.destination_key(),
+    )
+    outcome = await gateway.push(gw_payload)
+    return {
+        "pushed_passes": len(results),
+        "status": outcome.status,
+        "ok": outcome.ok,
+        "dry_run": gateway_is_dry_run(settings),
+        "idempotency_key": gw_payload.idempotency_key,
+        "detail": outcome.detail,
+    }

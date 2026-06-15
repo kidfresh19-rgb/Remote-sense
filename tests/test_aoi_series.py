@@ -20,7 +20,11 @@ from services.api.workspace import (
 )
 from services.api.workspace.analyse import MAX_BATCH_DATES, _job_status
 from services.worker.planning import backfill_window
-from services.worker.tasks.analysis import MAX_AOI_SPAN_DEG, _analyse_aoi_series
+from services.worker.tasks.analysis import (
+    _INTERP_PAD_DAYS,
+    MAX_AOI_SPAN_DEG,
+    _analyse_aoi_series,
+)
 
 _GEOM: dict = {
     "type": "Polygon",
@@ -43,32 +47,76 @@ def _sod(day: date) -> datetime:
 # --------------------------------------------------------------------------- engine: dates mode
 
 
-async def test_dates_mode_matches_exact_day_and_marks_gaps_no_pass() -> None:
-    # The mock anchors its 5-day grid at the search-range start, and dates-mode re-anchors the
-    # search at start_of_day(min(dates)) - so the same scene id (hence the same cloud) recurs and
-    # the min date resolves to a real pass, while the day after it (off the 5-day grid) cannot.
+async def test_dates_mode_exact_and_interpolated_and_no_pass() -> None:
+    """dates mode fully exercised:
+    - a date that falls on the mock's padded grid → 'ok' with that exact pass_date
+    - a date between two grid points → 'interpolated' carrying both source dates
+    - a date with no 'after' bracket (sparse adapter) → 'no_pass'
+
+    The engine now pads the archive search by ±_INTERP_PAD_DAYS so bracketing scenes exist
+    for edge dates. With revisit=5 and pad=7, the padded search starts at min(dates)-7, giving
+    grid points at min-7, min-2, min+3, min+8 ... So min+3 is an exact grid hit while min
+    itself sits between min-2 and min+3 (→ interpolated).
+    """
+    from rs_imagery.adapters.mock import MockAdapter
+
     adapter = _adapter()
-    anchor = datetime(2025, 1, 1, tzinfo=UTC)
+    d_min = date(2025, 1, 1)
+    # min-7 + 2*revisit = min-7+10 = min+3 → exact grid point for a request anchored at min
+    d_on_grid = d_min + timedelta(days=3)
+    d_off_grid = d_min  # between the min-2 and min+3 grid points → interpolated
+
+    # Guard: verify the expected grid scene survives the cloud filter before asserting.
+    padded_start = _sod(d_min) - timedelta(days=_INTERP_PAD_DAYS)
+    padded_end = _sod(d_on_grid) + timedelta(days=1 + _INTERP_PAD_DAYS)
     found = await adapter.search(
-        _AOI, TimeRange(start=anchor, end=anchor + timedelta(days=60)), max_scene_cloud_pct=70.0
+        _AOI, TimeRange(start=padded_start, end=padded_end), max_scene_cloud_pct=70.0
     )
-    assert found, "mock should yield at least one usable scene in a 60-day window"
-    d_ok = found[0].sensing_datetime.date()
-    gap = d_ok + timedelta(days=1)
+    grid_dates = {s.sensing_datetime.date() for s in found}
+    assert d_on_grid in grid_dates, (
+        "expected grid point excluded by cloud filter; choose a different anchor"
+    )
 
     out = await _analyse_aoi_series(
-        _GEOM, "ndvi", "dates", [d_ok.isoformat(), gap.isoformat()], None, adapter=adapter
+        _GEOM,
+        "ndvi",
+        "dates",
+        [d_off_grid.isoformat(), d_on_grid.isoformat()],
+        None,
+        adapter=adapter,
     )
 
     assert out["mode"] == "dates"
     passes = out["passes"]
-    assert [p["requested_date"] for p in passes] == [d_ok.isoformat(), gap.isoformat()]
-    assert passes[0]["status"] == "ok"
-    assert passes[0]["pass_date"] == d_ok.isoformat()  # exact day, not snapped
-    assert 0.0 <= passes[0]["clear_fraction"] <= 1.0
-    assert passes[1]["status"] == "no_pass"
-    assert out["resolved"] == 1
+    assert [p["requested_date"] for p in passes] == [d_off_grid.isoformat(), d_on_grid.isoformat()]
+
+    # Off-grid date → interpolated from the two nearest real passes
+    p_interp = passes[0]
+    assert p_interp["status"] == "interpolated"
+    assert p_interp["mean"] is not None
+    assert 0.0 <= p_interp["clear_fraction"] <= 1.0
+    assert p_interp["before_pass_date"] is not None
+    assert p_interp["after_pass_date"] is not None
+    assert p_interp["before_pass_date"] < d_off_grid.isoformat()
+    assert p_interp["after_pass_date"] > d_off_grid.isoformat()
+
+    # On-grid date → exact same-day match
+    p_exact = passes[1]
+    assert p_exact["status"] == "ok"
+    assert p_exact["pass_date"] == d_on_grid.isoformat()
+    assert 0.0 <= p_exact["clear_fraction"] <= 1.0
+
+    # Both interpolated and ok count toward resolved
+    assert out["resolved"] == 2
     assert out["requested"] == 2
+
+    # no_pass: adapter returns only 1 scene (before the requested date, so no 'after' bracket)
+    sparse = MockAdapter(revisit_days=5, scenes_per_search=1)
+    out_none = await _analyse_aoi_series(
+        _GEOM, "ndvi", "dates", [d_off_grid.isoformat()], None, adapter=sparse
+    )
+    assert out_none["passes"][0]["status"] == "no_pass"
+    assert out_none["resolved"] == 0
 
 
 async def test_dates_mode_dedups_and_sorts_requested_dates() -> None:

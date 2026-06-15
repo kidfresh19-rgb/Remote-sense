@@ -139,8 +139,9 @@ function Row({
 }) {
   const meta = indexMeta(index);
   const ok = pass.status === "ok";
+  const interpolated = pass.status === "interpolated";
 
-  if (!ok) {
+  if (!ok && !interpolated) {
     return (
       <tr className="border-b border-border/60 text-muted">
         {showRequested ? (
@@ -157,6 +158,22 @@ function Row({
     );
   }
 
+  const passCell = interpolated ? (
+    <span
+      title={
+        pass.before_pass_date && pass.after_pass_date
+          ? `Averaged from ${formatDate(pass.before_pass_date)} and ${formatDate(pass.after_pass_date)}`
+          : "Averaged from two nearest passes"
+      }
+    >
+      <Badge tone="caution" className="text-[10px] uppercase">
+        avg
+      </Badge>
+    </span>
+  ) : (
+    <span className="tabular-nums">{pass.pass_date ? formatDate(pass.pass_date) : "·"}</span>
+  );
+
   return (
     <tr className="border-b border-border/60">
       {showRequested ? (
@@ -164,9 +181,7 @@ function Row({
           {pass.requested_date ? formatDate(pass.requested_date) : "·"}
         </td>
       ) : null}
-      <td className="py-1.5 pr-3 tabular-nums text-fg">
-        {pass.pass_date ? formatDate(pass.pass_date) : "·"}
-      </td>
+      <td className="py-1.5 pr-3 text-fg">{passCell}</td>
       <td className="py-1.5 pr-3 text-right tabular-nums">
         <span className="inline-flex items-center justify-end gap-1.5">
           {pass.mean != null ? (
@@ -211,14 +226,23 @@ const CHART_H = 150;
 const PAD = { l: 34, r: 12, t: 12, b: 22 };
 
 /** A compact scatter+line of each usable pass's mean across time, on the index's display range, so
- *  the analyst can read the trend at a glance. Points are coloured by value on the index ramp. */
+ *  the analyst can read the trend at a glance. Exact passes are filled circles; interpolated
+ *  (averaged) passes are hollow circles so the analyst can distinguish synthesised data. */
 function MeanSparkline({ passes, index }: { passes: AOISeriesPass[]; index: IndexKey }) {
   const meta = indexMeta(index);
   const points = useMemo(
     () =>
       passes
-        .filter((p) => p.status === "ok" && p.pass_date && p.mean != null)
-        .map((p) => ({ x: dateValue(p.pass_date!), v: p.mean as number, date: p.pass_date! }))
+        .filter(
+          (p) => (p.status === "ok" || p.status === "interpolated") && p.mean != null,
+        )
+        .map((p) => ({
+          x: dateValue(p.requested_date ?? p.pass_date ?? ""),
+          v: p.mean as number,
+          date: p.requested_date ?? p.pass_date ?? "",
+          interpolated: p.status === "interpolated",
+        }))
+        .filter((p) => p.date !== "")
         .sort((a, b) => a.x - b.x),
     [passes],
   );
@@ -268,11 +292,25 @@ function MeanSparkline({ passes, index }: { passes: AOISeriesPass[]; index: Inde
       {points.length > 1 ? (
         <path d={path} fill="none" stroke="var(--muted)" strokeWidth={1.5} strokeOpacity={0.5} />
       ) : null}
-      {points.map((p) => (
-        <circle key={p.date} cx={sx(p.x)} cy={sy(p.v)} r={3.5} fill={colorForValue(meta, p.v)}>
-          <title>{`${formatDate(p.date)}: ${formatNumber(p.v)}`}</title>
-        </circle>
-      ))}
+      {points.map((p) =>
+        p.interpolated ? (
+          <circle
+            key={p.date}
+            cx={sx(p.x)}
+            cy={sy(p.v)}
+            r={3.5}
+            fill="none"
+            stroke={colorForValue(meta, p.v)}
+            strokeWidth={1.5}
+          >
+            <title>{`${formatDate(p.date)} (averaged): ${formatNumber(p.v)}`}</title>
+          </circle>
+        ) : (
+          <circle key={p.date} cx={sx(p.x)} cy={sy(p.v)} r={3.5} fill={colorForValue(meta, p.v)}>
+            <title>{`${formatDate(p.date)}: ${formatNumber(p.v)}`}</title>
+          </circle>
+        ),
+      )}
       {/* first/last date labels */}
       <text x={PAD.l} y={CHART_H - 6} fill="var(--muted)" fontSize={9}>
         {formatDate(points[0].date)}
@@ -290,6 +328,8 @@ function downloadCsv(passes: AOISeriesPass[], index: IndexKey, mode: string): vo
   const header = [
     "requested_date",
     "pass_date",
+    "before_pass_date",
+    "after_pass_date",
     "status",
     "mean",
     "min",
@@ -307,6 +347,8 @@ function downloadCsv(passes: AOISeriesPass[], index: IndexKey, mode: string): vo
     [
       p.requested_date,
       p.pass_date,
+      p.before_pass_date,
+      p.after_pass_date,
       p.status,
       p.mean,
       p.min,

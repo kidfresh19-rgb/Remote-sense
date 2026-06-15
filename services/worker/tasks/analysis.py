@@ -6,7 +6,12 @@ Two shapes share one engine: the single most-recent pass (`analyse_aoi_task`, th
 this AOI" button) and the multi-pass series (`analyse_aoi_series_task`, AOI Studio) - a batch of
 specific calendar dates, or a months-back backfill sweep over a custom AOI. The series task is
 enqueued and polled by job id rather than waited on, so a long backfill never holds an HTTP
-request open."""
+request open.
+
+Dates mode: when a requested date has no same-day scene the engine searches ±_INTERP_PAD_DAYS
+around it and, if scenes exist on both sides, returns the average of the two nearest bracketing
+passes (`status="interpolated"`). Only when no bracket exists on either side is `"no_pass"`
+returned."""
 
 from __future__ import annotations
 
@@ -32,6 +37,12 @@ MAX_SERIES_PASSES = 60
 # whose bbox spans more than this many degrees on a side (~220 km) so a geocoded province or
 # country polygon can never trigger an enormous multi-scene fetch.
 MAX_AOI_SPAN_DEG = 2.0
+# How far either side of a requested date to search for bracketing scenes when no same-day pass
+# exists. One Sentinel-2 revisit cycle (5 d) + 2 d buffer so edge dates in a sparse request
+# batch reliably find neighbours even at the equatorial minimum cadence.
+_INTERP_PAD_DAYS = 7
+# Confidence ranks for _lower_confidence: pick the weaker of two bracketing passes.
+_CONF_RANK: dict[str, int] = {"low": 0, "medium": 1, "high": 2}
 
 
 def _start_of_day(day: date) -> datetime:
@@ -73,7 +84,8 @@ async def _analyse_scene(
 ) -> dict[str, Any]:
     """One index over one scene for an arbitrary AOI, as a JSON-safe pass-result dict. Fetches at
     the index's native resolution and lets `analyze_index` apply reflectance + SCL masking
-    (invariants 2-4); nothing is persisted."""
+    (invariants 2-4); nothing is persisted. Full provenance is included so 'ok' passes can be
+    converted to IndexResult for gateway push without a second fetch."""
     spec = get_index(index_name)
     fetched = await adapter.fetch(
         scene, aoi, bands=sorted(spec.bands), resolution_m=float(spec.resolution_m)
@@ -90,6 +102,10 @@ async def _analyse_scene(
         "index": out.index_name,
         "pass_date": scene.sensing_datetime.date().isoformat(),
         "scene_id": scene.scene_id,
+        "formula_version": out.formula_version,
+        "provider": fetched.provenance.provider,
+        "provider_scene_id": fetched.provenance.provider_scene_id,
+        "processing_mode": str(fetched.provenance.processing_mode),
         "mean": s.mean,
         "min": s.min,
         "max": s.max,
@@ -114,6 +130,63 @@ async def _clearest_scene_result(
             best = result
     assert best is not None  # callers only pass a non-empty list
     return best
+
+
+def _bracket_passes(
+    target: date, by_day: dict[date, list[SceneRef]]
+) -> tuple[date | None, date | None]:
+    """Nearest scene dates strictly before and strictly after `target` in `by_day`."""
+    days = sorted(by_day)
+    before = next((d for d in reversed(days) if d < target), None)
+    after = next((d for d in days if d > target), None)
+    return before, after
+
+
+def _avg_stat(*vals: float | None) -> float | None:
+    valid = [v for v in vals if v is not None]
+    return sum(valid) / len(valid) if valid else None
+
+
+def _lower_confidence(a: str | None, b: str | None) -> str | None:
+    """The weaker of two confidence labels (conservative: never overstate certainty)."""
+    if a is None and b is None:
+        return None
+    if a is None:
+        return b
+    if b is None:
+        return a
+    return a if _CONF_RANK.get(a, 0) <= _CONF_RANK.get(b, 0) else b
+
+
+async def _interpolate_result(
+    adapter: AccessPort,
+    before_scenes: list[SceneRef],
+    after_scenes: list[SceneRef],
+    aoi: AOI,
+    index_name: str,
+    requested: date,
+) -> dict[str, Any]:
+    """Average two bracketing passes for a date that has no same-day scene. Picks the clearest
+    scene on each side, averages all index stats, and takes the weaker confidence + coarser
+    resolution so the result is never more certain than the underlying data warrants."""
+    before = await _clearest_scene_result(adapter, before_scenes, aoi, index_name)
+    after = await _clearest_scene_result(adapter, after_scenes, aoi, index_name)
+    avg_clear = _avg_stat(before.get("clear_fraction", 0.0), after.get("clear_fraction", 0.0))
+    return {
+        "status": "interpolated",
+        "index": before["index"],
+        "requested_date": requested.isoformat(),
+        "before_pass_date": before["pass_date"],
+        "after_pass_date": after["pass_date"],
+        "mean": _avg_stat(before.get("mean"), after.get("mean")),
+        "min": _avg_stat(before.get("min"), after.get("min")),
+        "max": _avg_stat(before.get("max"), after.get("max")),
+        "p10": _avg_stat(before.get("p10"), after.get("p10")),
+        "p90": _avg_stat(before.get("p90"), after.get("p90")),
+        "clear_fraction": avg_clear or 0.0,
+        "confidence": _lower_confidence(before.get("confidence"), after.get("confidence")),
+        "resolution_m": max(before.get("resolution_m", 10), after.get("resolution_m", 10)),
+    }
 
 
 async def _analyse_aoi(geometry: dict[str, object], index_name: str) -> dict[str, object]:
@@ -157,11 +230,12 @@ async def _analyse_aoi_series(
     on_progress: Callable[[int, int], None] | None = None,
 ) -> dict[str, Any]:
     """Multi-pass preview over a custom AOI (AOI Studio). `mode="dates"` resolves each requested
-    calendar date to its same-day scene (exact day only - a date with no pass that day comes back
-    as `no_pass`); `mode="backfill"` sweeps the months-back window and returns every usable pass up
-    to `MAX_SERIES_PASSES`. Each pass runs through the production engine and nothing is persisted
-    (invariant 6). `on_progress(done, total)` fires per scene so the task can publish a job
-    progress meter.
+    calendar date to its same-day scene; when none exists the two nearest bracketing passes are
+    averaged and returned as `status="interpolated"`. Only when no bracket exists on either side
+    is `"no_pass"` returned. `mode="backfill"` sweeps the months-back window and returns every
+    usable pass up to `MAX_SERIES_PASSES`. Each pass runs through the production engine and nothing
+    is persisted (invariant 6). `on_progress(done, total)` fires per scene so the task can
+    publish a job progress meter.
 
     `adapter`, `backfill_months`, and `now` are injectable so the engine is testable against the
     mock adapter with no network (CLAUDE.md 3); the task resolves them from settings."""
@@ -179,8 +253,11 @@ async def _analyse_aoi_series(
         requested = sorted({date.fromisoformat(d) for d in (dates or [])})
         if not requested:
             raise ValueError("dates mode needs at least one date")
+        # Pad the window by _INTERP_PAD_DAYS on each side so bracketing scenes for edge dates
+        # are included in by_day even when no same-day pass exists.
         search_range = TimeRange(
-            start=_start_of_day(requested[0]), end=_start_of_day(requested[-1]) + timedelta(days=1)
+            start=_start_of_day(requested[0]) - timedelta(days=_INTERP_PAD_DAYS),
+            end=_start_of_day(requested[-1]) + timedelta(days=1 + _INTERP_PAD_DAYS),
         )
         scenes = await adapter.search(aoi, search_range, max_scene_cloud_pct=_SEARCH_CLOUD_PCT)
         by_day: dict[date, list[SceneRef]] = defaultdict(list)
@@ -196,7 +273,20 @@ async def _analyse_aoi_series(
                 result["requested_date"] = day.isoformat()
                 passes.append(result)
             else:
-                passes.append({"requested_date": day.isoformat(), "status": "no_pass"})
+                before_date, after_date = _bracket_passes(day, by_day)
+                if before_date is not None and after_date is not None:
+                    passes.append(
+                        await _interpolate_result(
+                            adapter,
+                            by_day[before_date],
+                            by_day[after_date],
+                            aoi,
+                            index_name,
+                            day,
+                        )
+                    )
+                else:
+                    passes.append({"requested_date": day.isoformat(), "status": "no_pass"})
             if on_progress:
                 on_progress(done, total)
 
@@ -228,7 +318,7 @@ async def _analyse_aoi_series(
         "index": index_name,
         "mode": mode,
         "requested": len(passes),
-        "resolved": sum(1 for p in passes if p.get("status") == "ok"),
+        "resolved": sum(1 for p in passes if p.get("status") in ("ok", "interpolated")),
         "passes": passes,
     }
 

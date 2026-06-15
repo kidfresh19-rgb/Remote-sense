@@ -169,12 +169,18 @@ export interface AOISeriesRequest {
 }
 
 /** One pass of a multi-pass AOI preview. `requested_date` is present in dates mode (the calendar
- *  day asked for); `status` is "ok" or "no_pass". On "ok" the index stats are present. */
+ *  day asked for); `status` is "ok", "interpolated", or "no_pass".
+ *  "ok" - exact same-day scene; full stats + single-scene provenance present.
+ *  "interpolated" - no same-day scene; stats averaged from the two nearest passes
+ *    (`before_pass_date` + `after_pass_date` carry the source dates).
+ *  "no_pass" - no scene found within the search window on either side. */
 export interface AOISeriesPass {
-  status: "ok" | "no_pass" | string;
+  status: "ok" | "interpolated" | "no_pass" | string;
   requested_date?: string;
   index?: string;
   pass_date?: string;
+  before_pass_date?: string;
+  after_pass_date?: string;
   scene_id?: string;
   mean?: number | null;
   min?: number | null;
@@ -210,6 +216,19 @@ export interface AOIJob {
 export interface AOIJobEnqueued {
   job_id: string;
   state: string;
+}
+
+export interface AOIPushRequest {
+  canonical_farm_id: string;
+}
+
+export interface AOIPushResult {
+  pushed_passes: number;
+  status: string;
+  ok: boolean;
+  dry_run: boolean;
+  idempotency_key: string;
+  detail: string | null;
 }
 
 export interface PublishStatus {
@@ -373,6 +392,13 @@ export const api = {
     send<AOIJobEnqueued>("POST", "/analyse/aoi/series", token, req),
   aoiJob: (jobId: string, token: string, signal?: AbortSignal) =>
     get<AOIJob>(`/analyse/aoi/jobs/${encodeURIComponent(jobId)}`, token, signal),
+  pushAOIResults: (jobId: string, req: AOIPushRequest, token: string) =>
+    send<AOIPushResult>(
+      "POST",
+      `/analyse/aoi/jobs/${encodeURIComponent(jobId)}/push`,
+      token,
+      req,
+    ),
   pipelineHealth: (token: string, signal?: AbortSignal) =>
     get<PipelineHealth>("/pipeline/health", token, signal),
   collectField: (fieldId: string, token: string) =>
