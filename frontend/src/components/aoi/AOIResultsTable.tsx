@@ -211,6 +211,7 @@ function Row({
   const interpolated = pass.status === "interpolated";
 
   if (!ok && !interpolated) {
+    const hasNearest = pass.before || pass.after;
     return (
       <tr className="border-b border-border/60 text-muted">
         {showRequested ? (
@@ -219,9 +220,33 @@ function Row({
           </td>
         ) : null}
         <td className="py-1.5 pr-3" colSpan={8}>
-          <Badge tone="neutral" className="text-[10px] uppercase">
-            no pass
-          </Badge>
+          <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:gap-2">
+            <Badge tone="neutral" className="w-fit text-[10px] uppercase">
+              no pass
+            </Badge>
+            {hasNearest && (
+              <span className="text-[11px] text-muted">
+                Nearest passes:{" "}
+                {pass.before ? (
+                  <>
+                    <span className="font-semibold text-fg">{formatNumber(pass.before.mean)}</span> on{" "}
+                    <span className="font-medium text-fg">{pass.before.pass_date ? formatDate(pass.before.pass_date) : "·"}</span>
+                  </>
+                ) : (
+                  "none"
+                )}
+                {" and "}
+                {pass.after ? (
+                  <>
+                    <span className="font-semibold text-fg">{formatNumber(pass.after.mean)}</span> on{" "}
+                    <span className="font-medium text-fg">{pass.after.pass_date ? formatDate(pass.after.pass_date) : "·"}</span>
+                  </>
+                ) : (
+                  "none"
+                )}
+              </span>
+            )}
+          </div>
         </td>
       </tr>
     );

@@ -22,14 +22,16 @@ import { AOIResultsTable } from "@/components/aoi/AOIResultsTable";
 import { CoordinateEntryModal } from "@/components/CoordinateEntryModal";
 import { DateBatchInput } from "@/components/DateBatchInput";
 import { FarmFieldPickerModal } from "@/components/FarmFieldPickerModal";
+import { FarmPushButton } from "@/components/FarmPushButton";
 import { FileUploadPanel } from "@/components/FileUploadPanel";
 import { bboxOf, useFieldMap } from "@/components/useFieldMap";
 import { Badge, Button, IconButton, SegmentedControl } from "@/components/ui";
-import type { AOIJob, AOISeriesMode, Farm } from "@/lib/api";
+import { useFarmPush } from "@/lib/useFarmPush";
+import { api, type AOIJob, type AOISeriesMode, type Farm } from "@/lib/api";
 import { deleteCustomAOI, saveCustomAOI, useCustomAOIs } from "@/lib/customAOIs";
 import { cn } from "@/lib/format";
 import { DEFAULT_INDEX, INDICES, type IndexKey } from "@/lib/indices";
-import { useAnalyseAOISeries, useAnalyseFarmSeries, useAOIJob } from "@/lib/queries";
+import { useAOIJob } from "@/lib/queries";
 import { useTheme } from "@/lib/theme";
 
 // Mirrors MAX_BATCH_DATES in services/api/workspace/analyse.py — keep them in step.
@@ -99,6 +101,7 @@ interface FarmTarget {
 type SelectedIndex = IndexKey | "all";
 
 function Studio() {
+  const { token } = useToken();
   const [aoi, setAoi] = useState<Geometry | null>(null);
   const [farmTarget, setFarmTarget] = useState<FarmTarget | null>(null);
   const [index, setIndex] = useState<SelectedIndex>(DEFAULT_INDEX);
@@ -127,8 +130,8 @@ function Studio() {
   const flyToRef = useRef<((center: [number, number], zoom?: number) => void) | null>(null);
   const fitBoundsRef = useRef<((sw: [number, number], ne: [number, number]) => void) | null>(null);
 
-  const runSeries = useAnalyseAOISeries();
-  const runFarmSeries = useAnalyseFarmSeries();
+  const [running, setRunning] = useState(false);
+  const [localError, setLocalError] = useState<Error | null>(null);
 
   // Call useAOIJob unconditionally for all 5 indices to satisfy the Rules of Hooks
   const ndviJob = useAOIJob(jobIds.ndvi);
@@ -146,14 +149,20 @@ function Studio() {
   };
 
   const busy =
-    runSeries.isPending ||
-    runFarmSeries.isPending ||
+    running ||
     Object.values(jobs).some((j) => j.data?.state === "queued" || j.data?.state === "running");
 
   const canRun =
     !busy &&
     (aoi !== null || farmTarget !== null) &&
     (mode === "backfill" || dates.length > 0);
+
+  const pushState = useFarmPush(farmTarget?.canonicalFarmId ?? "");
+
+  const hasJobs = Object.values(jobIds).some((id) => id !== null);
+  const allJobsDone = hasJobs && Object.entries(jobIds)
+    .filter(([_, id]) => id !== null)
+    .every(([key, _]) => jobs[key as IndexKey].data?.state === "done");
 
   /** Set a custom drawn / uploaded / geocoded AOI, clearing any farm target. */
   const setAoiAndClearPin = (geometry: Geometry) => {
@@ -170,22 +179,23 @@ function Studio() {
     setMarker(null);
     setFarmTarget({ canonicalFarmId: farm.canonical_farm_id, label: farm.name ?? farm.canonical_farm_id });
     setJobIds({ ndvi: null, evi2: null, savi: null, ndre: null, ndmi: null });
-    runSeries.reset();
-    runFarmSeries.reset();
+    setLocalError(null);
   };
 
   const clearTarget = () => {
     setAoi(null);
     setFarmTarget(null);
     setJobIds({ ndvi: null, evi2: null, savi: null, ndre: null, ndmi: null });
-    runSeries.reset();
-    runFarmSeries.reset();
+    setLocalError(null);
   };
 
-  const handleRun = () => {
+  const handleRun = async () => {
     const indicesToRun: IndexKey[] = index === "all"
       ? ["ndvi", "evi2", "savi", "ndre", "ndmi"]
       : [index];
+
+    setLocalError(null);
+    setRunning(true);
 
     // Clear previous job ids for the indices we are running
     setJobIds((prev) => {
@@ -202,42 +212,37 @@ function Studio() {
       setViewIndex("ndvi");
     }
 
-    for (const idx of indicesToRun) {
-      if (farmTarget) {
-        runFarmSeries.mutate(
-          {
-            canonicalFarmId: farmTarget.canonicalFarmId,
-            req:
+    try {
+      await Promise.all(
+        indicesToRun.map(async (idx) => {
+          if (farmTarget) {
+            const data = await api.analyseFarmSeries(
+              farmTarget.canonicalFarmId,
               mode === "dates"
                 ? { index: idx, mode, dates }
                 : { index: idx, mode, months },
-          },
-          {
-            onSuccess: (data) => {
-              setJobIds((prev) => ({ ...prev, [idx]: data.job_id }));
-            },
-          },
-        );
-      } else if (aoi) {
-        runSeries.mutate(
-          mode === "dates"
-            ? { geometry: aoi, index: idx, mode, dates }
-            : { geometry: aoi, index: idx, mode, months },
-          {
-            onSuccess: (data) => {
-              setJobIds((prev) => ({ ...prev, [idx]: data.job_id }));
-            },
-          },
-        );
-      }
+              token!
+            );
+            setJobIds((prev) => ({ ...prev, [idx]: data.job_id }));
+          } else if (aoi) {
+            const data = await api.analyseAOISeries(
+              mode === "dates"
+                ? { geometry: aoi, index: idx, mode, dates }
+                : { geometry: aoi, index: idx, mode, months },
+              token!
+            );
+            setJobIds((prev) => ({ ...prev, [idx]: data.job_id }));
+          }
+        })
+      );
+    } catch (err) {
+      setLocalError(err instanceof Error ? err : new Error("Could not start the analysis."));
+    } finally {
+      setRunning(false);
     }
   };
 
-  const runError = runSeries.isError
-    ? runSeries.error
-    : runFarmSeries.isError
-      ? runFarmSeries.error
-      : null;
+  const runError = localError;
 
   return (
     <main className="flex min-h-0 flex-col">
@@ -363,25 +368,52 @@ function Studio() {
             <BackfillControl months={months} onChange={setMonths} />
           )}
 
-          <Button
-            variant="primary"
-            onClick={handleRun}
-            disabled={!canRun}
-            className="mt-1 w-full gap-1.5"
-            title={!aoi && !farmTarget ? "Select an area first" : undefined}
+          {!busy && !aoi && !farmTarget ? (
+            <div className="rounded-md border border-caution/20 bg-caution/10 p-2.5 text-xs text-caution leading-normal">
+              <strong>Area required:</strong> Draw an area on the map, upload a boundary, or pick a farm/field using the leaf button to start.
+            </div>
+          ) : !busy && mode === "dates" && dates.length === 0 ? (
+            <div className="rounded-md border border-caution/20 bg-caution/10 p-2.5 text-xs text-caution leading-normal">
+              <strong>Dates required:</strong> Please select at least one target date above to run analysis.
+            </div>
+          ) : null}
+
+          <div
+            className="w-full mt-1"
+            title={
+              !aoi && !farmTarget
+                ? "Select an area first"
+                : mode === "dates" && dates.length === 0
+                  ? "Select at least one date"
+                  : undefined
+            }
           >
-            <Lightning size={14} weight="fill" />
-            {busy
-              ? "Analysing…"
-              : mode === "dates"
-                ? `Run ${dates.length || ""} ${dates.length === 1 ? "date" : "dates"}`.trim()
-                : "Start backfill"}
-          </Button>
+            <Button
+              variant="primary"
+              onClick={handleRun}
+              disabled={!canRun}
+              className="w-full gap-1.5"
+            >
+              <Lightning size={14} weight="fill" />
+              {busy
+                ? "Analysing…"
+                : mode === "dates"
+                  ? `Run ${dates.length || ""} ${dates.length === 1 ? "date" : "dates"}`.trim()
+                  : "Start backfill"}
+            </Button>
+          </div>
           {runError ? (
             <p className="text-xs text-critical">
               {runError instanceof Error ? runError.message : "Could not start the analysis."}
             </p>
           ) : null}
+
+          {farmTarget && allJobsDone && (
+            <div className="mt-3 border-t border-border pt-3 flex flex-col gap-2 animate-in fade-in slide-in-from-bottom-2 duration-200">
+              <Label>Gateway Sync</Label>
+              <FarmPushButton push={pushState} className="w-full gap-1.5" />
+            </div>
+          )}
         </aside>
       </div>
 
@@ -391,7 +423,7 @@ function Studio() {
           jobs={Object.fromEntries(
             Object.entries(jobs).map(([k, v]) => [k, v.data])
           ) as Record<IndexKey, AOIJob | undefined>}
-          pending={runSeries.isPending || runFarmSeries.isPending}
+          pending={running}
           selectedIndex={index}
           viewIndex={viewIndex}
           onViewIndexChange={setViewIndex}

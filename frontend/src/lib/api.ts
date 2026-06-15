@@ -191,6 +191,8 @@ export interface AOISeriesPass {
   confidence?: string;
   resolution_m?: number;
   pixels?: number;
+  before?: AOISeriesPass | null;
+  after?: AOISeriesPass | null;
 }
 
 export interface AOISeriesResult {
