@@ -2,26 +2,33 @@ import { DownloadSimple, Spinner } from "@phosphor-icons/react";
 import { useMemo } from "react";
 
 import type { AOIJob, AOISeriesPass } from "@/lib/api";
-import { dateValue, formatDate, formatNumber, formatPercent } from "@/lib/format";
-import { colorForValue, indexMeta, type IndexKey } from "@/lib/indices";
+import { cn, dateValue, formatDate, formatNumber, formatPercent } from "@/lib/format";
+import { colorForValue, indexMeta, INDICES, type IndexKey } from "@/lib/indices";
 
 import { EmptyState } from "../states";
 import { Badge } from "../ui";
 
+export type SelectedIndex = IndexKey | "all";
+
 interface AOIResultsTableProps {
-  job: AOIJob | undefined;
-  /** True while the run request is in flight (before the job id and first poll land). */
+  jobs: Record<IndexKey, AOIJob | undefined>;
   pending: boolean;
-  index: IndexKey;
+  selectedIndex: SelectedIndex;
+  viewIndex: IndexKey;
+  onViewIndexChange: (idx: IndexKey) => void;
 }
 
-export function AOIResultsTable({ job, pending, index }: AOIResultsTableProps) {
-  const meta = indexMeta(index);
-  const result = job?.state === "done" ? (job.result ?? null) : null;
-  const passes = result?.passes ?? [];
-  const hasRequested = passes.some((p) => p.requested_date);
+export function AOIResultsTable({
+  jobs,
+  pending,
+  selectedIndex,
+  viewIndex,
+  onViewIndexChange,
+}: AOIResultsTableProps) {
+  const meta = indexMeta(viewIndex);
+  const hasAnyJob = Object.values(jobs).some((j) => !!j);
 
-  if (!job && !pending) {
+  if (!hasAnyJob && !pending) {
     return (
       <EmptyState
         title="No analysis yet"
@@ -30,73 +37,135 @@ export function AOIResultsTable({ job, pending, index }: AOIResultsTableProps) {
     );
   }
 
-  if (pending || job?.state === "queued" || job?.state === "running") {
-    return <RunningState job={job} />;
-  }
+  function renderJobContent() {
+    const job = jobs[viewIndex];
 
-  if (job?.state === "error") {
+    if (pending && !job) {
+      return <RunningState job={undefined} />;
+    }
+
+    if (job?.state === "queued" || job?.state === "running") {
+      return <RunningState job={job} />;
+    }
+
+    if (job?.state === "error") {
+      return (
+        <div className="p-4">
+          <p className="text-sm font-medium text-critical">Analysis failed ({meta.label})</p>
+          <p className="mt-1 max-w-[60ch] text-xs leading-relaxed text-muted">
+            {job.error ?? "The imagery service could not complete this run. Try a smaller area or range."}
+          </p>
+        </div>
+      );
+    }
+
+    if (!job) {
+      return (
+        <div className="flex h-full items-center justify-center p-8 text-center text-muted">
+          <p className="text-sm">Ready to analyse {meta.label}</p>
+        </div>
+      );
+    }
+
+    const result = job.result ?? null;
+    const passes = result?.passes ?? [];
+    const hasRequested = passes.some((p) => p.requested_date);
+
+    if (!result || passes.length === 0) {
+      return (
+        <EmptyState
+          title={`No passes found for ${meta.label}`}
+          hint="No usable imagery matched this area and range. Try a wider date range or a different area."
+        />
+      );
+    }
+
     return (
-      <div className="p-4">
-        <p className="text-sm font-medium text-critical">Analysis failed</p>
-        <p className="mt-1 max-w-[60ch] text-xs leading-relaxed text-muted">
-          {job.error ?? "The imagery service could not complete this run. Try a smaller area or range."}
-        </p>
+      <div className="flex flex-col gap-3 p-3">
+        <div className="flex items-center justify-between gap-2">
+          <p className="text-xs text-muted">
+            <span className="font-medium text-fg">{result.resolved}</span> of {result.requested}{" "}
+            {result.mode === "dates" ? "dates resolved" : "passes"} · {meta.label}
+          </p>
+          <button
+            onClick={() => downloadCsv(passes, viewIndex, result.mode)}
+            className="inline-flex items-center gap-1.5 rounded-md border border-border bg-panel px-2.5 py-1 text-xs text-muted transition-colors hover:bg-panel-2 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+          >
+            <DownloadSimple size={13} /> CSV
+          </button>
+        </div>
+
+        <MeanSparkline passes={passes} index={viewIndex} />
+
+        <div className="overflow-x-auto">
+          <table className="w-full border-collapse text-xs">
+            <thead>
+              <tr className="border-b border-border text-left text-muted">
+                {hasRequested ? <th className="py-1.5 pr-3 font-medium">Requested</th> : null}
+                <th className="py-1.5 pr-3 font-medium">Pass</th>
+                <th className="py-1.5 pr-3 text-right font-medium">Mean</th>
+                <th className="py-1.5 pr-3 text-right font-medium">Min</th>
+                <th className="py-1.5 pr-3 text-right font-medium">Max</th>
+                <th className="py-1.5 pr-3 text-right font-medium">P10</th>
+                <th className="py-1.5 pr-3 text-right font-medium">P90</th>
+                <th className="py-1.5 pr-3 text-right font-medium">Clear</th>
+                <th className="py-1.5 font-medium">Conf.</th>
+              </tr>
+            </thead>
+            <tbody>
+              {passes.map((p, i) => (
+                <Row
+                  key={`${p.requested_date ?? p.pass_date ?? p.scene_id ?? i}`}
+                  pass={p}
+                  index={viewIndex}
+                  showRequested={hasRequested}
+                />
+              ))}
+            </tbody>
+          </table>
+        </div>
       </div>
-    );
-  }
-
-  if (!result || passes.length === 0) {
-    return (
-      <EmptyState
-        title="No passes found"
-        hint="No usable imagery matched this area and range. Try a wider date range or a different area."
-      />
     );
   }
 
   return (
-    <div className="flex flex-col gap-3 p-3">
-      <div className="flex items-center justify-between gap-2">
-        <p className="text-xs text-muted">
-          <span className="font-medium text-fg">{result.resolved}</span> of {result.requested}{" "}
-          {result.mode === "dates" ? "dates resolved" : "passes"} · {meta.label}
-        </p>
-        <button
-          onClick={() => downloadCsv(passes, index, result.mode)}
-          className="inline-flex items-center gap-1.5 rounded-md border border-border bg-panel px-2.5 py-1 text-xs text-muted transition-colors hover:bg-panel-2 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-        >
-          <DownloadSimple size={13} /> CSV
-        </button>
-      </div>
+    <div className="flex flex-col h-full">
+      {selectedIndex === "all" ? (
+        <div className="flex border-b border-border bg-panel-2 px-3 py-1.5 gap-1.5 overflow-x-auto shrink-0">
+          {INDICES.map((idxMeta) => {
+            const job = jobs[idxMeta.key];
+            const active = idxMeta.key === viewIndex;
+            let statusIcon = null;
 
-      <MeanSparkline passes={passes} index={index} />
+            if (job?.state === "queued" || job?.state === "running") {
+              statusIcon = <Spinner size={12} className="animate-spin text-accent" />;
+            } else if (job?.state === "error") {
+              statusIcon = <span className="size-2 rounded-full bg-critical" title="Failed" />;
+            } else if (job?.state === "done") {
+              statusIcon = <span className="size-2 rounded-full bg-positive" title="Done" />;
+            }
 
-      <div className="overflow-x-auto">
-        <table className="w-full border-collapse text-xs">
-          <thead>
-            <tr className="border-b border-border text-left text-muted">
-              {hasRequested ? <th className="py-1.5 pr-3 font-medium">Requested</th> : null}
-              <th className="py-1.5 pr-3 font-medium">Pass</th>
-              <th className="py-1.5 pr-3 text-right font-medium">Mean</th>
-              <th className="py-1.5 pr-3 text-right font-medium">Min</th>
-              <th className="py-1.5 pr-3 text-right font-medium">Max</th>
-              <th className="py-1.5 pr-3 text-right font-medium">P10</th>
-              <th className="py-1.5 pr-3 text-right font-medium">P90</th>
-              <th className="py-1.5 pr-3 text-right font-medium">Clear</th>
-              <th className="py-1.5 font-medium">Conf.</th>
-            </tr>
-          </thead>
-          <tbody>
-            {passes.map((p, i) => (
-              <Row
-                key={`${p.requested_date ?? p.pass_date ?? p.scene_id ?? i}`}
-                pass={p}
-                index={index}
-                showRequested={hasRequested}
-              />
-            ))}
-          </tbody>
-        </table>
+            return (
+              <button
+                key={idxMeta.key}
+                onClick={() => onViewIndexChange(idxMeta.key)}
+                className={cn(
+                  "flex items-center gap-1.5 rounded-md px-3 py-1 text-xs font-medium transition-colors border",
+                  active
+                    ? "border-accent bg-accent/15 text-accent"
+                    : "border-border bg-panel text-muted hover:text-fg"
+                )}
+              >
+                {idxMeta.label}
+                {statusIcon}
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
+
+      <div className="flex-1 min-h-0 overflow-y-auto">
+        {renderJobContent()}
       </div>
     </div>
   );

@@ -9,6 +9,7 @@ import {
   type AOIPushRequest,
   type AOISeriesRequest,
   type Farm,
+  type FarmSeriesRequest,
   type ReviewInput,
 } from "./api";
 import type { IndexKey } from "./indices";
@@ -209,6 +210,21 @@ export function usePushAOIResults() {
   return useMutation({
     mutationFn: ({ jobId, req }: { jobId: string; req: AOIPushRequest }) =>
       api.pushAOIResults(jobId, req, token!),
+  });
+}
+
+/** Start a multi-pass AOI preview (AOI Studio) for an entire farm: the server unions all field
+ *  geometries and runs the same engine. Resolves to `{ job_id }`; feed into `useAOIJob`. */
+export function useAnalyseFarmSeries() {
+  const { token } = useToken();
+  return useMutation({
+    mutationFn: ({
+      canonicalFarmId,
+      req,
+    }: {
+      canonicalFarmId: string;
+      req: FarmSeriesRequest;
+    }) => api.analyseFarmSeries(canonicalFarmId, req, token!),
   });
 }
 

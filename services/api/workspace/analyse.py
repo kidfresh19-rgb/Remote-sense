@@ -134,6 +134,69 @@ async def analyse_aoi_series_endpoint(
     return {"job_id": async_result.id, "state": "queued"}
 
 
+class FarmSeriesRequest(BaseModel):
+    """Multi-pass AOI preview over an entire farm: the farm's stored field geometries are unioned
+    server-side so the analyst doesn't need to draw or upload a boundary. Same mode/date/months
+    semantics as `AOISeriesRequest`, but the geometry comes from the DB."""
+
+    index: str
+    mode: Literal["dates", "backfill"]
+    dates: list[date] | None = None
+    months: int | None = None
+
+
+@router.post("/analyse/farm/{canonical_farm_id}/series", status_code=status.HTTP_202_ACCEPTED)
+async def analyse_farm_series_endpoint(
+    canonical_farm_id: str,
+    payload: FarmSeriesRequest,
+    principal: RunAnalysisPrincipal,
+) -> dict[str, Any]:
+    """Start a multi-pass AOI preview (AOI Studio) for an entire farm: the farm's stored field
+    geometries are unioned into a single AOI on the worker, then the same engine as
+    `analyse_aoi_series_endpoint` runs. Returns a job id immediately; poll
+    `GET /analyse/aoi/jobs/{job_id}` for progress and results. Nothing is persisted (invariant 6).
+    Requires `run_analysis`. A bad index, an empty date batch, or out-of-range months are rejected
+    as 422 before anything is queued. A farm with no stored field geometries surfaces as a worker
+    failure (the task raises ValueError, which Celery stores as FAILURE)."""
+    from rs_analysis import get_index
+
+    from services.worker.tasks import analyse_farm_series_task
+
+    try:
+        get_index(payload.index)
+    except KeyError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+
+    settings = get_settings()
+    if payload.mode == "dates":
+        dates = payload.dates or []
+        if not 1 <= len(dates) <= MAX_BATCH_DATES:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                f"provide between 1 and {MAX_BATCH_DATES} dates",
+            )
+        today = datetime.now(UTC).date()
+        if any(d > today for d in dates):
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY, "dates cannot be in the future"
+            )
+        async_result = analyse_farm_series_task.delay(
+            canonical_farm_id, payload.index, "dates", [d.isoformat() for d in dates], None
+        )
+    else:  # backfill
+        months = payload.months or settings.backfill_months
+        if not 1 <= months <= settings.backfill_months:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                f"months must be between 1 and {settings.backfill_months}",
+            )
+        async_result = analyse_farm_series_task.delay(
+            canonical_farm_id, payload.index, "backfill", None, months
+        )
+
+    return {"job_id": async_result.id, "state": "queued"}
+
+
 def _job_status(job_id: str) -> dict[str, Any]:
     """Map a Celery `AsyncResult` to the workspace's small job shape. Runs in a threadpool because
     each attribute read hits the redis result backend. An unknown/expired id reads as PENDING,

@@ -351,3 +351,124 @@ def analyse_aoi_series_task(
     return asyncio.run(
         _analyse_aoi_series(geometry, index_name, mode, dates, months, on_progress=on_progress)
     )
+
+
+# ---------------------------------------------------------------------------
+# Farm AOI series: union of field geometries → same engine
+# ---------------------------------------------------------------------------
+
+
+def _union_geometries(geometries: list[dict[str, Any]]) -> dict[str, Any]:
+    """Union a list of GeoJSON Polygon / MultiPolygon geometries into a single GeoJSON geometry
+    (Polygon or MultiPolygon). Uses shapely for the union; importable from the API process because
+    shapely is in the base deps (no rasterio required).
+
+    Raises ValueError when the list is empty (a farm with no fields cannot produce an AOI)."""
+    if not geometries:
+        raise ValueError("at least one field geometry is required to construct a farm AOI")
+
+    from shapely.geometry import mapping, shape
+    from shapely.ops import unary_union
+
+    shapes = [shape(g) for g in geometries]
+    merged = unary_union(shapes)
+    return dict(mapping(merged))
+
+
+async def _analyse_farm_series(
+    fields: list[dict[str, Any]],
+    index_name: str,
+    mode: str,
+    dates: list[str] | None,
+    months: int | None,
+    *,
+    adapter: AccessPort | None = None,
+    backfill_months: int | None = None,
+    now: datetime | None = None,
+    on_progress: Callable[[int, int], None] | None = None,
+) -> dict[str, Any]:
+    """Multi-pass preview for an entire farm: resolves the union of all field geometries and
+    delegates to `_analyse_aoi_series`. `fields` is a list of ``{"field_id": str, "geometry":
+    dict}`` dicts (DB rows already fetched by the Celery task or injected by tests).
+
+    Raises ValueError when `fields` is empty (no field geometry → no AOI)."""
+    if not fields:
+        raise ValueError("at least one field geometry is required to construct a farm AOI")
+
+    union_geom = _union_geometries([f["geometry"] for f in fields])
+    return await _analyse_aoi_series(
+        union_geom,
+        index_name,
+        mode,
+        dates,
+        months,
+        adapter=adapter,
+        backfill_months=backfill_months,
+        now=now,
+        on_progress=on_progress,
+    )
+
+
+@celery.task(bind=True, name="analysis.analyse_farm_series")
+def analyse_farm_series_task(
+    self: Any,
+    canonical_farm_id: str,
+    index_name: str,
+    mode: str,
+    dates: list[str] | None = None,
+    months: int | None = None,
+) -> dict[str, Any]:
+    """Farm-level AOI Studio series: fetches the farm's field geometries from the DB, unions them
+    into a single AOI on the worker, and runs the same multi-pass engine as
+    `analyse_aoi_series_task`. Polled by job id; publishes a `{done, total}` progress meter per
+    pass. Never persists (invariant 6). Uses a per-task NullPool async engine so forked workers
+    never share a connection pool across event loops (same pattern as collect_pass_task)."""
+
+    def on_progress(done: int, total: int) -> None:
+        self.update_state(state="PROGRESS", meta={"done": done, "total": total})
+
+    async def _run() -> dict[str, Any]:
+        from geoalchemy2.shape import to_shape
+        from rs_core.models import Farm, Field
+        from shapely.geometry import mapping as _mapping
+        from sqlalchemy import select
+        from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+        from sqlalchemy.pool import NullPool
+
+        settings = get_settings()
+        engine = create_async_engine(settings.database_url, poolclass=NullPool)
+        try:
+            async with async_sessionmaker(engine, expire_on_commit=False)() as session:
+                farm_row = (
+                    await session.execute(
+                        select(Farm).where(Farm.canonical_farm_id == canonical_farm_id)
+                    )
+                ).scalar_one_or_none()
+                if farm_row is None:
+                    raise ValueError(f"farm {canonical_farm_id!r} not found")
+
+                field_rows = (
+                    await session.execute(select(Field).where(Field.farm_id == farm_row.id))
+                ).scalars().all()
+        finally:
+            await engine.dispose()
+
+        fields: list[dict[str, Any]] = [
+            {
+                "field_id": str(f.id),
+                "geometry": dict(_mapping(to_shape(f.boundary))),
+            }
+            for f in field_rows
+            if f.boundary is not None
+        ]
+
+        return await _analyse_farm_series(
+            fields,
+            index_name,
+            mode,
+            dates,
+            months,
+            on_progress=on_progress,
+        )
+
+    return asyncio.run(_run())

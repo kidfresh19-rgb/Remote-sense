@@ -1,11 +1,11 @@
 import {
-  ArrowSquareOut,
   Crosshair,
   FloppyDisk,
   House,
   Lightning,
   MapTrifold,
   Moon,
+  Plant,
   Stack,
   Sun,
   SignOut,
@@ -21,14 +21,15 @@ import { AOIBar } from "@/components/AOIBar";
 import { AOIResultsTable } from "@/components/aoi/AOIResultsTable";
 import { CoordinateEntryModal } from "@/components/CoordinateEntryModal";
 import { DateBatchInput } from "@/components/DateBatchInput";
+import { FarmFieldPickerModal } from "@/components/FarmFieldPickerModal";
 import { FileUploadPanel } from "@/components/FileUploadPanel";
 import { bboxOf, useFieldMap } from "@/components/useFieldMap";
 import { Badge, Button, IconButton, SegmentedControl } from "@/components/ui";
-import type { AOISeriesMode } from "@/lib/api";
+import type { AOIJob, AOISeriesMode, Farm } from "@/lib/api";
 import { deleteCustomAOI, saveCustomAOI, useCustomAOIs } from "@/lib/customAOIs";
 import { cn } from "@/lib/format";
 import { DEFAULT_INDEX, INDICES, type IndexKey } from "@/lib/indices";
-import { useAnalyseAOISeries, useAOIJob, useFarms, usePushAOIResults } from "@/lib/queries";
+import { useAnalyseAOISeries, useAnalyseFarmSeries, useAOIJob } from "@/lib/queries";
 import { useTheme } from "@/lib/theme";
 
 // Mirrors MAX_BATCH_DATES in services/api/workspace/analyse.py — keep them in step.
@@ -84,57 +85,159 @@ function StudioHeader() {
   );
 }
 
+/**
+ * When the user picks a whole farm via the picker, we store a `FarmTarget` instead of a raw
+ * Geometry so the Studio can call the farm-series endpoint (server-side union) rather than
+ * constructing a client-side AOI.  Either `aoi` (custom geometry) or `farmTarget` (whole farm)
+ * is non-null at any one time, never both.
+ */
+interface FarmTarget {
+  canonicalFarmId: string;
+  label: string;
+}
+
+type SelectedIndex = IndexKey | "all";
+
 function Studio() {
   const [aoi, setAoi] = useState<Geometry | null>(null);
-  const [index, setIndex] = useState<IndexKey>(DEFAULT_INDEX);
+  const [farmTarget, setFarmTarget] = useState<FarmTarget | null>(null);
+  const [index, setIndex] = useState<SelectedIndex>(DEFAULT_INDEX);
   const [mode, setMode] = useState<AOISeriesMode>("dates");
   const [dates, setDates] = useState<string[]>([]);
   const [months, setMonths] = useState(6);
-  const [jobId, setJobId] = useState<string | null>(null);
-  const [selectedFarmId, setSelectedFarmId] = useState<string>("");
+
+  // Track job ID per index
+  const [jobIds, setJobIds] = useState<Record<IndexKey, string | null>>({
+    ndvi: null,
+    evi2: null,
+    savi: null,
+    ndre: null,
+    ndmi: null,
+  });
+
+  // Local state to track which index we are currently viewing in the results tab.
+  const [viewIndex, setViewIndex] = useState<IndexKey>("ndvi");
 
   const [drawMode, setDrawMode] = useState(false);
   const [showCoords, setShowCoords] = useState(false);
   const [showUpload, setShowUpload] = useState(false);
+  const [showFarms, setShowFarms] = useState(false);
   const [marker, setMarker] = useState<[number, number] | null>(null);
 
   const flyToRef = useRef<((center: [number, number], zoom?: number) => void) | null>(null);
   const fitBoundsRef = useRef<((sw: [number, number], ne: [number, number]) => void) | null>(null);
 
-  const run = useAnalyseAOISeries();
-  const job = useAOIJob(jobId);
-  const farms = useFarms();
-  const push = usePushAOIResults();
+  const runSeries = useAnalyseAOISeries();
+  const runFarmSeries = useAnalyseFarmSeries();
+
+  // Call useAOIJob unconditionally for all 5 indices to satisfy the Rules of Hooks
+  const ndviJob = useAOIJob(jobIds.ndvi);
+  const evi2Job = useAOIJob(jobIds.evi2);
+  const saviJob = useAOIJob(jobIds.savi);
+  const ndreJob = useAOIJob(jobIds.ndre);
+  const ndmiJob = useAOIJob(jobIds.ndmi);
+
+  const jobs: Record<IndexKey, ReturnType<typeof useAOIJob>> = {
+    ndvi: ndviJob,
+    evi2: evi2Job,
+    savi: saviJob,
+    ndre: ndreJob,
+    ndmi: ndmiJob,
+  };
+
   const busy =
-    run.isPending || job.data?.state === "queued" || job.data?.state === "running";
+    runSeries.isPending ||
+    runFarmSeries.isPending ||
+    Object.values(jobs).some((j) => j.data?.state === "queued" || j.data?.state === "running");
 
-  const result = job.data?.state === "done" ? (job.data.result ?? null) : null;
-  const okPassCount = result?.passes.filter((p) => p.status === "ok").length ?? 0;
-  const canRun = !!aoi && !busy && (mode === "backfill" || dates.length > 0);
-  const canPush = !!jobId && result !== null && okPassCount > 0 && !!selectedFarmId && !push.isPending;
+  const canRun =
+    !busy &&
+    (aoi !== null || farmTarget !== null) &&
+    (mode === "backfill" || dates.length > 0);
 
+  /** Set a custom drawn / uploaded / geocoded AOI, clearing any farm target. */
   const setAoiAndClearPin = (geometry: Geometry) => {
     setMarker(null);
+    setFarmTarget(null);
     setAoi(geometry);
     const bbox = bboxOf(geometry);
     if (bbox) fitBoundsRef.current?.([bbox[0], bbox[1]], [bbox[2], bbox[3]]);
   };
 
-  const handleRun = () => {
-    if (!aoi) return;
-    push.reset();
-    run.mutate(
-      mode === "dates"
-        ? { geometry: aoi, index, mode, dates }
-        : { geometry: aoi, index, mode, months },
-      { onSuccess: (data) => setJobId(data.job_id) },
-    );
+  /** Set the whole-farm target, clearing any custom AOI. */
+  const setFarmTargetAndClear = (farm: Farm) => {
+    setAoi(null);
+    setMarker(null);
+    setFarmTarget({ canonicalFarmId: farm.canonical_farm_id, label: farm.name ?? farm.canonical_farm_id });
+    setJobIds({ ndvi: null, evi2: null, savi: null, ndre: null, ndmi: null });
+    runSeries.reset();
+    runFarmSeries.reset();
   };
 
-  const handlePush = () => {
-    if (!jobId || !selectedFarmId) return;
-    push.mutate({ jobId, req: { canonical_farm_id: selectedFarmId } });
+  const clearTarget = () => {
+    setAoi(null);
+    setFarmTarget(null);
+    setJobIds({ ndvi: null, evi2: null, savi: null, ndre: null, ndmi: null });
+    runSeries.reset();
+    runFarmSeries.reset();
   };
+
+  const handleRun = () => {
+    const indicesToRun: IndexKey[] = index === "all"
+      ? ["ndvi", "evi2", "savi", "ndre", "ndmi"]
+      : [index];
+
+    // Clear previous job ids for the indices we are running
+    setJobIds((prev) => {
+      const next = { ...prev };
+      for (const idx of indicesToRun) {
+        next[idx] = null;
+      }
+      return next;
+    });
+
+    if (index !== "all") {
+      setViewIndex(index);
+    } else {
+      setViewIndex("ndvi");
+    }
+
+    for (const idx of indicesToRun) {
+      if (farmTarget) {
+        runFarmSeries.mutate(
+          {
+            canonicalFarmId: farmTarget.canonicalFarmId,
+            req:
+              mode === "dates"
+                ? { index: idx, mode, dates }
+                : { index: idx, mode, months },
+          },
+          {
+            onSuccess: (data) => {
+              setJobIds((prev) => ({ ...prev, [idx]: data.job_id }));
+            },
+          },
+        );
+      } else if (aoi) {
+        runSeries.mutate(
+          mode === "dates"
+            ? { geometry: aoi, index: idx, mode, dates }
+            : { geometry: aoi, index: idx, mode, months },
+          {
+            onSuccess: (data) => {
+              setJobIds((prev) => ({ ...prev, [idx]: data.job_id }));
+            },
+          },
+        );
+      }
+    }
+  };
+
+  const runError = runSeries.isError
+    ? runSeries.error
+    : runFarmSeries.isError
+      ? runFarmSeries.error
+      : null;
 
   return (
     <main className="flex min-h-0 flex-col">
@@ -143,11 +246,12 @@ function Studio() {
         <section className="relative min-h-[300px] flex-1 lg:min-h-0">
           <StudioMap
             aoi={aoi}
-            index={index}
+            index={index === "all" ? viewIndex : index}
             marker={marker}
             drawMode={drawMode}
             onDrawComplete={(polygon) => {
               setAoi(polygon);
+              setFarmTarget(null);
               setDrawMode(false);
             }}
             onDrawCancel={() => setDrawMode(false)}
@@ -164,6 +268,7 @@ function Studio() {
               onCancelDraw={() => setDrawMode(false)}
               onOpenCoords={() => setShowCoords(true)}
               onOpenUpload={() => setShowUpload(true)}
+              onOpenFarms={() => setShowFarms(true)}
               onAOISet={(geometry) => setAoiAndClearPin(geometry)}
               onFlyTo={(center, zoom) => {
                 flyToRef.current?.(center, zoom);
@@ -172,10 +277,10 @@ function Studio() {
             />
           </div>
 
-          {aoi && !drawMode ? (
+          {(aoi || farmTarget) && !drawMode ? (
             <div className="pointer-events-none absolute inset-x-0 top-[72px] z-20 flex justify-center">
               <button
-                onClick={() => setAoi(null)}
+                onClick={clearTarget}
                 className="pointer-events-auto flex items-center gap-1.5 rounded-full border border-border bg-panel/90 px-3 py-1 text-xs text-muted backdrop-blur-sm transition-colors hover:text-fg"
               >
                 <X size={12} /> Clear area
@@ -202,19 +307,34 @@ function Studio() {
               }}
             />
           ) : null}
+          {showFarms ? (
+            <FarmFieldPickerModal
+              onClose={() => setShowFarms(false)}
+              onPickField={(field) => setAoiAndClearPin(field.geometry)}
+              onPickFarm={(farm) => setFarmTargetAndClear(farm)}
+            />
+          ) : null}
         </section>
 
         {/* Controls */}
         <aside className="flex min-h-0 shrink-0 flex-col gap-4 overflow-y-auto border-t border-border bg-panel p-4 lg:w-[360px] lg:border-l lg:border-t-0">
-          <AreaSection aoi={aoi} onClear={() => setAoi(null)} onUse={setAoiAndClearPin} />
+          <AreaSection
+            aoi={aoi}
+            farmTarget={farmTarget}
+            onClear={clearTarget}
+            onUse={setAoiAndClearPin}
+          />
 
           <div className="flex flex-col gap-2">
             <Label>Index</Label>
-            <SegmentedControl<IndexKey>
+            <SegmentedControl<SelectedIndex>
               ariaLabel="Index"
               value={index}
               onChange={setIndex}
-              options={INDICES.map((m) => ({ value: m.key, label: m.label, title: m.long }))}
+              options={[
+                ...INDICES.map((m) => ({ value: m.key, label: m.label, title: m.long })),
+                { value: "all", label: "All Indices", title: "Run NDVI, EVI2, SAVI, NDRE, and NDMI at once" }
+              ]}
             />
           </div>
 
@@ -236,8 +356,7 @@ function Studio() {
               <Label>Dates ({dates.length})</Label>
               <DateBatchInput dates={dates} onChange={setDates} max={MAX_BATCH_DATES} />
               <p className="text-[11px] text-muted">
-                Each date resolves to its same-day pass; if none exists, the two nearest passes are
-                averaged.
+                Each date resolves to its same-day satellite pass, or is marked "no pass."
               </p>
             </div>
           ) : (
@@ -249,7 +368,7 @@ function Studio() {
             onClick={handleRun}
             disabled={!canRun}
             className="mt-1 w-full gap-1.5"
-            title={!aoi ? "Select an area first" : undefined}
+            title={!aoi && !farmTarget ? "Select an area first" : undefined}
           >
             <Lightning size={14} weight="fill" />
             {busy
@@ -258,62 +377,25 @@ function Studio() {
                 ? `Run ${dates.length || ""} ${dates.length === 1 ? "date" : "dates"}`.trim()
                 : "Start backfill"}
           </Button>
-          {run.isError ? (
+          {runError ? (
             <p className="text-xs text-critical">
-              {run.error instanceof Error ? run.error.message : "Could not start the analysis."}
+              {runError instanceof Error ? runError.message : "Could not start the analysis."}
             </p>
-          ) : null}
-
-          {result !== null && okPassCount > 0 ? (
-            <div className="flex flex-col gap-2 border-t border-border pt-4">
-              <Label>Push to gateway</Label>
-              <select
-                value={selectedFarmId}
-                onChange={(e) => {
-                  setSelectedFarmId(e.target.value);
-                  push.reset();
-                }}
-                className="w-full rounded-md border border-border bg-bg px-2.5 py-1.5 text-xs text-fg focus:outline-none focus:ring-2 focus:ring-accent"
-                aria-label="Farm to push results under"
-              >
-                <option value="">Select a farm…</option>
-                {(farms.data ?? []).map((f) => (
-                  <option key={f.canonical_farm_id} value={f.canonical_farm_id}>
-                    {f.name ?? f.canonical_farm_id}
-                  </option>
-                ))}
-              </select>
-              <Button
-                variant="outline"
-                onClick={handlePush}
-                disabled={!canPush}
-                className="w-full gap-1.5"
-              >
-                <ArrowSquareOut size={14} />
-                {push.isPending
-                  ? "Pushing…"
-                  : `Push ${okPassCount} ${okPassCount === 1 ? "pass" : "passes"} to gateway`}
-              </Button>
-              {push.isSuccess ? (
-                <p className="text-xs text-positive">
-                  {push.data.dry_run
-                    ? `Recorded ${push.data.pushed_passes} passes (dry-run)`
-                    : `Sent ${push.data.pushed_passes} passes`}
-                </p>
-              ) : null}
-              {push.isError ? (
-                <p className="text-xs text-critical">
-                  {push.error instanceof Error ? push.error.message : "Push failed"}
-                </p>
-              ) : null}
-            </div>
           ) : null}
         </aside>
       </div>
 
       {/* Results */}
       <section className="max-h-[44vh] shrink-0 overflow-y-auto border-t border-border bg-panel">
-        <AOIResultsTable job={job.data} pending={run.isPending} index={index} />
+        <AOIResultsTable
+          jobs={Object.fromEntries(
+            Object.entries(jobs).map(([k, v]) => [k, v.data])
+          ) as Record<IndexKey, AOIJob | undefined>}
+          pending={runSeries.isPending || runFarmSeries.isPending}
+          selectedIndex={index}
+          viewIndex={viewIndex}
+          onViewIndexChange={setViewIndex}
+        />
       </section>
     </main>
   );
@@ -327,10 +409,12 @@ function Label({ children }: { children: React.ReactNode }) {
 
 function AreaSection({
   aoi,
+  farmTarget,
   onClear,
   onUse,
 }: {
   aoi: Geometry | null;
+  farmTarget: FarmTarget | null;
   onClear: () => void;
   onUse: (geometry: Geometry) => void;
 }) {
@@ -339,7 +423,22 @@ function AreaSection({
   return (
     <div className="flex flex-col gap-2">
       <Label>Area of interest</Label>
-      {aoi ? (
+      {farmTarget ? (
+        /* Whole-farm mode */
+        <div className="flex items-center justify-between gap-2 rounded-md border border-border bg-bg px-2.5 py-1.5">
+          <span className="flex items-center gap-1.5 text-sm text-fg">
+            <Badge tone="accent" className="text-[10px] uppercase">
+              Farm
+            </Badge>
+            <Plant size={13} weight="duotone" className="text-accent" />
+            <span className="min-w-0 truncate">{farmTarget.label}</span>
+          </span>
+          <IconButton label="Clear farm target" onClick={onClear} className="size-7 shrink-0">
+            <X size={14} />
+          </IconButton>
+        </div>
+      ) : aoi ? (
+        /* Custom geometry mode */
         <div className="flex items-center justify-between gap-2 rounded-md border border-border bg-bg px-2.5 py-1.5">
           <span className="flex items-center gap-1.5 text-sm text-fg">
             <Badge tone="accent" className="text-[10px] uppercase">
@@ -364,8 +463,9 @@ function AreaSection({
         </div>
       ) : (
         <p className="text-xs leading-relaxed text-muted">
-          Draw, search, enter coordinates, or upload a boundary on the map, or pick a saved area
-          below.
+          Draw, search, enter coordinates, or upload a boundary on the map; pick a saved area
+          below; or use the <Plant size={11} className="inline" /> button to select a farm or
+          field.
         </p>
       )}
 

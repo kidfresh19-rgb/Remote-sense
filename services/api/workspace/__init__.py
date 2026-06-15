@@ -13,8 +13,10 @@ from fastapi import APIRouter
 from services.api.workspace.analyse import (
     AOIAnalysisRequest,
     AOISeriesRequest,
+    FarmSeriesRequest,
     analyse_aoi_endpoint,
     analyse_aoi_series_endpoint,
+    analyse_farm_series_endpoint,
     aoi_job_endpoint,
 )
 from services.api.workspace.analyse import (
@@ -105,6 +107,7 @@ router.include_router(analyse_router)
 __all__ = [
     "AOIAnalysisRequest",
     "AOISeriesRequest",
+    "FarmSeriesRequest",
     "AnnotatePrincipal",
     "AnnotationCreate",
     "AnnotationOut",
@@ -127,6 +130,7 @@ __all__ = [
     "ViewPrincipal",
     "analyse_aoi_endpoint",
     "analyse_aoi_series_endpoint",
+    "analyse_farm_series_endpoint",
     "aoi_job_endpoint",
     "choose_nearer_pass",
     "create_annotation_endpoint",

@@ -231,6 +231,15 @@ export interface AOIPushResult {
   detail: string | null;
 }
 
+/** Request to POST /analyse/farm/{id}/series: run the studio engine over the farm's union
+ *  geometry. Mirrors FarmSeriesRequest in services/api/workspace/analyse.py. */
+export interface FarmSeriesRequest {
+  index: string;
+  mode: AOISeriesMode;
+  dates?: string[];
+  months?: number;
+}
+
 export interface PublishStatus {
   canonical_farm_id: string;
   status: "pending" | "published" | "dead_letter" | string;
@@ -390,6 +399,13 @@ export const api = {
     send<AOIAnalysisResult>("POST", "/analyse/aoi", token, { geometry, index }),
   analyseAOISeries: (req: AOISeriesRequest, token: string) =>
     send<AOIJobEnqueued>("POST", "/analyse/aoi/series", token, req),
+  analyseFarmSeries: (canonicalFarmId: string, req: FarmSeriesRequest, token: string) =>
+    send<AOIJobEnqueued>(
+      "POST",
+      `/analyse/farm/${encodeURIComponent(canonicalFarmId)}/series`,
+      token,
+      req,
+    ),
   aoiJob: (jobId: string, token: string, signal?: AbortSignal) =>
     get<AOIJob>(`/analyse/aoi/jobs/${encodeURIComponent(jobId)}`, token, signal),
   pushAOIResults: (jobId: string, req: AOIPushRequest, token: string) =>
