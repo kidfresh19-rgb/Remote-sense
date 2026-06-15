@@ -4,6 +4,7 @@ import { ActivityFeed } from "@/components/dashboard/ActivityFeed";
 import { AnalyticsCards } from "@/components/dashboard/AnalyticsCards";
 import { DashboardHeader } from "@/components/dashboard/DashboardHeader";
 import { EstateHealthCards } from "@/components/dashboard/EstateHealthCards";
+import { FarmCards } from "@/components/dashboard/FarmCards";
 import { FieldHealthMap } from "@/components/dashboard/FieldHealthMap";
 
 export function DashboardPage() {
@@ -33,6 +34,13 @@ export function DashboardPage() {
 
             <section className="mt-5">
               <AnalyticsCards />
+            </section>
+
+            <section className="mt-8">
+              <p className="mb-4 text-xs font-semibold uppercase tracking-widest text-muted/70">
+                Farms
+              </p>
+              <FarmCards />
             </section>
           </div>
         </main>

@@ -10,11 +10,12 @@ engine, so a forked Celery worker never shares an async connection pool across l
 public name is re-exported here so callers keep importing from services.worker.tasks.
 """
 
-from services.worker.tasks.analysis import analyse_aoi_task
+from services.worker.tasks.analysis import analyse_aoi_series_task, analyse_aoi_task
 from services.worker.tasks.collection import (
     CORE_INDICES,
     CollectionSummary,
     backfill_field,
+    collect_dates_field,
     collect_pass,
     collect_pass_task,
     due_field_ids,
@@ -32,8 +33,10 @@ from services.worker.tasks.sync import publish_farm_task
 __all__ = [
     "CORE_INDICES",
     "CollectionSummary",
+    "analyse_aoi_series_task",
     "analyse_aoi_task",
     "backfill_field",
+    "collect_dates_field",
     "collect_pass",
     "collect_pass_task",
     "due_field_ids",

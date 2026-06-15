@@ -1,53 +1,21 @@
-import {
-  X,
-  CloudArrowUp,
-  CheckCircle,
-  Warning,
-  SpinnerGap,
-  ArrowClockwise,
-  Heart,
-} from "@phosphor-icons/react";
-import { useState } from "react";
+import { X, CloudArrowUp, Warning, Heart } from "@phosphor-icons/react";
 
-import { useFarms, usePublishFarm, usePublishStatus } from "@/lib/queries";
 import type { Farm } from "@/lib/api";
+import { healthTone } from "@/lib/health";
+import { useFarms } from "@/lib/queries";
+import { useFarmPush } from "@/lib/useFarmPush";
+
+import { FarmPushButton } from "./FarmPushButton";
 import { EmptyState, ErrorState, LoadingRows } from "./states";
-import { Badge, Button } from "./ui";
+import { Badge } from "./ui";
 
 interface GatewayPushModalProps {
   onClose: () => void;
 }
 
-type PushState = "idle" | "enqueuing" | "polling" | "published" | "dead_letter" | "enqueue_error";
-
-interface FarmPushState {
-  state: PushState;
-  resultCount?: number;
-  error?: string;
-  // True when the gateway is in recording/dry-run mode: the push was recorded but nothing left the
-  // building. Surfaced so a dry-run never masquerades as a real delivery.
-  dryRun?: boolean;
-}
-
-const healthTone = (health: string | null) => {
-  switch (health) {
-    case "healthy":
-      return "positive" as const;
-    case "moderate":
-      return "caution" as const;
-    case "stressed":
-    case "critical":
-      return "critical" as const;
-    default:
-      return "neutral" as const;
-  }
-};
-
 export function GatewayPushModal({ onClose }: GatewayPushModalProps) {
   const query = useFarms();
   const farms = query.data ?? [];
-
-  const [statuses, setStatuses] = useState<Record<string, FarmPushState>>({});
 
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-center bg-bg/60 p-4 backdrop-blur-sm sm:p-8">
@@ -73,20 +41,13 @@ export function GatewayPushModal({ onClose }: GatewayPushModalProps) {
             <ErrorState error={query.error} onRetry={() => void query.refetch()} />
           ) : farms.length ? (
             <div className="space-y-3">
-              <p className="text-xs text-muted leading-relaxed mb-4">
+              <p className="mb-4 text-xs leading-relaxed text-muted">
                 Trigger a manual synchronisation for a farm. This compiles all stored analysis
                 indices and published interpretations and pushes them to the gateway.
               </p>
-              <ul className="divide-y divide-border border border-border rounded-lg overflow-hidden bg-panel-2">
+              <ul className="divide-y divide-border overflow-hidden rounded-lg border border-border bg-panel-2">
                 {farms.map((farm) => (
-                  <FarmPushRow
-                    key={farm.canonical_farm_id}
-                    farm={farm}
-                    pushState={statuses[farm.canonical_farm_id] || { state: "idle" }}
-                    onStateChange={(s) =>
-                      setStatuses((prev) => ({ ...prev, [farm.canonical_farm_id]: s }))
-                    }
-                  />
+                  <FarmPushRow key={farm.canonical_farm_id} farm={farm} />
                 ))}
               </ul>
             </div>
@@ -102,63 +63,16 @@ export function GatewayPushModal({ onClose }: GatewayPushModalProps) {
   );
 }
 
-function FarmPushRow({
-  farm,
-  pushState,
-  onStateChange,
-}: {
-  farm: Farm;
-  pushState: FarmPushState;
-  onStateChange: (s: FarmPushState) => void;
-}) {
-  const publishMutation = usePublishFarm();
-
-  // Poll status only when we're in the polling state
-  const statusQuery = usePublishStatus(
-    farm.canonical_farm_id,
-    pushState.state === "polling",
-  );
-
-  // React to status query data settling
-  const resolvedStatus = statusQuery.data?.status;
-  if (
-    pushState.state === "polling" &&
-    resolvedStatus &&
-    (resolvedStatus === "published" || resolvedStatus === "dead_letter")
-  ) {
-    // Settle the state on next tick to avoid updating during render
-    const count = statusQuery.data?.result_count ?? 0;
-    const error = statusQuery.data?.last_error ?? undefined;
-    const dryRun = statusQuery.data?.dry_run ?? false;
-    queueMicrotask(() => {
-      if (resolvedStatus === "published") {
-        onStateChange({ state: "published", resultCount: count, dryRun });
-      } else {
-        onStateChange({ state: "dead_letter", error: error || "Push failed" });
-      }
-    });
-  }
-
-  const handlePush = () => {
-    onStateChange({ state: "enqueuing" });
-    publishMutation.mutate(farm.canonical_farm_id, {
-      onSuccess: (data) => {
-        onStateChange({ state: "polling", dryRun: data.dry_run });
-      },
-      onError: (err) => {
-        onStateChange({
-          state: "enqueue_error",
-          error: err instanceof Error ? err.message : String(err),
-        });
-      },
-    });
-  };
+function FarmPushRow({ farm }: { farm: Farm }) {
+  const push = useFarmPush(farm.canonical_farm_id);
+  const showError =
+    (push.phase === "dead_letter" || push.phase === "enqueue_error") && push.error;
 
   return (
     <li className="flex items-center justify-between gap-4 p-3 text-xs leading-relaxed">
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
-          <span className="font-semibold text-fg truncate">
+          <span className="truncate font-semibold text-fg">
             {farm.name || farm.canonical_farm_id}
           </span>
           {farm.overall_health ? (
@@ -168,61 +82,22 @@ function FarmPushRow({
             </Badge>
           ) : null}
         </div>
-        <div className="text-[10px] text-muted truncate mt-0.5">
+        <div className="mt-0.5 truncate text-[10px] text-muted">
           {farm.region ? `${farm.region} · ` : ""}
           {farm.canonical_farm_id}
           {farm.total_fields != null ? ` · ${farm.total_fields} fields` : ""}
           {farm.latest_pass_date ? ` · last pass ${farm.latest_pass_date}` : ""}
         </div>
-
-        {/* Error feedback */}
-        {(pushState.state === "dead_letter" || pushState.state === "enqueue_error") && (
-          <div className="text-[10px] text-critical flex items-center gap-1 mt-1 truncate">
+        {showError ? (
+          <div className="mt-1 flex items-center gap-1 truncate text-[10px] text-critical">
             <Warning size={12} />
-            <span>{pushState.error}</span>
+            <span>{push.error}</span>
           </div>
-        )}
+        ) : null}
       </div>
 
       <div className="shrink-0">
-        {pushState.state === "published" ? (
-          pushState.dryRun ? (
-            <span
-              className="flex items-center gap-1 font-medium text-muted"
-              title="Recorded to the outbox but not sent: the gateway is in recording (dry-run) mode."
-            >
-              <CheckCircle size={14} />
-              <span>Recorded{pushState.resultCount ? ` · ${pushState.resultCount}` : ""}</span>
-            </span>
-          ) : (
-            <span className="flex items-center gap-1 font-medium text-positive">
-              <CheckCircle size={14} weight="fill" />
-              <span>Sent{pushState.resultCount ? ` · ${pushState.resultCount}` : ""}</span>
-            </span>
-          )
-        ) : pushState.state === "enqueuing" || pushState.state === "polling" ? (
-          <span className="flex items-center gap-1 font-medium text-accent">
-            <SpinnerGap size={14} className="animate-spin" />
-            <span>{pushState.state === "enqueuing" ? "Queuing…" : "Sending…"}</span>
-          </span>
-        ) : pushState.state === "dead_letter" || pushState.state === "enqueue_error" ? (
-          <Button
-            variant="outline"
-            className="h-7 px-2.5 text-[11px]"
-            onClick={handlePush}
-          >
-            <ArrowClockwise size={12} />
-            Retry
-          </Button>
-        ) : (
-          <Button
-            variant="primary"
-            className="h-7 px-2.5 text-[11px]"
-            onClick={handlePush}
-          >
-            Push
-          </Button>
-        )}
+        <FarmPushButton push={push} className="h-7 gap-1.5 px-2.5 text-[11px]" />
       </div>
     </li>
   );

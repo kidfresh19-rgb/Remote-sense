@@ -1,4 +1,5 @@
 import {
+  CalendarBlank,
   ClipboardText,
   CloudArrowUp,
   House,
@@ -43,6 +44,12 @@ export function Header() {
           onClick={() => void navigate({ to: "/" })}
         >
           <House size={18} />
+        </IconButton>
+        <IconButton
+          label="AOI Studio"
+          onClick={() => void navigate({ to: "/aoi-studio" })}
+        >
+          <CalendarBlank size={18} />
         </IconButton>
         {token ? (
           <div className="hidden md:block">
