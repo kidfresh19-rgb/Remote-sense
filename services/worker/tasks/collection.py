@@ -25,7 +25,7 @@ from rs_core import (
     record_forward_fill_poll,
     upsert_scene_metadata,
 )
-from rs_imagery import AOI, AccessPort, TimeRange, get_access_adapter
+from rs_imagery import AOI, AccessPort, SceneRef, TimeRange, get_access_adapter
 from shapely.geometry import mapping
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -47,6 +47,11 @@ from services.worker.planning import (
 # The core indices stored on every usable pass (PLAN §5). Adding one is a config change here, not
 # a schema migration - the analysis row is index-agnostic.
 CORE_INDICES = ["ndvi", "evi2", "savi", "ndre", "ndmi"]
+
+# Targeted "collect specific dates": how far a requested calendar date may snap to find a real pass.
+# Sentinel-2 revisits ~every 5 days, so one revisit cycle either side resolves almost any date.
+# The batch-size cap is enforced at the API (services/api/workspace/fields.py).
+COLLECT_DATES_TOLERANCE_DAYS = 7
 
 
 @dataclass(frozen=True)
@@ -422,6 +427,91 @@ async def _fan_out_backfill(field_id: str) -> dict[str, object]:
     return {"fanned_out": len(plan), "complete": False}
 
 
+def _snap_dates(
+    requested: list[date],
+    scenes: list[SceneRef],
+    already: frozenset[str],
+    *,
+    tolerance_days: int = COLLECT_DATES_TOLERANCE_DAYS,
+) -> tuple[list[dict[str, object]], list[str], dict[str, str]]:
+    """Snap each requested calendar date to the nearest scene within +/-`tolerance_days` (closest
+    |gap| wins; a tie goes to the earlier acquisition, i.e. on-or-before). Dedup scene ids across
+    dates and drop any already stored for this field+geometry version. Returns
+    `(resolved, skipped, to_enqueue)`: `resolved` is one entry per requested date that found a pass
+    (with the signed `day_gap`), `skipped` the dates with no pass in range, and `to_enqueue` maps
+    the new `scene_id -> pass_date` to collect. Pure - no DB, no network - so the snapping is
+    testable against synthetic scenes (CLAUDE.md 3)."""
+    by_date = sorted((s.sensing_datetime.date(), s.scene_id) for s in scenes)
+    resolved: list[dict[str, object]] = []
+    skipped: list[str] = []
+    to_enqueue: dict[str, str] = {}
+    for day in sorted(set(requested)):
+        best: tuple[int, date, str] | None = None  # (abs gap, scene date, scene id)
+        for scene_date, scene_id in by_date:
+            gap = abs((scene_date - day).days)
+            if gap <= tolerance_days:
+                candidate = (gap, scene_date, scene_id)
+                if best is None or candidate < best:
+                    best = candidate
+        if best is None:
+            skipped.append(day.isoformat())
+            continue
+        _, scene_date, scene_id = best
+        resolved.append(
+            {
+                "requested_date": day.isoformat(),
+                "scene_id": scene_id,
+                "pass_date": scene_date.isoformat(),
+                "day_gap": (scene_date - day).days,
+            }
+        )
+        if scene_id not in already:
+            to_enqueue.setdefault(scene_id, scene_date.isoformat())
+    return resolved, skipped, to_enqueue
+
+
+async def _plan_collect_dates(field_id: str, dates: list[str]) -> dict[str, object]:
+    """Resolve a batch of requested dates to a field's nearest passes (+/-7 days, deduped) and fan
+    out one `collect_pass` per new scene - the targeted-dates sibling of `_fan_out_backfill`. One
+    archive search spans the whole batch (with the tolerance padded on each end); the snapping is
+    pure (`_snap_dates`). Returns a per-date resolution summary; the collection itself runs async in
+    the fanned-out tasks. Nothing new is invented - a snapped pass is a real scene collected exactly
+    like a backfill pass."""
+    settings = get_settings()
+    adapter = get_access_adapter(settings)
+    engine = create_async_engine(settings.database_url, poolclass=NullPool)
+    try:
+        async with async_sessionmaker(engine, expire_on_commit=False)() as session:
+            field = (
+                await session.execute(select(Field).where(Field.id == uuid.UUID(field_id)))
+            ).scalar_one()
+            geometry_version = field.geometry_version
+            aoi = field_to_aoi(field)
+            requested = sorted({date.fromisoformat(d) for d in dates})
+            window = TimeRange(
+                start=_start_of_day(requested[0] - timedelta(days=COLLECT_DATES_TOLERANCE_DAYS)),
+                end=_start_of_day(requested[-1] + timedelta(days=COLLECT_DATES_TOLERANCE_DAYS))
+                + timedelta(days=1),
+            )
+            scenes = await adapter.search(aoi, window)
+            already = await processed_scene_ids(
+                session, field_id=field.id, geometry_version=geometry_version
+            )
+    finally:
+        await engine.dispose()
+
+    resolved, skipped, to_enqueue = _snap_dates(requested, scenes, already)
+    for scene_id, pass_date in to_enqueue.items():
+        collect_pass_task.delay(field_id, scene_id, pass_date)
+    return {
+        "field_id": field_id,
+        "requested": len(requested),
+        "resolved": resolved,
+        "skipped": skipped,
+        "enqueued": len(to_enqueue),
+    }
+
+
 async def _collect_one_pass(field_id: str, scene_id: str, pass_date: str) -> dict[str, object]:
     settings = get_settings()
     adapter = get_access_adapter(settings)
@@ -477,6 +567,15 @@ def backfill_field(field_id: str) -> dict[str, object]:
 def collect_pass_task(field_id: str, scene_id: str, pass_date: str) -> dict[str, object]:
     """Collect one backfill pass (a single scene) for a field under its per-scene lock (D11)."""
     return asyncio.run(_collect_one_pass(field_id, scene_id, pass_date))
+
+
+@celery.task(name="collection.collect_dates_field")
+def collect_dates_field(field_id: str, dates: list[str]) -> dict[str, object]:
+    """Targeted "collect specific dates": snap a batch of requested dates to the field's nearest
+    passes (+/-7 days, deduped) and fan out one `collect_pass` per new scene. The targeted-dates
+    sibling of `backfill_field`; each collected pass persists exactly like a backfill pass and so
+    becomes pushable through the existing per-farm publish."""
+    return asyncio.run(_plan_collect_dates(field_id, dates))
 
 
 @celery.task(name="collection.forward_fill_field")

@@ -1,5 +1,6 @@
 import {
   Article,
+  CalendarPlus,
   ChartLine,
   ClockCounterClockwise,
   Lightning,
@@ -10,18 +11,22 @@ import {
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { motion, AnimatePresence } from "motion/react";
 
+import type { CollectDatesResult } from "@/lib/api";
 import { cn } from "@/lib/format";
-import { useCollectField, useFields } from "@/lib/queries";
+import { useCollectDates, useCollectField, useFields } from "@/lib/queries";
 import { addSavedView, removeSavedView, useIsSaved } from "@/lib/savedViews";
 import { useWorkspace } from "@/state/workspace";
 
 import { AnnotationsPanel } from "./AnnotationsPanel";
 import { AuditPanel } from "./AuditPanel";
+import { DateBatchInput } from "./DateBatchInput";
 import { IndexTimeseriesChart } from "./IndexTimeseriesChart";
 import { InterpretationPanel } from "./InterpretationPanel";
 import { SceneList } from "./SceneList";
 import { EmptyState } from "./states";
 import { Button, IconButton } from "./ui";
+
+const MAX_COLLECT_DATES = 36; // mirrors MAX_COLLECT_DATES in services/api/workspace/fields.py
 
 type Tab = "series" | "passes" | "read" | "notes" | "audit";
 
@@ -45,28 +50,54 @@ export function FieldInspector() {
   const [collectError, setCollectError] = useState<string | null>(null);
   const collectTimer = useRef<number | null>(null);
 
+  // Targeted "collect specific dates": an inline panel beside "Collect now".
+  const collectDates = useCollectDates(fieldId);
+  const [datesOpen, setDatesOpen] = useState(false);
+  const [batchDates, setBatchDates] = useState<string[]>([]);
+  const [dateSummary, setDateSummary] = useState<CollectDatesResult | null>(null);
+
   // Reset the collecting indicator when the field changes; clear the safety timer on unmount.
   useEffect(() => {
     setCollecting(false);
     setCollectError(null);
+    setDatesOpen(false);
+    setBatchDates([]);
+    setDateSummary(null);
     return () => {
       if (collectTimer.current) window.clearTimeout(collectTimer.current);
       collectTimer.current = null;
     };
   }, [fieldId]);
 
+  const startCollectingWindow = () => {
+    setCollecting(true);
+    if (collectTimer.current) window.clearTimeout(collectTimer.current);
+    // Stop polling after a few minutes so we never poll forever if no pass ever lands.
+    collectTimer.current = window.setTimeout(() => setCollecting(false), 180_000);
+  };
+
   const handleCollect = () => {
     if (!fieldId) return;
     setCollectError(null);
     collect.mutate(undefined, {
-      onSuccess: () => {
-        setCollecting(true);
-        if (collectTimer.current) window.clearTimeout(collectTimer.current);
-        // Stop polling after a few minutes so we never poll forever if no pass ever lands.
-        collectTimer.current = window.setTimeout(() => setCollecting(false), 180_000);
-      },
+      onSuccess: () => startCollectingWindow(),
       onError: (err) =>
         setCollectError(err instanceof Error ? err.message : "Could not start collection."),
+    });
+  };
+
+  const handleCollectDates = () => {
+    if (!fieldId || batchDates.length === 0) return;
+    setCollectError(null);
+    setDateSummary(null);
+    collectDates.mutate(batchDates, {
+      onSuccess: (summary) => {
+        setDateSummary(summary);
+        setBatchDates([]);
+        if (summary.enqueued > 0) startCollectingWindow();
+      },
+      onError: (err) =>
+        setCollectError(err instanceof Error ? err.message : "Could not plan date collection."),
     });
   };
 
@@ -114,6 +145,14 @@ export function FieldInspector() {
             {collecting || collect.isPending ? "Collecting..." : "Collect now"}
           </Button>
           <IconButton
+            label="Collect specific dates"
+            active={datesOpen}
+            onClick={() => setDatesOpen((o) => !o)}
+            title="Collect a targeted batch of dates for this field"
+          >
+            <CalendarPlus size={16} />
+          </IconButton>
+          <IconButton
             label={saved ? "Remove saved view" : `Save ${index.toUpperCase()} view`}
             active={saved}
             onClick={toggleSaved}
@@ -122,6 +161,40 @@ export function FieldInspector() {
           </IconButton>
         </div>
       </div>
+
+      {datesOpen ? (
+        <div className="flex flex-col gap-2 border-b border-border bg-panel-2/40 px-3 py-3">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-semibold uppercase tracking-wide text-muted">
+              Collect dates ({batchDates.length})
+            </span>
+            <span className="text-[11px] text-muted">snaps to nearest pass · ±7 days</span>
+          </div>
+          <DateBatchInput dates={batchDates} onChange={setBatchDates} max={MAX_COLLECT_DATES} />
+          <Button
+            variant="primary"
+            onClick={handleCollectDates}
+            disabled={batchDates.length === 0 || collectDates.isPending}
+            className="h-8 gap-1.5 px-2.5 text-xs"
+          >
+            <CalendarPlus size={13} weight="fill" />
+            {collectDates.isPending
+              ? "Planning…"
+              : `Collect ${batchDates.length || ""} ${batchDates.length === 1 ? "date" : "dates"}`.trim()}
+          </Button>
+          {dateSummary ? (
+            <div className="rounded-md border border-border bg-bg px-2.5 py-2 text-xs text-muted">
+              <span className="font-medium text-fg">{dateSummary.enqueued}</span> enqueued ·{" "}
+              {dateSummary.resolved.length} resolved · {dateSummary.skipped.length} skipped
+              {dateSummary.skipped.length > 0 ? (
+                <p className="mt-1 text-[11px] text-muted/80">
+                  No pass within ±7 days: {dateSummary.skipped.join(", ")}
+                </p>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
 
       <div
         role="tablist"

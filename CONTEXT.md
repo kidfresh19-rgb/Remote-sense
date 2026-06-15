@@ -20,7 +20,19 @@ weather and farm activity, and pushes reviewed results back to the gateway.
   their data flows farmer -> gateway -> remote-sense, and results flow back the same way. The
   *analysts / agronomists* are the small expert group who operate the remote-sense workspace and
   answer client questions.
-- **AOI** area of interest: the field polygon a computation is clipped to.
+- **AOI** area of interest: the polygon a computation is clipped to. A **field AOI** is a
+  registered field's gateway-owned geometry, so its analyses are persisted and pushable. A **custom
+  AOI** is an analyst-drawn, searched, or uploaded polygon with no canonical gateway identity, used
+  only for an *AOI Studio preview*.
+- **AOI Studio preview** a multi-pass index read over a *custom AOI* (a batch of specific calendar
+  dates, exact-day; or a months-back sweep), computed through the production engine but **never
+  persisted and never pushed** to the gateway, because it has no canonical identity to key a record
+  to (split-ownership sync). An analyst exploration tool; results leave only as CSV. Contrast with a
+  *field collect*, whose output is real, provenance-stamped, and pushable.
+- **Collect specific dates** a targeted *field collect*: an analyst picks up to a few dozen dates
+  for a registered field; each snaps to the nearest usable pass (within +/-7 days, deduped) and is
+  collected and persisted exactly like a backfill pass, so it joins the field's analyses and becomes
+  pushable. The cheaper, targeted alternative to a full backfill of the whole window.
 - **DN / reflectance / BOA offset** raw pixel digital number vs surface reflectance.
   `rho = (DN + BOA_ADD_OFFSET) / QUANTIFICATION_VALUE`, read per scene from metadata. `DN == 0` is
   NoData. The single highest correctness risk (CLAUDE.md 1.2).

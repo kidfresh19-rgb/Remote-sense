@@ -5,10 +5,11 @@ series, scene passes, as-of-date pass resolution (S3.1), the provenance audit lo
 from __future__ import annotations
 
 import uuid
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, HTTPException, Query, status
+from fastapi.concurrency import run_in_threadpool
 from geoalchemy2.shape import to_shape
 from pydantic import BaseModel
 from rs_core.models import Analysis, Farm, Field
@@ -379,3 +380,57 @@ async def field_collect_endpoint(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "field not found")
     backfill_field.delay(str(field_id))
     return {"status": "enqueued", "field_id": str(field_id), "by": principal.subject}
+
+
+# A batch is an analyst typing dates, not a bulk import (mirror MAX_COLLECT_DATES on the worker).
+MAX_COLLECT_DATES = 36
+
+
+class CollectDatesRequest(BaseModel):
+    dates: list[date]
+
+
+@router.post("/fields/{field_id}/collect-dates", status_code=status.HTTP_202_ACCEPTED)
+async def field_collect_dates_endpoint(
+    field_id: uuid.UUID,
+    payload: CollectDatesRequest,
+    principal: RunAnalysisPrincipal,
+    session: SessionDep,
+) -> dict[str, Any]:
+    """Collect a targeted batch of dates for one field. Each requested date snaps to the field's
+    nearest usable pass within +/-7 days (deduped) and is collected exactly like a backfill pass,
+    so the results persist (provenance, COG, interpretation draft) and become pushable through the
+    per-farm publish - the cheaper, targeted alternative to a full backfill. Needs `run_analysis`.
+
+    The plan (one archive search + fan-out) is waited on briefly so the caller gets the per-date
+    resolution; the collection itself runs async in the fanned-out tasks. A missing field is a 404,
+    an empty/oversized batch or a future date a 422, before anything is enqueued."""
+    from celery.exceptions import TimeoutError as CeleryTimeoutError
+
+    from services.worker.tasks import collect_dates_field
+
+    field_exists = (
+        await session.execute(select(Field.id).where(Field.id == field_id))
+    ).scalar_one_or_none()
+    if field_exists is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "field not found")
+    if not 1 <= len(payload.dates) <= MAX_COLLECT_DATES:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            f"provide between 1 and {MAX_COLLECT_DATES} dates",
+        )
+    if any(d > datetime.now(UTC).date() for d in payload.dates):
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "dates cannot be in the future")
+
+    async_result = collect_dates_field.delay(str(field_id), [d.isoformat() for d in payload.dates])
+    try:
+        return await run_in_threadpool(async_result.get, timeout=60)
+    except CeleryTimeoutError as exc:
+        raise HTTPException(
+            status.HTTP_504_GATEWAY_TIMEOUT,
+            "Date planning timed out; the imagery archive is slow right now. Try again.",
+        ) from exc
+    except Exception as exc:  # the planner raised (e.g. archive search error)
+        raise HTTPException(
+            status.HTTP_502_BAD_GATEWAY, f"Date collection planning failed: {exc}"
+        ) from exc

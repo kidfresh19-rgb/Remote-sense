@@ -6,7 +6,8 @@ from __future__ import annotations
 
 import os
 import uuid
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 import pytest_asyncio
@@ -23,6 +24,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from services.api.workspace import (
     AnnotationCreate,
+    CollectDatesRequest,
     ResolvedPass,
     choose_nearer_pass,
     create_annotation_endpoint,
@@ -30,6 +32,7 @@ from services.api.workspace import (
     field_as_of,
     field_as_of_endpoint,
     field_audit,
+    field_collect_dates_endpoint,
     field_collect_endpoint,
     field_interpretations,
     field_scenes,
@@ -405,6 +408,80 @@ async def test_field_collect_unknown_field_is_404(maker_, monkeypatch) -> None:
         with pytest.raises(HTTPException) as excinfo:
             await field_collect_endpoint(uuid.uuid4(), _ANALYST, session)
     assert excinfo.value.status_code == 404
+
+
+async def test_field_collect_dates_enqueues_and_returns_summary(maker_, monkeypatch) -> None:
+    import services.worker.tasks as tasks
+
+    field_id = await _seed(maker_)
+    summary = {
+        "field_id": str(field_id),
+        "requested": 2,
+        "resolved": [],
+        "skipped": [],
+        "enqueued": 0,
+    }
+    captured: dict = {}
+
+    def fake_delay(fid, dates):
+        captured["args"] = (fid, dates)
+        return SimpleNamespace(get=lambda timeout: summary)
+
+    monkeypatch.setattr(tasks.collect_dates_field, "delay", fake_delay)
+    req = CollectDatesRequest(dates=[date(2025, 1, 15), date(2025, 1, 20)])
+    async with maker_() as session:
+        result = await field_collect_dates_endpoint(field_id, req, _ANALYST, session)
+    assert result == summary
+    # Dates go to the worker as ISO strings (JSON-safe for the broker).
+    assert captured["args"] == (str(field_id), ["2025-01-15", "2025-01-20"])
+
+
+async def test_field_collect_dates_unknown_field_is_404(maker_, monkeypatch) -> None:
+    import services.worker.tasks as tasks
+
+    await _seed(maker_)
+    monkeypatch.setattr(
+        tasks.collect_dates_field,
+        "delay",
+        lambda fid, dates: pytest.fail("must not enqueue for a missing field"),
+    )
+    req = CollectDatesRequest(dates=[date(2025, 1, 15)])
+    async with maker_() as session:
+        with pytest.raises(HTTPException) as excinfo:
+            await field_collect_dates_endpoint(uuid.uuid4(), req, _ANALYST, session)
+    assert excinfo.value.status_code == 404
+
+
+async def test_field_collect_dates_rejects_too_many_dates(maker_, monkeypatch) -> None:
+    import services.worker.tasks as tasks
+
+    field_id = await _seed(maker_)
+    monkeypatch.setattr(
+        tasks.collect_dates_field,
+        "delay",
+        lambda fid, dates: pytest.fail("must not enqueue an oversized batch"),
+    )
+    req = CollectDatesRequest(dates=[date(2025, 1, 1) + timedelta(days=i) for i in range(37)])
+    async with maker_() as session:
+        with pytest.raises(HTTPException) as excinfo:
+            await field_collect_dates_endpoint(field_id, req, _ANALYST, session)
+    assert excinfo.value.status_code == 422
+
+
+async def test_field_collect_dates_rejects_future_dates(maker_, monkeypatch) -> None:
+    import services.worker.tasks as tasks
+
+    field_id = await _seed(maker_)
+    monkeypatch.setattr(
+        tasks.collect_dates_field,
+        "delay",
+        lambda fid, dates: pytest.fail("must not enqueue a future date"),
+    )
+    req = CollectDatesRequest(dates=[datetime.now(UTC).date() + timedelta(days=5)])
+    async with maker_() as session:
+        with pytest.raises(HTTPException) as excinfo:
+            await field_collect_dates_endpoint(field_id, req, _ANALYST, session)
+    assert excinfo.value.status_code == 422
 
 
 async def test_publish_farm_enqueues_for_existing_farm(maker_, monkeypatch) -> None:
