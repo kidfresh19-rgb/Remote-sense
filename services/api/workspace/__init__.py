@@ -12,7 +12,10 @@ from fastapi import APIRouter
 
 from services.api.workspace.analyse import (
     AOIAnalysisRequest,
+    AOISeriesRequest,
     analyse_aoi_endpoint,
+    analyse_aoi_series_endpoint,
+    aoi_job_endpoint,
 )
 from services.api.workspace.analyse import (
     router as analyse_router,
@@ -45,6 +48,7 @@ from services.api.workspace.farms import (
 from services.api.workspace.fields import (
     AsOfResolution,
     AuditRecordOut,
+    CollectDatesRequest,
     FieldOut,
     ResolvedPass,
     SceneOut,
@@ -54,6 +58,7 @@ from services.api.workspace.fields import (
     field_as_of_endpoint,
     field_audit,
     field_audit_endpoint,
+    field_collect_dates_endpoint,
     field_collect_endpoint,
     field_scenes,
     field_scenes_endpoint,
@@ -99,11 +104,13 @@ router.include_router(analyse_router)
 
 __all__ = [
     "AOIAnalysisRequest",
+    "AOISeriesRequest",
     "AnnotatePrincipal",
     "AnnotationCreate",
     "AnnotationOut",
     "AsOfResolution",
     "AuditRecordOut",
+    "CollectDatesRequest",
     "FarmOut",
     "FieldOut",
     "InterpretationOut",
@@ -119,6 +126,8 @@ __all__ = [
     "TimeseriesPoint",
     "ViewPrincipal",
     "analyse_aoi_endpoint",
+    "analyse_aoi_series_endpoint",
+    "aoi_job_endpoint",
     "choose_nearer_pass",
     "create_annotation_endpoint",
     "delete_annotation_endpoint",
@@ -126,6 +135,7 @@ __all__ = [
     "field_as_of_endpoint",
     "field_audit",
     "field_audit_endpoint",
+    "field_collect_dates_endpoint",
     "field_collect_endpoint",
     "field_interpretations",
     "field_interpretations_endpoint",

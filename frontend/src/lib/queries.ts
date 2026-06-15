@@ -3,7 +3,7 @@ import type { Geometry } from "geojson";
 
 import { useToken } from "@/auth/TokenProvider";
 
-import { api, ApiError, type Farm, type ReviewInput } from "./api";
+import { api, ApiError, type AOISeriesRequest, type Farm, type ReviewInput } from "./api";
 import type { IndexKey } from "./indices";
 
 export function useFarms() {
@@ -187,6 +187,30 @@ export function useAnalyseAOI() {
   });
 }
 
+/** Start a multi-pass AOI preview (AOI Studio). Resolves to `{ job_id }`; feed that into
+ *  `useAOIJob` to poll for progress and results. */
+export function useAnalyseAOISeries() {
+  const { token } = useToken();
+  return useMutation({
+    mutationFn: (req: AOISeriesRequest) => api.analyseAOISeries(req, token!),
+  });
+}
+
+/** Poll a multi-pass AOI preview job every 1.5 s until it settles to `done` or `error`. Enabled
+ *  only while a job id is held; the work runs on the worker, so this is how results surface. */
+export function useAOIJob(jobId: string | null) {
+  const { token } = useToken();
+  return useQuery({
+    queryKey: ["aoi-job", jobId],
+    queryFn: ({ signal }) => api.aoiJob(jobId!, token!, signal),
+    enabled: !!token && !!jobId,
+    refetchInterval: (query) => {
+      const state = query.state.data?.state;
+      return state === "done" || state === "error" ? false : 1500;
+    },
+  });
+}
+
 /** Trigger an on-demand backfill for a field. The work runs on the worker, so callers poll the
  *  field's reads (see `collecting` on useTimeseries/useScenes) to surface results as they land. */
 export function usePipelineHealth() {
@@ -216,5 +240,19 @@ export function useCollectField(fieldId: string | null) {
   const { token } = useToken();
   return useMutation({
     mutationFn: () => api.collectField(fieldId!, token!),
+  });
+}
+
+/** Targeted "collect specific dates" for a field. Resolves to the per-date plan; on success
+ *  invalidate the field's passes/series so the newly collected dates surface as they land. */
+export function useCollectDates(fieldId: string | null) {
+  const { token } = useToken();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (dates: string[]) => api.collectDates(fieldId!, dates, token!),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["scenes", fieldId] });
+      qc.invalidateQueries({ queryKey: ["timeseries", fieldId] });
+    },
   });
 }

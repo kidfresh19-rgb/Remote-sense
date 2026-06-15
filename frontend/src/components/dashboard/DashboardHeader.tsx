@@ -1,4 +1,4 @@
-import { ArrowRight, MapTrifold, Moon, SignOut, Sun } from "@phosphor-icons/react";
+import { ArrowRight, CalendarBlank, MapTrifold, Moon, SignOut, Sun } from "@phosphor-icons/react";
 import { Link } from "@tanstack/react-router";
 
 import { useToken } from "@/auth/TokenProvider";
@@ -33,6 +33,11 @@ export function DashboardHeader() {
             <SignOut size={18} />
           </IconButton>
         ) : null}
+        <Link to="/aoi-studio">
+          <IconButton label="AOI Studio">
+            <CalendarBlank size={18} />
+          </IconButton>
+        </Link>
         <Link to="/workspace">
           <span className="inline-flex cursor-pointer select-none items-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm font-medium text-accent-fg transition-[opacity,transform] duration-150 hover:opacity-90 active:scale-[0.97]">
             Enter Workspace

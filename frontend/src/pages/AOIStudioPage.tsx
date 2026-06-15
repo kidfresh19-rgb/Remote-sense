@@ -1,0 +1,429 @@
+import {
+  Crosshair,
+  FloppyDisk,
+  House,
+  Lightning,
+  MapTrifold,
+  Moon,
+  Stack,
+  Sun,
+  SignOut,
+  X,
+} from "@phosphor-icons/react";
+import { Link } from "@tanstack/react-router";
+import type { Geometry, Polygon } from "geojson";
+import { useRef, useState } from "react";
+
+import { TokenGate } from "@/auth/TokenGate";
+import { useToken } from "@/auth/TokenProvider";
+import { AOIBar } from "@/components/AOIBar";
+import { AOIResultsTable } from "@/components/aoi/AOIResultsTable";
+import { CoordinateEntryModal } from "@/components/CoordinateEntryModal";
+import { DateBatchInput } from "@/components/DateBatchInput";
+import { FileUploadPanel } from "@/components/FileUploadPanel";
+import { bboxOf, useFieldMap } from "@/components/useFieldMap";
+import { Badge, Button, IconButton, SegmentedControl } from "@/components/ui";
+import type { AOISeriesMode } from "@/lib/api";
+import { deleteCustomAOI, saveCustomAOI, useCustomAOIs } from "@/lib/customAOIs";
+import { cn } from "@/lib/format";
+import { DEFAULT_INDEX, INDICES, type IndexKey } from "@/lib/indices";
+import { useAnalyseAOISeries, useAOIJob } from "@/lib/queries";
+import { useTheme } from "@/lib/theme";
+
+// Mirrors MAX_BATCH_DATES in services/api/workspace/analyse.py — keep them in step.
+const MAX_BATCH_DATES = 24;
+const MAX_BACKFILL_MONTHS = 18;
+
+export function AOIStudioPage() {
+  const { token } = useToken();
+
+  return (
+    <div className="grid h-[100dvh] max-h-[100dvh] grid-rows-[auto_minmax(0,1fr)] overflow-hidden bg-bg text-fg">
+      <StudioHeader />
+      {token ? <Studio /> : <TokenGate />}
+    </div>
+  );
+}
+
+function StudioHeader() {
+  const { token, clear } = useToken();
+  const { theme, toggle } = useTheme();
+
+  return (
+    <header className="flex h-14 items-center justify-between gap-4 border-b border-border bg-panel px-4">
+      <div className="flex min-w-0 items-center gap-2">
+        <MapTrifold size={20} weight="duotone" className="shrink-0 text-accent" />
+        <span className="text-sm font-semibold tracking-tight">remote-sense</span>
+        <span className="hidden text-xs text-muted sm:inline">AOI Studio</span>
+      </div>
+      <div className="flex items-center gap-2">
+        <Link to="/">
+          <IconButton label="Dashboard overview">
+            <House size={18} />
+          </IconButton>
+        </Link>
+        <Link to="/workspace">
+          <IconButton label="Analyst workspace">
+            <Stack size={18} />
+          </IconButton>
+        </Link>
+        <IconButton
+          label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
+          onClick={toggle}
+        >
+          {theme === "dark" ? <Sun size={18} /> : <Moon size={18} />}
+        </IconButton>
+        {token ? (
+          <IconButton label="Sign out" onClick={clear}>
+            <SignOut size={18} />
+          </IconButton>
+        ) : null}
+      </div>
+    </header>
+  );
+}
+
+function Studio() {
+  const [aoi, setAoi] = useState<Geometry | null>(null);
+  const [index, setIndex] = useState<IndexKey>(DEFAULT_INDEX);
+  const [mode, setMode] = useState<AOISeriesMode>("dates");
+  const [dates, setDates] = useState<string[]>([]);
+  const [months, setMonths] = useState(6);
+  const [jobId, setJobId] = useState<string | null>(null);
+
+  const [drawMode, setDrawMode] = useState(false);
+  const [showCoords, setShowCoords] = useState(false);
+  const [showUpload, setShowUpload] = useState(false);
+  const [marker, setMarker] = useState<[number, number] | null>(null);
+
+  const flyToRef = useRef<((center: [number, number], zoom?: number) => void) | null>(null);
+  const fitBoundsRef = useRef<((sw: [number, number], ne: [number, number]) => void) | null>(null);
+
+  const run = useAnalyseAOISeries();
+  const job = useAOIJob(jobId);
+  const busy =
+    run.isPending || job.data?.state === "queued" || job.data?.state === "running";
+
+  const canRun = !!aoi && !busy && (mode === "backfill" || dates.length > 0);
+
+  const setAoiAndClearPin = (geometry: Geometry) => {
+    setMarker(null);
+    setAoi(geometry);
+    const bbox = bboxOf(geometry);
+    if (bbox) fitBoundsRef.current?.([bbox[0], bbox[1]], [bbox[2], bbox[3]]);
+  };
+
+  const handleRun = () => {
+    if (!aoi) return;
+    run.mutate(
+      mode === "dates"
+        ? { geometry: aoi, index, mode, dates }
+        : { geometry: aoi, index, mode, months },
+      { onSuccess: (data) => setJobId(data.job_id) },
+    );
+  };
+
+  return (
+    <main className="flex min-h-0 flex-col">
+      <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
+        {/* Map */}
+        <section className="relative min-h-[300px] flex-1 lg:min-h-0">
+          <StudioMap
+            aoi={aoi}
+            index={index}
+            marker={marker}
+            drawMode={drawMode}
+            onDrawComplete={(polygon) => {
+              setAoi(polygon);
+              setDrawMode(false);
+            }}
+            onDrawCancel={() => setDrawMode(false)}
+            onMapReady={(flyTo, fitBounds) => {
+              flyToRef.current = flyTo;
+              fitBoundsRef.current = fitBounds;
+            }}
+          />
+
+          <div className="absolute inset-x-0 top-0 z-30 p-2">
+            <AOIBar
+              drawActive={drawMode}
+              onDrawToggle={() => setDrawMode(true)}
+              onCancelDraw={() => setDrawMode(false)}
+              onOpenCoords={() => setShowCoords(true)}
+              onOpenUpload={() => setShowUpload(true)}
+              onAOISet={(geometry) => setAoiAndClearPin(geometry)}
+              onFlyTo={(center, zoom) => {
+                flyToRef.current?.(center, zoom);
+                setMarker(center);
+              }}
+            />
+          </div>
+
+          {aoi && !drawMode ? (
+            <div className="pointer-events-none absolute inset-x-0 top-[72px] z-20 flex justify-center">
+              <button
+                onClick={() => setAoi(null)}
+                className="pointer-events-auto flex items-center gap-1.5 rounded-full border border-border bg-panel/90 px-3 py-1 text-xs text-muted backdrop-blur-sm transition-colors hover:text-fg"
+              >
+                <X size={12} /> Clear area
+              </button>
+            </div>
+          ) : null}
+
+          {showCoords ? (
+            <CoordinateEntryModal
+              onClose={() => setShowCoords(false)}
+              onApply={(geometry) => setAoiAndClearPin(geometry)}
+              onFitBounds={(sw, ne) => {
+                fitBoundsRef.current?.(sw, ne);
+                setMarker(null);
+              }}
+            />
+          ) : null}
+          {showUpload ? (
+            <FileUploadPanel
+              onClose={() => setShowUpload(false)}
+              onApply={(geometry, label) => {
+                setAoiAndClearPin(geometry);
+                saveCustomAOI({ label, geometry });
+              }}
+            />
+          ) : null}
+        </section>
+
+        {/* Controls */}
+        <aside className="flex min-h-0 shrink-0 flex-col gap-4 overflow-y-auto border-t border-border bg-panel p-4 lg:w-[360px] lg:border-l lg:border-t-0">
+          <AreaSection aoi={aoi} onClear={() => setAoi(null)} onUse={setAoiAndClearPin} />
+
+          <div className="flex flex-col gap-2">
+            <Label>Index</Label>
+            <SegmentedControl<IndexKey>
+              ariaLabel="Index"
+              value={index}
+              onChange={setIndex}
+              options={INDICES.map((m) => ({ value: m.key, label: m.label, title: m.long }))}
+            />
+          </div>
+
+          <div className="flex flex-col gap-2">
+            <Label>Mode</Label>
+            <SegmentedControl<AOISeriesMode>
+              ariaLabel="Analysis mode"
+              value={mode}
+              onChange={setMode}
+              options={[
+                { value: "dates", label: "Specific dates" },
+                { value: "backfill", label: "Backfill" },
+              ]}
+            />
+          </div>
+
+          {mode === "dates" ? (
+            <div className="flex flex-col gap-2">
+              <Label>Dates ({dates.length})</Label>
+              <DateBatchInput dates={dates} onChange={setDates} max={MAX_BATCH_DATES} />
+              <p className="text-[11px] text-muted">
+                Each date resolves to its same-day satellite pass, or is marked “no pass.”
+              </p>
+            </div>
+          ) : (
+            <BackfillControl months={months} onChange={setMonths} />
+          )}
+
+          <Button
+            variant="primary"
+            onClick={handleRun}
+            disabled={!canRun}
+            className="mt-1 w-full gap-1.5"
+            title={!aoi ? "Select an area first" : undefined}
+          >
+            <Lightning size={14} weight="fill" />
+            {busy
+              ? "Analysing…"
+              : mode === "dates"
+                ? `Run ${dates.length || ""} ${dates.length === 1 ? "date" : "dates"}`.trim()
+                : "Start backfill"}
+          </Button>
+          {run.isError ? (
+            <p className="text-xs text-critical">
+              {run.error instanceof Error ? run.error.message : "Could not start the analysis."}
+            </p>
+          ) : null}
+        </aside>
+      </div>
+
+      {/* Results */}
+      <section className="max-h-[44vh] shrink-0 overflow-y-auto border-t border-border bg-panel">
+        <AOIResultsTable job={job.data} pending={run.isPending} index={index} />
+      </section>
+    </main>
+  );
+}
+
+function Label({ children }: { children: React.ReactNode }) {
+  return (
+    <span className="text-xs font-semibold uppercase tracking-wide text-muted">{children}</span>
+  );
+}
+
+function AreaSection({
+  aoi,
+  onClear,
+  onUse,
+}: {
+  aoi: Geometry | null;
+  onClear: () => void;
+  onUse: (geometry: Geometry) => void;
+}) {
+  const saved = useCustomAOIs();
+
+  return (
+    <div className="flex flex-col gap-2">
+      <Label>Area of interest</Label>
+      {aoi ? (
+        <div className="flex items-center justify-between gap-2 rounded-md border border-border bg-bg px-2.5 py-1.5">
+          <span className="flex items-center gap-1.5 text-sm text-fg">
+            <Badge tone="accent" className="text-[10px] uppercase">
+              {aoi.type}
+            </Badge>
+            area selected
+          </span>
+          <div className="flex items-center gap-1">
+            <IconButton
+              label="Save this area to reuse later"
+              onClick={() =>
+                saveCustomAOI({ label: `AOI ${new Date().toLocaleDateString()}`, geometry: aoi })
+              }
+              className="size-7"
+            >
+              <FloppyDisk size={14} />
+            </IconButton>
+            <IconButton label="Clear area" onClick={onClear} className="size-7">
+              <X size={14} />
+            </IconButton>
+          </div>
+        </div>
+      ) : (
+        <p className="text-xs leading-relaxed text-muted">
+          Draw, search, enter coordinates, or upload a boundary on the map, or pick a saved area
+          below.
+        </p>
+      )}
+
+      {saved.length > 0 ? (
+        <ul className="max-h-32 overflow-y-auto rounded-md border border-border">
+          {saved.map((a) => (
+            <li
+              key={a.id}
+              className="flex items-center gap-1 border-b border-border/60 px-2 py-1 last:border-b-0"
+            >
+              <span className="min-w-0 flex-1 truncate text-xs text-fg">{a.label}</span>
+              <IconButton
+                label={`Use area ${a.label}`}
+                onClick={() => onUse(a.geometry)}
+                className="size-6"
+              >
+                <Crosshair size={12} />
+              </IconButton>
+              <IconButton
+                label={`Delete area ${a.label}`}
+                onClick={() => deleteCustomAOI(a.id)}
+                className="size-6 text-muted hover:text-critical"
+              >
+                <X size={12} />
+              </IconButton>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
+  );
+}
+
+function BackfillControl({
+  months,
+  onChange,
+}: {
+  months: number;
+  onChange: (next: number) => void;
+}) {
+  return (
+    <div className="flex flex-col gap-2">
+      <Label>Backfill window</Label>
+      <div className="flex items-center gap-3">
+        <input
+          type="range"
+          min={1}
+          max={MAX_BACKFILL_MONTHS}
+          step={1}
+          value={months}
+          onChange={(e) => onChange(Number(e.target.value))}
+          aria-label="Months of history"
+          className="min-w-0 flex-1 accent-[var(--accent)]"
+        />
+        <span className="w-20 shrink-0 text-right text-sm tabular-nums text-fg">
+          {months} {months === 1 ? "month" : "months"}
+        </span>
+      </div>
+      <div className="flex gap-1.5">
+        {[3, 6, 12, 18].map((m) => (
+          <button
+            key={m}
+            onClick={() => onChange(m)}
+            className={cn(
+              "rounded-md border px-2 py-0.5 text-xs transition-colors",
+              months === m
+                ? "border-accent bg-accent/15 text-accent"
+                : "border-border text-muted hover:text-fg",
+            )}
+          >
+            {m}m
+          </button>
+        ))}
+      </div>
+      <p className="text-[11px] text-muted">
+        Sweeps every usable pass in the window (most recent first, up to 60).
+      </p>
+    </div>
+  );
+}
+
+function StudioMap({
+  aoi,
+  index,
+  marker,
+  drawMode,
+  onDrawComplete,
+  onDrawCancel,
+  onMapReady,
+}: {
+  aoi: Geometry | null;
+  index: IndexKey;
+  marker: [number, number] | null;
+  drawMode: boolean;
+  onDrawComplete: (polygon: Polygon) => void;
+  onDrawCancel: () => void;
+  onMapReady: (
+    flyTo: (center: [number, number], zoom?: number) => void,
+    fitBounds: (sw: [number, number], ne: [number, number]) => void,
+  ) => void;
+}) {
+  const ref = useRef<HTMLDivElement | null>(null);
+  useFieldMap(ref, {
+    field: null,
+    index,
+    sceneId: null,
+    showRaster: false,
+    showRgb: false,
+    showFcc: false,
+    customAOI: aoi,
+    marker,
+    drawMode,
+    onDrawComplete,
+    onDrawCancel,
+    onMapReady,
+  });
+  // size-full (not absolute inset-0): MapLibre's unlayered `position:relative` beats Tailwind's
+  // layered `absolute`, which would collapse the container to 0 height (see useFieldMap notes).
+  return <div ref={ref} className="size-full" />;
+}

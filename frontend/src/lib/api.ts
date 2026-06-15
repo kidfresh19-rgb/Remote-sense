@@ -155,6 +155,63 @@ export interface AOIAnalysisResult {
   pixels?: number;
 }
 
+export type AOISeriesMode = "dates" | "backfill";
+
+/** A multi-pass AOI preview request (POST /analyse/aoi/series). `dates` (ISO YYYY-MM-DD) drives
+ *  the "dates" mode; `months` drives the "backfill" sweep. Mirrors AOISeriesRequest in
+ *  services/api/workspace/analyse.py. Nothing is persisted - this is a preview, not a field. */
+export interface AOISeriesRequest {
+  geometry: Geometry;
+  index: string;
+  mode: AOISeriesMode;
+  dates?: string[];
+  months?: number;
+}
+
+/** One pass of a multi-pass AOI preview. `requested_date` is present in dates mode (the calendar
+ *  day asked for); `status` is "ok" or "no_pass". On "ok" the index stats are present. */
+export interface AOISeriesPass {
+  status: "ok" | "no_pass" | string;
+  requested_date?: string;
+  index?: string;
+  pass_date?: string;
+  scene_id?: string;
+  mean?: number | null;
+  min?: number | null;
+  max?: number | null;
+  p10?: number | null;
+  p90?: number | null;
+  clear_fraction?: number;
+  confidence?: string;
+  resolution_m?: number;
+  pixels?: number;
+}
+
+export interface AOISeriesResult {
+  status: string;
+  index: string;
+  mode: AOISeriesMode;
+  requested: number;
+  resolved: number;
+  passes: AOISeriesPass[];
+}
+
+/** Status of a multi-pass AOI preview job (GET /analyse/aoi/jobs/{id}). `state` walks
+ *  queued -> running (with a {done,total} progress meter) -> done (with `result`) or error. */
+export interface AOIJob {
+  job_id: string;
+  state: "queued" | "running" | "done" | "error" | string;
+  progress?: { done: number | null; total: number | null } | null;
+  result?: AOISeriesResult | null;
+  error?: string | null;
+}
+
+/** Response of POST /analyse/aoi/series: the job was accepted onto the queue. Poll `aoiJob`. */
+export interface AOIJobEnqueued {
+  job_id: string;
+  state: string;
+}
+
 export interface PublishStatus {
   canonical_farm_id: string;
   status: "pending" | "published" | "dead_letter" | string;
@@ -181,6 +238,26 @@ export interface PipelineHealth {
   fields: number;
   awaiting_backfill: number;
   dead_letters: number;
+}
+
+/** One requested date that snapped to a real pass (POST /fields/{id}/collect-dates). `day_gap` is
+ *  signed days from the requested date (0 = exact, negative = pass is earlier). */
+export interface CollectDatesResolved {
+  requested_date: string;
+  scene_id: string;
+  pass_date: string;
+  day_gap: number;
+}
+
+/** Result of a targeted field collect: per-date resolution. `enqueued` is the count of new scenes
+ *  actually fanned out (resolved dates that snap to an already-stored scene are not recollected).
+ *  Mirrors `_plan_collect_dates` in services/worker/tasks/collection.py. */
+export interface CollectDatesResult {
+  field_id: string;
+  requested: number;
+  resolved: CollectDatesResolved[];
+  skipped: string[];
+  enqueued: number;
 }
 
 export class ApiError extends Error {
@@ -292,6 +369,10 @@ export const api = {
     ),
   analyseAOI: (geometry: Geometry, index: string, token: string) =>
     send<AOIAnalysisResult>("POST", "/analyse/aoi", token, { geometry, index }),
+  analyseAOISeries: (req: AOISeriesRequest, token: string) =>
+    send<AOIJobEnqueued>("POST", "/analyse/aoi/series", token, req),
+  aoiJob: (jobId: string, token: string, signal?: AbortSignal) =>
+    get<AOIJob>(`/analyse/aoi/jobs/${encodeURIComponent(jobId)}`, token, signal),
   pipelineHealth: (token: string, signal?: AbortSignal) =>
     get<PipelineHealth>("/pipeline/health", token, signal),
   collectField: (fieldId: string, token: string) =>
@@ -300,6 +381,8 @@ export const api = {
       `/fields/${fieldId}/collect`,
       token,
     ),
+  collectDates: (fieldId: string, dates: string[], token: string) =>
+    send<CollectDatesResult>("POST", `/fields/${fieldId}/collect-dates`, token, { dates }),
   publishFarm: (canonicalFarmId: string, token: string) =>
     send<PublishEnqueued>(
       "POST",
