@@ -10,11 +10,16 @@ from typing import Any
 
 import structlog
 
-_otel_trace: ModuleType | None
-try:  # OTel is optional; logs stay valid JSON whether or not tracing is installed.
-    from opentelemetry import trace as _otel_trace
+# OTel is optional; logs stay valid JSON whether or not tracing is installed. Import into a
+# separate name and assign through `else` so `_otel_trace` has a single definition: binding the
+# import directly to it reads as a redefinition of the annotation when OTel is absent (no-redef).
+_otel_trace: ModuleType | None = None
+try:
+    from opentelemetry import trace as _otel_trace_mod
 except ModuleNotFoundError:  # pragma: no cover - exercised only when OTel is absent
-    _otel_trace = None
+    pass
+else:
+    _otel_trace = _otel_trace_mod
 
 
 def _add_trace_context(
