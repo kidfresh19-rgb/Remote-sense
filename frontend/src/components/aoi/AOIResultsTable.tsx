@@ -308,7 +308,7 @@ function Row({
   );
 }
 
-function confidenceTone(confidence: string): "positive" | "caution" | "critical" | "neutral" {
+export function confidenceTone(confidence: string): "positive" | "caution" | "critical" | "neutral" {
   if (confidence === "high") return "positive";
   if (confidence === "medium") return "caution";
   if (confidence === "low") return "critical";
@@ -321,8 +321,9 @@ const PAD = { l: 34, r: 12, t: 12, b: 22 };
 
 /** A compact scatter+line of each usable pass's mean across time, on the index's display range, so
  *  the analyst can read the trend at a glance. Exact passes are filled circles; interpolated
- *  (averaged) passes are hollow circles so the analyst can distinguish synthesised data. */
-function MeanSparkline({ passes, index }: { passes: AOISeriesPass[]; index: IndexKey }) {
+ *  (averaged) passes are hollow circles so the analyst can distinguish synthesised data. Reused by
+ *  the report panel, so it is exported. */
+export function MeanSparkline({ passes, index }: { passes: AOISeriesPass[]; index: IndexKey }) {
   const meta = indexMeta(index);
   const points = useMemo(
     () =>

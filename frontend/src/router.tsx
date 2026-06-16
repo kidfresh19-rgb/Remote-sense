@@ -25,9 +25,17 @@ const workspaceRoute = createRoute({
 
 // AOI Studio is standalone: it manages its own AOI/index/job state locally and reuses the
 // prop-driven map hook, so it needs no WorkspaceProvider.
+interface AOIStudioSearch {
+  /** Optional deep-link target: pre-select this canonical farm as the analysis target. Set by the
+   *  dashboard farm cards' "Analyse dates" launcher; absent for a plain visit. */
+  farm?: string;
+}
+
 const aoiStudioRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/aoi-studio",
+  validateSearch: (search: Record<string, unknown>): AOIStudioSearch =>
+    typeof search.farm === "string" && search.farm ? { farm: search.farm } : {},
   component: AOIStudioPage,
 });
 

@@ -1,6 +1,8 @@
 import {
   ArrowSquareOut,
+  CloudArrowUp,
   Crosshair,
+  FileText,
   FloppyDisk,
   House,
   Lightning,
@@ -12,13 +14,14 @@ import {
   SignOut,
   X,
 } from "@phosphor-icons/react";
-import { Link } from "@tanstack/react-router";
+import { getRouteApi, Link } from "@tanstack/react-router";
 import type { Geometry, Polygon } from "geojson";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { TokenGate } from "@/auth/TokenGate";
 import { useToken } from "@/auth/TokenProvider";
 import { AOIBar } from "@/components/AOIBar";
+import { AOIReportModal } from "@/components/aoi/AOIReportModal";
 import { AOIResultsTable } from "@/components/aoi/AOIResultsTable";
 import { CoordinateEntryModal } from "@/components/CoordinateEntryModal";
 import { DateBatchInput } from "@/components/DateBatchInput";
@@ -32,8 +35,10 @@ import { api, type AOIJob, type AOISeriesMode, type Farm } from "@/lib/api";
 import { deleteCustomAOI, saveCustomAOI, useCustomAOIs } from "@/lib/customAOIs";
 import { cn } from "@/lib/format";
 import { DEFAULT_INDEX, INDICES, type IndexKey } from "@/lib/indices";
-import { useAOIJob, useFarms, usePushAOIResults } from "@/lib/queries";
+import { useAOIJob, useFarms, usePushAllAOIResults, usePushAOIResults } from "@/lib/queries";
 import { useTheme } from "@/lib/theme";
+
+const routeApi = getRouteApi("/aoi-studio");
 
 // Mirrors MAX_BATCH_DATES in services/api/workspace/analyse.py — keep them in step.
 const MAX_BATCH_DATES = 24;
@@ -103,6 +108,7 @@ type SelectedIndex = IndexKey | "all";
 
 function Studio() {
   const { token } = useToken();
+  const { farm: farmParam } = routeApi.useSearch();
   const [aoi, setAoi] = useState<Geometry | null>(null);
   const [farmTarget, setFarmTarget] = useState<FarmTarget | null>(null);
   const [index, setIndex] = useState<SelectedIndex>(DEFAULT_INDEX);
@@ -129,7 +135,12 @@ function Studio() {
   const [showCoords, setShowCoords] = useState(false);
   const [showUpload, setShowUpload] = useState(false);
   const [showFarms, setShowFarms] = useState(false);
+  const [showReport, setShowReport] = useState(false);
   const [marker, setMarker] = useState<[number, number] | null>(null);
+
+  // Once-only guard so a `?farm=` deep-link pre-selects that farm without re-applying after the
+  // analyst later clears or changes the target.
+  const appliedFarmParam = useRef<string | null>(null);
 
   const flyToRef = useRef<((center: [number, number], zoom?: number) => void) | null>(null);
   const fitBoundsRef = useRef<((sw: [number, number], ne: [number, number]) => void) | null>(null);
@@ -174,6 +185,7 @@ function Studio() {
   // whole-farm targets use the FarmPushButton publish above instead.
   const farms = useFarms();
   const push = usePushAOIResults();
+  const pushAll = usePushAllAOIResults();
   const viewedJob = jobs[viewIndex];
   const result = viewedJob.data?.state === "done" ? (viewedJob.data.result ?? null) : null;
   const okPassCount = result?.passes.filter((p) => p.status === "ok").length ?? 0;
@@ -183,6 +195,29 @@ function Studio() {
     okPassCount > 0 &&
     !!selectedFarmId &&
     !push.isPending;
+
+  // Every index whose job finished with at least one exact ('ok') pass: the set "Push all" sends.
+  const pushableIndexJobs = (Object.keys(jobIds) as IndexKey[])
+    .map((key) => {
+      const id = jobIds[key];
+      const data = jobs[key].data;
+      const okCount =
+        data?.state === "done"
+          ? (data.result?.passes.filter((p) => p.status === "ok").length ?? 0)
+          : 0;
+      return id && okCount > 0 ? { key, jobId: id, okCount } : null;
+    })
+    .filter((x): x is { key: IndexKey; jobId: string; okCount: number } => x !== null);
+  const totalOkPasses = pushableIndexJobs.reduce((sum, j) => sum + j.okCount, 0);
+  const canPushAll = !!selectedFarmId && pushableIndexJobs.length > 1 && !pushAll.isPending;
+
+  // The job data the results table and report read from, shaped to AOIJob | undefined per index.
+  const jobData = Object.fromEntries(
+    Object.entries(jobs).map(([k, v]) => [k, v.data]),
+  ) as Record<IndexKey, AOIJob | undefined>;
+  const anyResults = Object.values(jobData).some(
+    (j) => j?.state === "done" && (j.result?.passes.length ?? 0) > 0,
+  );
 
   /** Set a custom drawn / uploaded / geocoded AOI, clearing any farm target. */
   const setAoiAndClearPin = (geometry: Geometry) => {
@@ -201,6 +236,7 @@ function Studio() {
     setJobIds({ ndvi: null, evi2: null, savi: null, ndre: null, ndmi: null });
     setLocalError(null);
     push.reset();
+    pushAll.reset();
   };
 
   const clearTarget = () => {
@@ -209,7 +245,18 @@ function Studio() {
     setJobIds({ ndvi: null, evi2: null, savi: null, ndre: null, ndmi: null });
     setLocalError(null);
     push.reset();
+    pushAll.reset();
   };
+
+  // Apply a `?farm=` deep-link once the farm list has loaded: pre-select it as the analysis target.
+  // The ref guard keeps this a one-time effect so the analyst can later clear the target freely.
+  useEffect(() => {
+    if (!farmParam || appliedFarmParam.current === farmParam) return;
+    const match = (farms.data ?? []).find((f) => f.canonical_farm_id === farmParam);
+    if (!match) return;
+    appliedFarmParam.current = farmParam;
+    setFarmTargetAndClear(match);
+  }, [farmParam, farms.data]);
 
   const handleRun = async () => {
     const indicesToRun: IndexKey[] = index === "all"
@@ -218,6 +265,7 @@ function Studio() {
 
     setLocalError(null);
     push.reset();
+    pushAll.reset();
     setRunning(true);
 
     // Clear previous job ids for the indices we are running
@@ -270,6 +318,15 @@ function Studio() {
     const jobId = jobIds[viewIndex];
     if (!jobId || !selectedFarmId) return;
     push.mutate({ jobId, req: { canonical_farm_id: selectedFarmId } });
+  };
+
+  /** Push every finished index's 'ok' passes to the gateway under the chosen farm in one action. */
+  const handlePushAll = () => {
+    if (!selectedFarmId || pushableIndexJobs.length === 0) return;
+    pushAll.mutate({
+      jobIds: pushableIndexJobs.map((j) => j.jobId),
+      canonicalFarmId: selectedFarmId,
+    });
   };
 
   const runError = localError;
@@ -446,18 +503,18 @@ function Studio() {
             </div>
           )}
 
-          {!farmTarget && result !== null && okPassCount > 0 ? (
+          {!farmTarget && (okPassCount > 0 || pushableIndexJobs.length > 1) ? (
             <div className="flex flex-col gap-2 border-t border-border pt-4">
               <Label>Push to gateway</Label>
               <p className="text-[11px] text-muted">
-                Push the {INDICES.find((m) => m.key === viewIndex)?.label ?? viewIndex} preview passes
-                to the gateway under a farm.
+                Push the resolved preview passes to the gateway under a farm.
               </p>
               <select
                 value={selectedFarmId}
                 onChange={(e) => {
                   setSelectedFarmId(e.target.value);
                   push.reset();
+                  pushAll.reset();
                 }}
                 className="w-full rounded-md border border-border bg-bg px-2.5 py-1.5 text-xs text-fg focus:outline-none focus:ring-2 focus:ring-accent"
                 aria-label="Farm to push results under"
@@ -469,17 +526,35 @@ function Studio() {
                   </option>
                 ))}
               </select>
-              <Button
-                variant="outline"
-                onClick={handlePush}
-                disabled={!canPush}
-                className="w-full gap-1.5"
-              >
-                <ArrowSquareOut size={14} />
-                {push.isPending
-                  ? "Pushing…"
-                  : `Push ${okPassCount} ${okPassCount === 1 ? "pass" : "passes"} to gateway`}
-              </Button>
+
+              {okPassCount > 0 ? (
+                <Button
+                  variant="outline"
+                  onClick={handlePush}
+                  disabled={!canPush}
+                  className="w-full gap-1.5"
+                >
+                  <ArrowSquareOut size={14} />
+                  {push.isPending
+                    ? "Pushing…"
+                    : `Push ${INDICES.find((m) => m.key === viewIndex)?.label ?? viewIndex} · ${okPassCount} ${okPassCount === 1 ? "pass" : "passes"}`}
+                </Button>
+              ) : null}
+
+              {pushableIndexJobs.length > 1 ? (
+                <Button
+                  variant="primary"
+                  onClick={handlePushAll}
+                  disabled={!canPushAll}
+                  className="w-full gap-1.5"
+                >
+                  <CloudArrowUp size={14} />
+                  {pushAll.isPending
+                    ? "Pushing all…"
+                    : `Push all ${pushableIndexJobs.length} indices · ${totalOkPasses} ${totalOkPasses === 1 ? "pass" : "passes"}`}
+                </Button>
+              ) : null}
+
               {push.isSuccess ? (
                 <p className="text-xs text-positive">
                   {push.data.dry_run
@@ -492,23 +567,59 @@ function Studio() {
                   {push.error instanceof Error ? push.error.message : "Push failed"}
                 </p>
               ) : null}
+
+              {pushAll.isSuccess ? (
+                <p className="text-xs text-positive">
+                  {pushAll.data.dryRun
+                    ? `Recorded ${pushAll.data.pushedPasses} passes across ${pushAll.data.indices} indices (dry-run)`
+                    : `Sent ${pushAll.data.pushedPasses} passes across ${pushAll.data.indices} indices`}
+                </p>
+              ) : null}
+              {pushAll.isError ? (
+                <p className="text-xs text-critical">
+                  {pushAll.error instanceof Error ? pushAll.error.message : "Push failed"}
+                </p>
+              ) : null}
             </div>
           ) : null}
         </aside>
       </div>
 
       {/* Results */}
-      <section className="max-h-[44vh] shrink-0 overflow-y-auto border-t border-border bg-panel">
-        <AOIResultsTable
-          jobs={Object.fromEntries(
-            Object.entries(jobs).map(([k, v]) => [k, v.data])
-          ) as Record<IndexKey, AOIJob | undefined>}
-          pending={running}
-          selectedIndex={index}
-          viewIndex={viewIndex}
-          onViewIndexChange={setViewIndex}
-        />
+      <section className="flex max-h-[44vh] shrink-0 flex-col border-t border-border bg-panel">
+        {anyResults ? (
+          <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border px-3 py-1.5">
+            <span className="text-xs font-medium text-muted">Results</span>
+            <Button
+              variant="outline"
+              onClick={() => setShowReport(true)}
+              className="h-7 gap-1.5 px-2.5 text-xs"
+            >
+              <FileText size={13} /> Report
+            </Button>
+          </div>
+        ) : null}
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          <AOIResultsTable
+            jobs={jobData}
+            pending={running}
+            selectedIndex={index}
+            viewIndex={viewIndex}
+            onViewIndexChange={setViewIndex}
+          />
+        </div>
       </section>
+
+      {showReport ? (
+        <AOIReportModal
+          targetLabel={farmTarget ? farmTarget.label : "Custom area"}
+          mode={mode}
+          dates={dates}
+          months={months}
+          jobs={jobData}
+          onClose={() => setShowReport(false)}
+        />
+      ) : null}
     </main>
   );
 }

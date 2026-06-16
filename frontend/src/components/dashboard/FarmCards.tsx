@@ -1,17 +1,20 @@
-import { Heart, Plant, Warning } from "@phosphor-icons/react";
+import { ArrowRight, ChartLineUp, Heart, Plant, Warning } from "@phosphor-icons/react";
+import { Link } from "@tanstack/react-router";
 
 import { useCanPublish } from "@/auth/permissions";
 import { FarmPushButton } from "@/components/FarmPushButton";
 import { EmptyState, ErrorState, LoadingRows } from "@/components/states";
-import { Badge } from "@/components/ui";
+import { Badge, buttonClasses } from "@/components/ui";
 import type { Farm } from "@/lib/api";
 import { healthTone } from "@/lib/health";
 import { useFarms } from "@/lib/queries";
 import { useFarmPush } from "@/lib/useFarmPush";
 
-/** Per-farm cards with an inline gateway-push action. The push reuses the existing
- *  `POST /farms/{id}/publish` path (geometry-free results only, invariant 6) and is shown only to
- *  users who hold `publish`; the server is authoritative regardless. */
+/** Per-farm cards with an inline gateway-push action plus an "Analyse dates" launcher. The push
+ *  reuses the existing `POST /farms/{id}/publish` path (geometry-free results only, invariant 6)
+ *  and is shown only to users who hold `publish`; the server is authoritative regardless. The
+ *  launcher deep-links to the AOI Studio with this farm pre-selected and is a read-only analyse
+ *  action, so it is shown to every signed-in user. */
 export function FarmCards() {
   const query = useFarms();
   const farms = query.data ?? [];
@@ -70,11 +73,21 @@ function FarmCard({ farm, canPublish }: { farm: Farm; canPublish: boolean }) {
         </span>
       </div>
 
-      {canPublish ? (
-        <div className="mt-1 flex min-h-8 items-center">
+      <div className="mt-1 flex min-h-8 flex-wrap items-center gap-2">
+        {canPublish ? (
           <FarmPushButton push={push} className="h-8 gap-1.5 px-2.5 text-xs" />
-        </div>
-      ) : null}
+        ) : null}
+        <Link
+          to="/aoi-studio"
+          search={{ farm: farm.canonical_farm_id }}
+          aria-label={`Analyse custom dates for ${farm.name || farm.canonical_farm_id}`}
+          className={buttonClasses("outline", "h-8 gap-1.5 px-2.5 text-xs")}
+        >
+          <ChartLineUp size={14} />
+          Analyse dates
+          <ArrowRight size={13} />
+        </Link>
+      </div>
       {showError ? (
         <p className="flex items-center gap-1 text-[11px] text-critical">
           <Warning size={12} />

@@ -213,6 +213,40 @@ export function usePushAOIResults() {
   });
 }
 
+export interface PushAllAOIResult {
+  pushedPasses: number;
+  indices: number;
+  dryRun: boolean;
+}
+
+/** Push every supplied AOI Studio job (one per index) to the gateway under a single farm, in
+ *  parallel. Each call is the same per-job push the single-index button uses, so the gateway
+ *  contract is untouched; this only fans the existing call out across the run's indices and folds
+ *  the responses into one summary for the studio. */
+export function usePushAllAOIResults() {
+  const { token } = useToken();
+  return useMutation({
+    mutationFn: async ({
+      jobIds,
+      canonicalFarmId,
+    }: {
+      jobIds: string[];
+      canonicalFarmId: string;
+    }): Promise<PushAllAOIResult> => {
+      const results = await Promise.all(
+        jobIds.map((jobId) =>
+          api.pushAOIResults(jobId, { canonical_farm_id: canonicalFarmId }, token!),
+        ),
+      );
+      return {
+        pushedPasses: results.reduce((sum, r) => sum + r.pushed_passes, 0),
+        indices: results.length,
+        dryRun: results.some((r) => r.dry_run),
+      };
+    },
+  });
+}
+
 /** Start a multi-pass AOI preview (AOI Studio) for an entire farm: the server unions all field
  *  geometries and runs the same engine. Resolves to `{ job_id }`; feed into `useAOIJob`. */
 export function useAnalyseFarmSeries() {
