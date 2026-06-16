@@ -1,4 +1,5 @@
 import {
+  ArrowSquareOut,
   Crosshair,
   FloppyDisk,
   House,
@@ -31,7 +32,7 @@ import { api, type AOIJob, type AOISeriesMode, type Farm } from "@/lib/api";
 import { deleteCustomAOI, saveCustomAOI, useCustomAOIs } from "@/lib/customAOIs";
 import { cn } from "@/lib/format";
 import { DEFAULT_INDEX, INDICES, type IndexKey } from "@/lib/indices";
-import { useAOIJob } from "@/lib/queries";
+import { useAOIJob, useFarms, usePushAOIResults } from "@/lib/queries";
 import { useTheme } from "@/lib/theme";
 
 // Mirrors MAX_BATCH_DATES in services/api/workspace/analyse.py — keep them in step.
@@ -121,6 +122,9 @@ function Studio() {
   // Local state to track which index we are currently viewing in the results tab.
   const [viewIndex, setViewIndex] = useState<IndexKey>("ndvi");
 
+  // Farm chosen in the custom-AOI "push to gateway" panel; the push targets the viewed index's job.
+  const [selectedFarmId, setSelectedFarmId] = useState<string>("");
+
   const [drawMode, setDrawMode] = useState(false);
   const [showCoords, setShowCoords] = useState(false);
   const [showUpload, setShowUpload] = useState(false);
@@ -157,12 +161,28 @@ function Studio() {
     (aoi !== null || farmTarget !== null) &&
     (mode === "backfill" || dates.length > 0);
 
+  // Whole-farm push (FarmPushButton) reuses the standard /farms/{id}/publish state machine.
   const pushState = useFarmPush(farmTarget?.canonicalFarmId ?? "");
 
   const hasJobs = Object.values(jobIds).some((id) => id !== null);
   const allJobsDone = hasJobs && Object.entries(jobIds)
     .filter(([_, id]) => id !== null)
     .every(([key, _]) => jobs[key as IndexKey].data?.state === "done");
+
+  // Custom-AOI preview push (POST /analyse/aoi/jobs/{id}/push): push the viewed index's resolved
+  // 'ok' passes to the gateway under a chosen farm. Only surfaced when a custom AOI is analysed;
+  // whole-farm targets use the FarmPushButton publish above instead.
+  const farms = useFarms();
+  const push = usePushAOIResults();
+  const viewedJob = jobs[viewIndex];
+  const result = viewedJob.data?.state === "done" ? (viewedJob.data.result ?? null) : null;
+  const okPassCount = result?.passes.filter((p) => p.status === "ok").length ?? 0;
+  const canPush =
+    !!jobIds[viewIndex] &&
+    result !== null &&
+    okPassCount > 0 &&
+    !!selectedFarmId &&
+    !push.isPending;
 
   /** Set a custom drawn / uploaded / geocoded AOI, clearing any farm target. */
   const setAoiAndClearPin = (geometry: Geometry) => {
@@ -180,6 +200,7 @@ function Studio() {
     setFarmTarget({ canonicalFarmId: farm.canonical_farm_id, label: farm.name ?? farm.canonical_farm_id });
     setJobIds({ ndvi: null, evi2: null, savi: null, ndre: null, ndmi: null });
     setLocalError(null);
+    push.reset();
   };
 
   const clearTarget = () => {
@@ -187,6 +208,7 @@ function Studio() {
     setFarmTarget(null);
     setJobIds({ ndvi: null, evi2: null, savi: null, ndre: null, ndmi: null });
     setLocalError(null);
+    push.reset();
   };
 
   const handleRun = async () => {
@@ -195,6 +217,7 @@ function Studio() {
       : [index];
 
     setLocalError(null);
+    push.reset();
     setRunning(true);
 
     // Clear previous job ids for the indices we are running
@@ -240,6 +263,13 @@ function Studio() {
     } finally {
       setRunning(false);
     }
+  };
+
+  /** Push the resolved 'ok' passes of the currently-viewed index's job to the gateway. */
+  const handlePush = () => {
+    const jobId = jobIds[viewIndex];
+    if (!jobId || !selectedFarmId) return;
+    push.mutate({ jobId, req: { canonical_farm_id: selectedFarmId } });
   };
 
   const runError = localError;
@@ -361,7 +391,8 @@ function Studio() {
               <Label>Dates ({dates.length})</Label>
               <DateBatchInput dates={dates} onChange={setDates} max={MAX_BATCH_DATES} />
               <p className="text-[11px] text-muted">
-                Each date resolves to its same-day satellite pass, or is marked "no pass."
+                Each date resolves to its same-day pass; if none exists, the two nearest passes are
+                averaged.
               </p>
             </div>
           ) : (
@@ -414,6 +445,55 @@ function Studio() {
               <FarmPushButton push={pushState} className="w-full gap-1.5" />
             </div>
           )}
+
+          {!farmTarget && result !== null && okPassCount > 0 ? (
+            <div className="flex flex-col gap-2 border-t border-border pt-4">
+              <Label>Push to gateway</Label>
+              <p className="text-[11px] text-muted">
+                Push the {INDICES.find((m) => m.key === viewIndex)?.label ?? viewIndex} preview passes
+                to the gateway under a farm.
+              </p>
+              <select
+                value={selectedFarmId}
+                onChange={(e) => {
+                  setSelectedFarmId(e.target.value);
+                  push.reset();
+                }}
+                className="w-full rounded-md border border-border bg-bg px-2.5 py-1.5 text-xs text-fg focus:outline-none focus:ring-2 focus:ring-accent"
+                aria-label="Farm to push results under"
+              >
+                <option value="">Select a farm…</option>
+                {(farms.data ?? []).map((f) => (
+                  <option key={f.canonical_farm_id} value={f.canonical_farm_id}>
+                    {f.name ?? f.canonical_farm_id}
+                  </option>
+                ))}
+              </select>
+              <Button
+                variant="outline"
+                onClick={handlePush}
+                disabled={!canPush}
+                className="w-full gap-1.5"
+              >
+                <ArrowSquareOut size={14} />
+                {push.isPending
+                  ? "Pushing…"
+                  : `Push ${okPassCount} ${okPassCount === 1 ? "pass" : "passes"} to gateway`}
+              </Button>
+              {push.isSuccess ? (
+                <p className="text-xs text-positive">
+                  {push.data.dry_run
+                    ? `Recorded ${push.data.pushed_passes} passes (dry-run)`
+                    : `Sent ${push.data.pushed_passes} passes`}
+                </p>
+              ) : null}
+              {push.isError ? (
+                <p className="text-xs text-critical">
+                  {push.error instanceof Error ? push.error.message : "Push failed"}
+                </p>
+              ) : null}
+            </div>
+          ) : null}
         </aside>
       </div>
 

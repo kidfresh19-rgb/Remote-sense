@@ -21,7 +21,7 @@ from collections.abc import Callable
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
-from rs_analysis import analyze_index, confidence_for, get_index
+from rs_analysis import analyze_index, get_index
 from rs_core import get_settings
 from rs_imagery import AOI, AccessPort, SceneRef, TimeRange, get_access_adapter
 

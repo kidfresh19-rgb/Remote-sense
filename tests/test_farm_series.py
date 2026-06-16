@@ -23,6 +23,7 @@ from services.api.workspace import (
     analyse_farm_series_endpoint,
 )
 from services.worker.tasks.analysis import (
+    _INTERP_PAD_DAYS,
     _analyse_farm_series,
     _union_geometries,
 )
@@ -104,28 +105,46 @@ async def test_farm_series_backfill_returns_passes() -> None:
 
 
 async def test_farm_series_dates_mode_exact_day() -> None:
+    """An exact same-day pass over the farm's union geometry resolves to 'ok'.
+
+    Dates mode pads the archive search by ±_INTERP_PAD_DAYS and re-anchors it at min(dates), so
+    the mock's revisit grid lands on min-pad, min-pad+revisit, ... With pad=7 and revisit=5 that
+    puts an exact grid hit at min(dates)+3, while min(dates) itself falls between two passes."""
     adapter = _adapter()
-    anchor = datetime(2025, 1, 1, tzinfo=UTC)
     geom = _union_geometries([_FIELD_GEOM_A, _FIELD_GEOM_B])
+    d_min = date(2025, 1, 1)
+    d_on_grid = d_min + timedelta(days=3)
+
+    # Guard: confirm the expected grid scene survives the cloud filter before asserting on it.
+    padded_start = datetime(d_min.year, d_min.month, d_min.day, tzinfo=UTC) - timedelta(
+        days=_INTERP_PAD_DAYS
+    )
+    padded_end = datetime(d_on_grid.year, d_on_grid.month, d_on_grid.day, tzinfo=UTC) + timedelta(
+        days=1 + _INTERP_PAD_DAYS
+    )
     found = await adapter.search(
         AOI(geometry=geom),
-        TimeRange(start=anchor, end=anchor + timedelta(days=60)),
+        TimeRange(start=padded_start, end=padded_end),
         max_scene_cloud_pct=70.0,
     )
-    assert found, "mock adapter must yield passes in a 60-day window"
-    d_ok = found[0].sensing_datetime.date()
+    grid_dates = {s.sensing_datetime.date() for s in found}
+    assert d_on_grid in grid_dates, (
+        "expected grid point excluded by cloud filter; choose a different anchor"
+    )
 
     out = await _analyse_farm_series(
         _MOCK_FIELDS,
         "ndvi",
         "dates",
-        [d_ok.isoformat()],
+        [d_min.isoformat(), d_on_grid.isoformat()],
         None,
         adapter=adapter,
     )
     assert out["mode"] == "dates"
-    assert out["passes"][0]["status"] == "ok"
-    assert out["passes"][0]["pass_date"] == d_ok.isoformat()
+    # passes are returned in sorted requested-date order; the on-grid date is the exact match.
+    p_exact = out["passes"][1]
+    assert p_exact["status"] == "ok"
+    assert p_exact["pass_date"] == d_on_grid.isoformat()
 
 
 async def test_farm_series_empty_fields_raises() -> None:
