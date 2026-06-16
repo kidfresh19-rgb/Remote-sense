@@ -1,5 +1,4 @@
 import {
-  ArrowSquareOut,
   CloudArrowUp,
   Crosshair,
   FileText,
@@ -22,11 +21,11 @@ import { TokenGate } from "@/auth/TokenGate";
 import { useToken } from "@/auth/TokenProvider";
 import { AOIBar } from "@/components/AOIBar";
 import { AOIReportModal } from "@/components/aoi/AOIReportModal";
+import { GatewaySendModal } from "@/components/aoi/GatewaySendModal";
 import { AOIResultsTable } from "@/components/aoi/AOIResultsTable";
 import { CoordinateEntryModal } from "@/components/CoordinateEntryModal";
 import { DateBatchInput } from "@/components/DateBatchInput";
 import { FarmFieldPickerModal } from "@/components/FarmFieldPickerModal";
-import { FarmPushButton } from "@/components/FarmPushButton";
 import { FileUploadPanel } from "@/components/FileUploadPanel";
 import { bboxOf, useFieldMap } from "@/components/useFieldMap";
 import { Badge, Button, IconButton, SegmentedControl } from "@/components/ui";
@@ -136,6 +135,7 @@ function Studio() {
   const [showUpload, setShowUpload] = useState(false);
   const [showFarms, setShowFarms] = useState(false);
   const [showReport, setShowReport] = useState(false);
+  const [showSend, setShowSend] = useState(false);
   const [marker, setMarker] = useState<[number, number] | null>(null);
 
   // Once-only guard so a `?farm=` deep-link pre-selects that farm without re-applying after the
@@ -175,26 +175,17 @@ function Studio() {
   // Whole-farm push (FarmPushButton) reuses the standard /farms/{id}/publish state machine.
   const pushState = useFarmPush(farmTarget?.canonicalFarmId ?? "");
 
-  const hasJobs = Object.values(jobIds).some((id) => id !== null);
-  const allJobsDone = hasJobs && Object.entries(jobIds)
-    .filter(([_, id]) => id !== null)
-    .every(([key, _]) => jobs[key as IndexKey].data?.state === "done");
 
   // Custom-AOI preview push (POST /analyse/aoi/jobs/{id}/push): push the viewed index's resolved
   // 'ok' passes to the gateway under a chosen farm. Only surfaced when a custom AOI is analysed;
-  // whole-farm targets use the FarmPushButton publish above instead.
+  // whole-farm targets use FarmPushButton (via GatewaySendModal) instead.
   const farms = useFarms();
   const push = usePushAOIResults();
   const pushAll = usePushAllAOIResults();
   const viewedJob = jobs[viewIndex];
   const result = viewedJob.data?.state === "done" ? (viewedJob.data.result ?? null) : null;
-  const okPassCount = result?.passes.filter((p) => p.status === "ok").length ?? 0;
-  const canPush =
-    !!jobIds[viewIndex] &&
-    result !== null &&
-    okPassCount > 0 &&
-    !!selectedFarmId &&
-    !push.isPending;
+  const okPassCount =
+    result?.passes.filter((p) => p.status === "ok" || p.status === "interpolated").length ?? 0;
 
   // Every index whose job finished with at least one exact ('ok') pass: the set "Push all" sends.
   const pushableIndexJobs = (Object.keys(jobIds) as IndexKey[])
@@ -203,13 +194,14 @@ function Studio() {
       const data = jobs[key].data;
       const okCount =
         data?.state === "done"
-          ? (data.result?.passes.filter((p) => p.status === "ok").length ?? 0)
+          ? (data.result?.passes.filter(
+              (p) => p.status === "ok" || p.status === "interpolated",
+            ).length ?? 0)
           : 0;
       return id && okCount > 0 ? { key, jobId: id, okCount } : null;
     })
     .filter((x): x is { key: IndexKey; jobId: string; okCount: number } => x !== null);
   const totalOkPasses = pushableIndexJobs.reduce((sum, j) => sum + j.okCount, 0);
-  const canPushAll = !!selectedFarmId && pushableIndexJobs.length > 1 && !pushAll.isPending;
 
   // The job data the results table and report read from, shaped to AOIJob | undefined per index.
   const jobData = Object.fromEntries(
@@ -313,21 +305,16 @@ function Studio() {
     }
   };
 
-  /** Push the resolved 'ok' passes of the currently-viewed index's job to the gateway. */
-  const handlePush = () => {
-    const jobId = jobIds[viewIndex];
-    if (!jobId || !selectedFarmId) return;
-    push.mutate({ jobId, req: { canonical_farm_id: selectedFarmId } });
+  /** Open the shared send surface. If the report is currently open, close it first so the send
+   *  modal sits on top of a clean backdrop rather than stacking two dialogs. */
+  const openSend = () => {
+    setShowReport(false);
+    setShowSend(true);
   };
 
-  /** Push every finished index's 'ok' passes to the gateway under the chosen farm in one action. */
-  const handlePushAll = () => {
-    if (!selectedFarmId || pushableIndexJobs.length === 0) return;
-    pushAll.mutate({
-      jobIds: pushableIndexJobs.map((j) => j.jobId),
-      canonicalFarmId: selectedFarmId,
-    });
-  };
+  // Whether there is anything the send surface can act on right now.
+  const canSendAnything =
+    !!farmTarget || pushableIndexJobs.length > 0 || okPassCount > 0;
 
   const runError = localError;
 
@@ -496,92 +483,6 @@ function Studio() {
             </p>
           ) : null}
 
-          {farmTarget && allJobsDone && (
-            <div className="mt-3 border-t border-border pt-3 flex flex-col gap-2 animate-in fade-in slide-in-from-bottom-2 duration-200">
-              <Label>Gateway Sync</Label>
-              <FarmPushButton push={pushState} className="w-full gap-1.5" />
-            </div>
-          )}
-
-          {!farmTarget && (okPassCount > 0 || pushableIndexJobs.length > 1) ? (
-            <div className="flex flex-col gap-2 border-t border-border pt-4">
-              <Label>Push to gateway</Label>
-              <p className="text-[11px] text-muted">
-                Push the resolved preview passes to the gateway under a farm.
-              </p>
-              <select
-                value={selectedFarmId}
-                onChange={(e) => {
-                  setSelectedFarmId(e.target.value);
-                  push.reset();
-                  pushAll.reset();
-                }}
-                className="w-full rounded-md border border-border bg-bg px-2.5 py-1.5 text-xs text-fg focus:outline-none focus:ring-2 focus:ring-accent"
-                aria-label="Farm to push results under"
-              >
-                <option value="">Select a farm…</option>
-                {(farms.data ?? []).map((f) => (
-                  <option key={f.canonical_farm_id} value={f.canonical_farm_id}>
-                    {f.name ?? f.canonical_farm_id}
-                  </option>
-                ))}
-              </select>
-
-              {okPassCount > 0 ? (
-                <Button
-                  variant="outline"
-                  onClick={handlePush}
-                  disabled={!canPush}
-                  className="w-full gap-1.5"
-                >
-                  <ArrowSquareOut size={14} />
-                  {push.isPending
-                    ? "Pushing…"
-                    : `Push ${INDICES.find((m) => m.key === viewIndex)?.label ?? viewIndex} · ${okPassCount} ${okPassCount === 1 ? "pass" : "passes"}`}
-                </Button>
-              ) : null}
-
-              {pushableIndexJobs.length > 1 ? (
-                <Button
-                  variant="primary"
-                  onClick={handlePushAll}
-                  disabled={!canPushAll}
-                  className="w-full gap-1.5"
-                >
-                  <CloudArrowUp size={14} />
-                  {pushAll.isPending
-                    ? "Pushing all…"
-                    : `Push all ${pushableIndexJobs.length} indices · ${totalOkPasses} ${totalOkPasses === 1 ? "pass" : "passes"}`}
-                </Button>
-              ) : null}
-
-              {push.isSuccess ? (
-                <p className="text-xs text-positive">
-                  {push.data.dry_run
-                    ? `Recorded ${push.data.pushed_passes} passes (dry-run)`
-                    : `Sent ${push.data.pushed_passes} passes`}
-                </p>
-              ) : null}
-              {push.isError ? (
-                <p className="text-xs text-critical">
-                  {push.error instanceof Error ? push.error.message : "Push failed"}
-                </p>
-              ) : null}
-
-              {pushAll.isSuccess ? (
-                <p className="text-xs text-positive">
-                  {pushAll.data.dryRun
-                    ? `Recorded ${pushAll.data.pushedPasses} passes across ${pushAll.data.indices} indices (dry-run)`
-                    : `Sent ${pushAll.data.pushedPasses} passes across ${pushAll.data.indices} indices`}
-                </p>
-              ) : null}
-              {pushAll.isError ? (
-                <p className="text-xs text-critical">
-                  {pushAll.error instanceof Error ? pushAll.error.message : "Push failed"}
-                </p>
-              ) : null}
-            </div>
-          ) : null}
         </aside>
       </div>
 
@@ -590,13 +491,24 @@ function Studio() {
         {anyResults ? (
           <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border px-3 py-1.5">
             <span className="text-xs font-medium text-muted">Results</span>
-            <Button
-              variant="outline"
-              onClick={() => setShowReport(true)}
-              className="h-7 gap-1.5 px-2.5 text-xs"
-            >
-              <FileText size={13} /> Report
-            </Button>
+            <div className="flex items-center gap-1.5">
+              <Button
+                variant="outline"
+                onClick={() => setShowReport(true)}
+                className="h-7 gap-1.5 px-2.5 text-xs"
+              >
+                <FileText size={13} /> Report
+              </Button>
+              <Button
+                variant="outline"
+                onClick={openSend}
+                disabled={!canSendAnything}
+                title={canSendAnything ? undefined : "No exact passes ready to send yet"}
+                className="h-7 gap-1.5 px-2.5 text-xs"
+              >
+                <CloudArrowUp size={13} /> Send
+              </Button>
+            </div>
           </div>
         ) : null}
         <div className="min-h-0 flex-1 overflow-y-auto">
@@ -618,6 +530,29 @@ function Studio() {
           months={months}
           jobs={jobData}
           onClose={() => setShowReport(false)}
+          canSend={canSendAnything}
+          onSend={openSend}
+        />
+      ) : null}
+
+      {showSend ? (
+        <GatewaySendModal
+          farmPush={farmTarget ? pushState : null}
+          viewIndex={viewIndex}
+          okPassCount={okPassCount}
+          pushableIndexJobs={pushableIndexJobs}
+          totalOkPasses={totalOkPasses}
+          selectedFarmId={selectedFarmId}
+          onSelectedFarmIdChange={(id) => {
+            setSelectedFarmId(id);
+            push.reset();
+            pushAll.reset();
+          }}
+          farms={farms.data ?? []}
+          push={push}
+          pushAll={pushAll}
+          viewedJobId={jobIds[viewIndex]}
+          onClose={() => setShowSend(false)}
         />
       ) : null}
     </main>

@@ -1,4 +1,4 @@
-import { FileText, X } from "@phosphor-icons/react";
+import { CloudArrowUp, FileText, X } from "@phosphor-icons/react";
 import { useEffect } from "react";
 
 import type { AOIJob, AOISeriesMode } from "@/lib/api";
@@ -17,12 +17,17 @@ interface AOIReportModalProps {
   months: number;
   jobs: Record<IndexKey, AOIJob | undefined>;
   onClose: () => void;
+  /** Called when the analyst clicks "Send to gateway". Closes this modal and opens the send
+   *  surface. Only rendered when true. */
+  canSend?: boolean;
+  onSend?: () => void;
 }
 
 /** A read-only, on-screen summary of a finished custom-date / backfill run, spanning every index
- *  that produced usable passes. Nothing here is persisted or sent anywhere: it is a printable-feel
- *  view the analyst reads or screenshots. The numbers are the same resolved passes shown in the
- *  results table, grouped per index with the trend sparkline above each. */
+ *  that produced usable passes. The analyst can trigger gateway send from the footer when results
+ *  are ready; passing `onSend` opens the shared GatewaySendModal flow without navigating away.
+ *  The numbers are the same resolved passes shown in the results table, grouped per index with the
+ *  trend sparkline above each. */
 export function AOIReportModal({
   targetLabel,
   mode,
@@ -30,6 +35,8 @@ export function AOIReportModal({
   months,
   jobs,
   onClose,
+  canSend,
+  onSend,
 }: AOIReportModalProps) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -210,10 +217,24 @@ export function AOIReportModal({
         </div>
 
         <div className="flex items-center justify-between gap-3 border-t border-border px-4 py-3">
-          <p className="text-[11px] text-muted">Preview only. Nothing is persisted.</p>
-          <Button variant="primary" onClick={onClose} className="gap-1.5">
-            Done
-          </Button>
+          <p className="text-[11px] text-muted">Preview only. Results are not persisted locally.</p>
+          <div className="flex items-center gap-2">
+            {onSend ? (
+              <Button
+                variant="outline"
+                onClick={onSend}
+                disabled={!canSend}
+                title={canSend ? undefined : "No exact passes ready to send yet"}
+                className="gap-1.5"
+              >
+                <CloudArrowUp size={14} />
+                Send to gateway
+              </Button>
+            ) : null}
+            <Button variant="primary" onClick={onClose} className="gap-1.5">
+              Done
+            </Button>
+          </div>
         </div>
       </div>
     </div>

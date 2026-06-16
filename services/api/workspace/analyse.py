@@ -32,8 +32,9 @@ class AOIAnalysisRequest(BaseModel):
 
 
 class AOIPushRequest(BaseModel):
-    """Push the resolved 'ok' passes of a completed AOI Studio job to the gateway, tagged to a
-    farm. Only exact same-day passes carry full single-scene provenance and are eligible."""
+    """Push passes of a completed AOI Studio job to the gateway, tagged to a farm.
+    Both exact same-day passes (status='ok') and averaged/interpolated passes
+    (status='interpolated') are included."""
 
     canonical_farm_id: str
 
@@ -238,9 +239,11 @@ async def push_aoi_results_endpoint(
     payload: AOIPushRequest,
     principal: RunAnalysisPrincipal,
 ) -> dict[str, Any]:
-    """Push the 'ok' passes of a completed AOI Studio job to the gateway under a farm's canonical
-    id. Only exact same-day passes (status='ok') are included - they carry the full single-scene
-    provenance that IndexResult requires. Interpolated passes are omitted. Requires `run_analysis`.
+    """Push passes of a completed AOI Studio job to the gateway under a farm's canonical id.
+    Both exact same-day passes (status='ok') and averaged/interpolated passes
+    (status='interpolated') are included. For interpolated passes, a synthetic
+    provider_scene_id is built from the two source scenes and processing_mode is set to
+    'interpolated' so the gateway can distinguish them. Requires `run_analysis`.
 
     # ⚑ CONFIRM: deliberate relaxation of invariant 6 for AOI Studio - ad-hoc analyses are not
     persisted to the DB but can be pushed to the gateway tagged to an existing farm."""
@@ -260,34 +263,77 @@ async def push_aoi_results_endpoint(
             "job is not done yet or was not found; only completed jobs can be pushed",
         )
 
-    ok_passes = [p for p in job_result.get("passes", []) if p.get("status") == "ok"]
-    if not ok_passes:
+    pushable_passes = [
+        p
+        for p in job_result.get("passes", [])
+        if p.get("status") in ("ok", "interpolated")
+    ]
+    if not pushable_passes:
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_ENTITY,
-            "no exact-match passes to push; only 'ok' passes carry full provenance",
+            "no passes to push; run an analysis first and ensure at least one pass resolved",
         )
 
-    results = [
-        IndexResult(
+    def _build_result(p: dict[str, Any]) -> IndexResult:
+        """Map a single pass dict (ok or interpolated) onto an IndexResult."""
+        is_interpolated = p.get("status") == "interpolated"
+
+        if is_interpolated:
+            # Interpolated passes are averaged from two source scenes.  Use the earlier
+            # source date as the canonical pass_date so the gateway record is anchored to a
+            # real observation window.
+            before: dict[str, Any] = p.get("before") or {}
+            after: dict[str, Any] = p.get("after") or {}
+            pass_date_str = (
+                p.get("before_pass_date")
+                or before.get("pass_date")
+                or p.get("requested_date")
+                or p.get("pass_date")
+            )
+            before_sid = before.get("provider_scene_id") or before.get("scene_id", "")
+            after_sid = after.get("provider_scene_id") or after.get("scene_id", "")
+            scene_id = (
+                f"avg:{before_sid}+{after_sid}" if (before_sid or after_sid) else "interpolated"
+            )
+            provider = before.get("provider") or after.get("provider") or "interpolated"
+            # Average clear_fraction from the two sub-passes when available.
+            cf_before = before.get("clear_fraction")
+            cf_after = after.get("clear_fraction")
+            if cf_before is not None and cf_after is not None:
+                clear_fraction = (cf_before + cf_after) / 2.0
+            else:
+                clear_fraction = p.get("clear_fraction", 0.0)
+            processing_mode = "interpolated"
+        else:
+            pass_date_str = p.get("pass_date")
+            scene_id = p.get("provider_scene_id") or p.get("scene_id", "unknown")
+            provider = p.get("provider", "unknown")
+            clear_fraction = p.get("clear_fraction", 0.0)
+            processing_mode = p.get("processing_mode", "unknown")
+
+        if not pass_date_str:
+            raise ValueError(f"pass is missing a date: {p!r}")
+
+        return IndexResult(
             canonical_field_id=None,
             index_name=p["index"],
-            pass_date=date.fromisoformat(p["pass_date"]),
+            pass_date=date.fromisoformat(pass_date_str),
             mean=p.get("mean"),
             min=p.get("min"),
             max=p.get("max"),
             std=None,
             p10=p.get("p10"),
             p90=p.get("p90"),
-            clear_fraction=p.get("clear_fraction", 0.0),
+            clear_fraction=clear_fraction,
             confidence=p.get("confidence"),
             resolution_m=float(p.get("resolution_m", 10)),
             formula_version=p.get("formula_version", "unknown"),
-            provider=p.get("provider", "unknown"),
-            provider_scene_id=p.get("provider_scene_id", p.get("scene_id", "unknown")),
-            processing_mode=p.get("processing_mode", "unknown"),
+            provider=provider,
+            provider_scene_id=scene_id,
+            processing_mode=processing_mode,
         )
-        for p in ok_passes
-    ]
+
+    results = [_build_result(p) for p in pushable_passes]
 
     settings = get_settings()
     gateway = gateway_from_settings(settings)
