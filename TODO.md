@@ -28,3 +28,17 @@ This todo list tracks the specific tasks required to implement the advanced agro
 ### 4. Prompt Context Refinement (Backend / `rs_interpret`)
 - [x] **Context Guidelines**: Update `SYSTEM_CONTEXT` in `packages/rs_interpret/prompts.py` to instruct the model on how to evaluate index trends (e.g. ndvi/ndre) relative to temperature/GDD anomalies, water deficit, and recent farm activities.
 - [x] **Prompt Versioning**: Bump `PROMPT_VERSION` to `interp/v2` to track the change.
+
+---
+
+## 📌 PRD 0002 — Farm Comparison Groups (entering Slice)
+
+Spec: `docs/prd/0002-farm-comparison-groups.md` (Status: `ready-for-agent`). Sliced into
+`docs/backlog/0002` through `0013` via `/to-issues` (dependency order; 0007 and 0009 are HITL).
+Three open items to resolve before merge, each embedded in its gating slice file:
+- [ ] **Size buckets**: agronomy-scientist review required (Zimbabwe typology; the placeholder
+  0 to 10 / 10 to 50 / 50+ ha must not ship as-is). Gates the peer-cohort slice.
+- [ ] **Neighbourhood params**: confirm default K (about 20) or radius (about 10 km), both
+  configurable. Gates the neighbourhood slice.
+- [ ] **RBAC perms**: confirm role mappings for `upload_region_boundary`, `create_cohort` /
+  `manage_cohort`, `view_group`. Gates the group-view, upload, and cohort slices.
