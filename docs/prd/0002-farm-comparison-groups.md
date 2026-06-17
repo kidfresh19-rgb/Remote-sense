@@ -7,6 +7,10 @@
 - Related: ADR 0010 (region boundaries are remote-sense-owned analytical reference geometry),
   ADR 0007 (grounding-context fusion), CONTEXT.md (comparison-group glossary added this session),
   CLAUDE.md section 1 invariants (5 provenance, 6 split-ownership), PLAN.md.
+- Update 2026-06-17 (`/grill-with-docs`): D5 / Slice 5 extended to analyst-drawn and single-feature
+  region creation, `source` provenance on every boundary, and a Natural Region composition + dominant
+  NR for cross-zone boundaries. New `create_region_cluster` permission (Open Item 3) and a dominant-NR
+  split threshold (Open Item 4). See the ADR 0010 amendment and backlog 0005 / 0014.
 
 ## Problem
 
@@ -57,14 +61,22 @@ Open Items section) is noted where one applies.
 3. **Group view API and route** [needs 2; gated by Open Item 3 RBAC `view_group`]. `GET
    /api/groups/:id/overview` and the `/groups/:id` dashboard route.
 4. **Workspace group-context panel** [needs 2]. `GET /api/farms/:id/group-context` and the panel.
-5. **Region-boundary upload** [needs 1; gated by Open Item 3 RBAC `upload_region_boundary`].
-   Multi-feature `.zip` shapefile / GeoJSON / GeoPackage upload, name-column mapping, recompute.
+5. **Region creation (backend / API)** [needs 1; gated by Open Item 3 RBAC -
+   `create_region_cluster` for draw/single, `upload_region_boundary` for bulk]. The `.zip` shapefile
+   / GeoJSON / GeoPackage upload (multi- and single-feature) with name-column mapping, and the
+   `create_region_cluster` endpoint that accepts a drawn polygon. Every boundary is `source`-tagged
+   and carries a derived Natural Region composition + dominant NR; recompute on create and on boundary
+   edit. The interactive draw surface is Slice 9.
 6. **Peer cohorts** [needs 2; gated by Open Item 1 size buckets and Open Item 3 RBAC cohort
    permissions]. Cohort-definition model, live membership, irrigation tag, cohort comparison.
 7. **On-demand neighbourhood** [needs 2; gated by Open Item 2 neighbourhood params]. KNN/radius
    within Natural Region and neighbourhood comparison.
 8. **Map layers** [needs 1, 5, 7]. Natural Region boundaries, uploaded boundaries, neighbourhood
    overlay, and the cluster choropleth, all toggleable and default off.
+9. **Workspace draw-to-create UI** [needs 5, 8a, 8b]. The workspace control to draw a region around
+   the viewed farm (freeform polygon or radius circle) or upload a single boundary file, with a live
+   captured-farm / usable-data count, name-and-save through the Slice 5 endpoint, a link to the new
+   group view, and a `source` filter on the map boundary layers.
 
 ## User Stories
 
@@ -136,6 +148,18 @@ Open Items section) is noted where one applies.
     so that the split-ownership contract stays intact (ADR 0010).
 33. As an administrator, I want control over who can upload region boundaries, manage cohorts, and
     view groups, so that these new capabilities are governed by RBAC.
+34. As an analyst, I want to draw a cluster area around the farm I am viewing, as a freeform polygon
+    or a radius circle, and have it become a reusable region cluster, so that I can compare against a
+    set I define on the spot without sourcing a shapefile first.
+35. As an analyst, I want to upload a single boundary file as one region, so that I can reuse an
+    existing area without it being a whole administrative layer.
+36. As an analyst, I want drawn regions tagged as analyst-drawn and filterable on the map, so that my
+    ad-hoc areas do not clutter the official seeded and uploaded layers.
+37. As an analyst, I want a drawn area that spans two Natural Regions kept exactly as I drew it but
+    tagged with its zone composition and a dominant region, so that the comparison stays honest
+    without my boundary being silently clipped or rejected.
+38. As an analyst, I want to see how many farms and how many with usable data fall inside my drawn
+    area before I save it, so that I never create an empty or unusable cluster.
 
 ## Implementation Decisions
 
@@ -160,7 +184,10 @@ gateway-owned farm-identity geometry (ADR 0010).
 The comparison unit is the **farm**, using the existing area-weighted, crop-aware health definition
 (`overall_health`, derived through `classify("ndvi", value, crop)`). **Standing** is a crop-stratified
 percentile within the group; where a crop is too sparse to stratify, it falls back to comparing the
-classified-status distribution rather than raw values. **Movement** is the headline lens.
+classified-status distribution rather than raw values. **Movement** is the headline lens. For a
+region cluster that spans Natural Regions, standing benchmarks within the **dominant** Natural Region
+by default and breaks out a per-Natural-Region view when the composition spread exceeds the configured
+threshold (Open Item 4), so a cross-zone boundary never silently pools divergent baselines.
 
 - **Acceptance:** standing ranks a farm only against same-crop area within the group; a synthetic
   group mixing maize and tobacco never ranks one crop against the other on raw NDVI. Health values
@@ -197,21 +224,46 @@ change, boundary-layer upload, and cohort-criteria edit.
   triggers a recompute that lands it in the correct region assignment idempotently. No persisted
   DBSCAN entity exists.
 
-### D5. Region boundaries (see ADR 0010)
+### D5. Region boundaries: seed, upload, draw (see ADR 0010 + amendment)
 
 Seed the Zimbabwe Natural Region layer (I to V) read-only at init, version-stamped with source and
-year (the current official map). Support analyst uploads as `.zip` shapefile, GeoJSON, or GeoPackage,
-multi-feature, read via geopandas (already a `geo` dependency, no new dependency), with the analyst
-mapping the name column. Each feature is validated and reprojected to WGS84 reusing the existing geo
-helpers; CRS comes from the `.prj`, and a missing CRS prompts the analyst rather than guessing. Farms
-are assigned by centroid point-in-polygon, boundary-adjacent farms are flagged, and each assignment is
-stamped with the boundary-layer version. Majority-area-overlap assignment is deferred to v2.
+year (the current official map). A region boundary is then created three ways, all the same
+reference-geometry category, each tagged with a `source` (`seeded` | `uploaded` | `drawn`) and its
+creator:
+
+- **Upload** as `.zip` shapefile, GeoJSON, or GeoPackage, multi-feature, read via geopandas (already
+  a `geo` dependency, no new dependency), with the analyst mapping the name column. A single-feature
+  file is the natural special case of the same path.
+- **Draw** in the workspace around the farm being viewed: a freeform polygon or a radius circle (the
+  circle compiles to a polygon, so one membership rule stands). The viewed farm is only the entry
+  point; the result is a free-standing, reusable region cluster identical to an uploaded ward, not
+  owned by that farm. The draw reuses the existing AOI draw UX and the `parseAOI` shapefile path.
+
+Each feature is validated and reprojected to WGS84 reusing the existing geo helpers; CRS comes from
+the `.prj`, and a missing CRS prompts the analyst rather than guessing. Farms are assigned by centroid
+point-in-polygon - identical for every `source` - boundary-adjacent farms are flagged, and each
+assignment is stamped with the boundary version, so a re-survey or an edit of a drawn boundary is a
+tracked re-assignment. Majority-area-overlap assignment is deferred to v2. A boundary may span more
+than one Natural Region; rather than clip or reject it, the system stores a derived area-weighted
+**Natural Region composition** (e.g. `{III: 0.71, IV: 0.29}`) and a **dominant Natural Region**, both
+recomputed whenever the boundary geometry changes. "Like with like" is then enforced at the analysis
+layer - benchmark within the dominant region by default, break out per-region stats when the spread is
+meaningful (threshold is a flagged config default, Open Item 4) - not by altering the analyst's
+boundary. Creating a drawn or single-feature region is an analyst capability (`create_region_cluster`);
+bulk multi-feature uploads stay admin-gated (`upload_region_boundary`).
 
 - **Acceptance:** Natural Regions are present after a clean init with no upload. One multi-feature
   upload creates one region cluster per valid feature in a single transaction; invalid features are
-  skipped and reported, not fatal. A given farm always assigns to the same region under the centroid
-  rule, and the assignment row carries the boundary version. The seeded Natural Region layer cannot be
-  edited or overwritten by an upload.
+  skipped and reported, not fatal. A drawn polygon and a drawn radius circle each create one
+  `source=drawn` region cluster owned by no farm, with the centroid rule applied identically to an
+  uploaded ward. A given farm always assigns to the same region under the centroid rule, and the
+  assignment row carries the boundary version. The seeded Natural Region layer cannot be edited or
+  overwritten by any create path.
+- **Acceptance:** every region boundary carries a `source` and a creator; a cross-zone boundary
+  stores an area-weighted Natural Region composition and a dominant Natural Region, both recomputed on
+  a geometry edit; no create path clips or rejects a boundary for spanning Natural Regions. The draw
+  surface shows a live count of farms captured and how many have usable data before the region is
+  saved.
 
 ### D6. Peer cohorts
 
@@ -291,7 +343,7 @@ because no index or adapter changes; the comparison reads existing `Analysis` ro
 
 ## Open Items (resolve before merge)
 
-These three are explicitly tracked so they do not dissolve between phases. Each becomes its own
+These are explicitly tracked so they do not dissolve between phases. Each becomes its own
 "resolve before merge" ticket in `/to-issues`, attached to the slice it gates.
 
 1. **Size-bucket thresholds (gates Slice 6, peer cohorts).** Agronomy-scientist review is required
@@ -304,9 +356,17 @@ These three are explicitly tracked so they do not dissolve between phases. Each 
    PRD specifies them as config with these defaults; the final choice is confirmed before merge.
 3. **RBAC extensions (gates Slices 3, 5, 6).** New permissions extend the existing view/annotate model
    in `rs_core` RBAC, with proposed role mappings confirmed before merge:
-   - `upload_region_boundary` (proposed: admin only).
+   - `upload_region_boundary` (proposed: admin only) for bulk multi-feature uploads.
+   - `create_region_cluster` (proposed: analyst) for analyst-drawn and single-feature regions.
    - `create_cohort` / `manage_cohort` (proposed: analyst).
    - `view_group` (proposed: any authenticated user with farm access).
+
+4. **Dominant-Natural-Region split threshold (gates the cross-zone handling in D5 / D2).** A region
+   boundary may span Natural Regions; the analysis layer benchmarks within the dominant Natural Region
+   by default and breaks out a per-Natural-Region view when the composition spread is meaningful.
+   Proposed default: treat a boundary as effectively single-Natural-Region when `dominant_nr >= 0.85`.
+   The threshold must be runtime-configurable; agronomy-scientist review confirms the default before
+   launch (same treatment as Open Item 1).
 
 ## Out of Scope
 
@@ -331,4 +391,6 @@ These three are explicitly tracked so they do not dissolve between phases. Each 
   distance or area math; ports-and-adapters edges unchanged; the frozen AgriTrack contract untouched.
 - **Reuse.** This generalises the existing field-versus-farm anomaly (`get_farm_analytics_anomalies`)
   up one rung to farm-versus-group, and reuses `classify`/`vigour_to_status`, the area-weighted health
-  definition, the nearest-pass alignment (commit 40d5f2d), and the geometry validation helpers.
+  definition, the nearest-pass alignment (commit 40d5f2d), and the geometry validation helpers, plus
+  the existing AOI draw UX and the `parseAOI` shapefile path (`frontend/src/lib/parseAOI.ts`) for the
+  in-workspace draw.

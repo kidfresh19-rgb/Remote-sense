@@ -81,3 +81,32 @@ Concretely:
 - A persisted *emergent* neighbourhood partition (DBSCAN) is deliberately out of scope and is **not**
   authorised by this ADR. It changes membership-stability semantics and would need its own ADR if a
   need ever appears (`CONTEXT.md`: *cluster*).
+
+## Amendment (2026-06-17): analyst-created regions, source provenance, Natural Region composition
+
+This extends the decision above; it does not loosen it. Region boundaries may now also be created by
+an analyst **drawing** in the workspace (a freeform polygon or a radius circle around the farm being
+viewed, the circle compiled to a polygon) or uploading a **single** feature, in addition to the
+seeded layer and bulk multi-feature uploads. All of these are the same analytical-reference-geometry
+category; none is farm-identity geometry; and none is ever pushed. The centroid containment rule is
+unchanged and identical for every source.
+
+- **Governance.** Creating a drawn or single-feature region is an analyst capability
+  (`create_region_cluster`); bulk multi-feature uploads remain admin (`upload_region_boundary`). We
+  considered making drawn regions private-until-promoted and rejected it for v1: regions stay global
+  and shared like wards, but every boundary now carries a `source` (`seeded` | `uploaded` | `drawn`)
+  and its creator, so surfaces distinguish and filter official geometry from analyst-drawn geometry.
+  The map can hide the analyst-drawn layer.
+- **Cross-zone boundaries.** A boundary may span Natural Regions. We do not clip or reject it: the
+  analyst's intent is authoritative and cross-gradient comparison is legitimate. "Like with like" is
+  an analysis-layer concern, not a region-definition one, so each boundary carries a derived
+  area-weighted **Natural Region composition** (e.g. `{III: 0.71, IV: 0.29}`) and a **dominant
+  Natural Region**. The analysis layer benchmarks within the dominant region by default and breaks out
+  per-region stats when the composition spread is meaningful (a flagged config default; PRD 0002 Open
+  Item 4).
+- **Provenance and drift.** `source`, creator, composition, and dominant region are derived,
+  geometry-dependent attributes owned by remote-sense. Composition and dominant region are recomputed
+  in the same path that handles a boundary geometry change, so they never drift from the geometry.
+- **Unaffected.** Invariant 6 and the contract gate still hold: this geometry is internal and never
+  enters an outbound payload. The data model gains `source` / creator and composition / dominant-NR
+  fields and one lighter permission; nothing about the gateway push changes.

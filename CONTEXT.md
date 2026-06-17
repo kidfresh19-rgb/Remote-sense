@@ -75,7 +75,8 @@ weather and farm activity, and pushes reviewed results back to the gateway.
 - **Cluster** a *spatial* comparison group, with two bases. *Neighbourhood* is subject-centric and
   computed on demand: the farms near a given farm (KNN or radius within its Natural Region), with no
   persisted identity and so no membership churn. *Region* is persisted and rule-defined: every farm
-  whose centroid falls inside a region boundary. A persisted *emergent* partition (DBSCAN) is
+  whose centroid falls inside a region boundary (seeded, uploaded, or analyst-drawn; see *Region
+  boundary*). A persisted *emergent* partition (DBSCAN) is
   deliberately out of scope for now; reaching for it later is an ADR-worthy call. A farm belongs to
   many groups at once, so membership is many-to-many.
 - **Peer cohort** an *attribute-similarity* comparison group keyed on `(canonical crop, Natural
@@ -86,19 +87,32 @@ weather and farm activity, and pushes reviewed results back to the gateway.
   `Farm.region` string. Size buckets follow Zimbabwe farm typology (smallholder, A1, A2/commercial).
   Irrigation is optional context (a nullable analyst-set tag on the farm), not a membership
   criterion: a farm with unknown irrigation still belongs, and analysts may filter on it when known.
-- **Region boundary** a polygon layer used to form region clusters: the seeded *Natural Region* map,
-  or an analyst-uploaded administrative shapefile (ward, district) - a `.zip` shapefile, GeoJSON, or
-  GeoPackage, multi-feature, with the analyst mapping the name column. One layer of N polygons yields
-  N region clusters. Reference geometry is owned by remote-sense and is distinct from gateway-owned
+- **Region boundary** a polygon used to form a region cluster, created three ways, all the same
+  reference-geometry category: the seeded *Natural Region* map; an analyst **upload** (`.zip`
+  shapefile, GeoJSON, or GeoPackage - multi-feature with the analyst mapping the name column, one
+  layer of N polygons yielding N region clusters, a single-feature file the natural special case);
+  or an analyst **draw** in the workspace (a freeform polygon or a radius circle around the farm
+  being viewed - the circle compiles to a polygon, so a single membership rule stands). Each boundary
+  carries a `source` (`seeded` | `uploaded` | `drawn`) and its creator, so surfaces can tell official
+  layers from analyst-drawn ones and filter them. The farm being viewed is only the entry point: a
+  drawn region is a free-standing, reusable region cluster, identical to an uploaded ward, not owned
+  by that farm. Reference geometry is owned by remote-sense and is distinct from gateway-owned
   farm-identity geometry, never confused with it and never pushed, so invariant 6 is unaffected
-  (ADR 0010: remote-sense owns analytical reference geometry, the gateway owns farm-identity
-  geometry, and neither side writes the other's). A farm's region membership is fixed by centroid containment
-  and stamped with the boundary layer's version, so a zone re-survey is a tracked re-assignment, not
-  a silent overwrite (the provenance discipline of `geometry_version`, applied to regions).
+  (ADR 0010 and its 2026-06-17 amendment). A farm's region membership is fixed by centroid containment
+  - identical for every `source` - and stamped with the boundary's version, so a re-survey or an edit
+  of a drawn boundary is a tracked re-assignment, not a silent overwrite (the `geometry_version`
+  provenance discipline, applied to regions). A boundary may span more than one Natural Region; it
+  therefore carries a derived, area-weighted **Natural Region composition** (e.g. `{III: 0.71,
+  IV: 0.29}`) and a **dominant Natural Region**, recomputed whenever its geometry changes. Creating a
+  drawn or single-feature region is an analyst capability (`create_region_cluster`); bulk
+  multi-feature uploads stay admin-gated (`upload_region_boundary`).
 - **Natural Region** Zimbabwe's agro-ecological zones (I to V), seeded read-only at init from the
-  current official map (version-stamped with source + year). The baseline of the hybrid spatial
-  partition: every region cluster sits under one, and it is the environmental key a peer cohort holds
-  fixed so like is compared with like.
+  current official map (version-stamped with source + year). The environmental key for comparing like
+  with like - the dimension a peer cohort holds fixed, and the default scope a region cluster
+  benchmarks within. A region cluster is not forced to nest inside one: it carries a Natural Region
+  composition and a dominant Natural Region (see *Region boundary*), so a cross-zone boundary is
+  handled at the analysis layer (benchmark within the dominant region by default; break out per-region
+  stats when the spread is meaningful) rather than by clipping or rejecting the boundary.
 - **Standing (benchmark lens)** where a farm sits *now* within its comparison group: its
   crop-stratified percentile on a common reference pass (like-crop ranked against like-crop), falling
   back to the classified-status distribution where a crop is too sparse to stratify. Never ranks raw
