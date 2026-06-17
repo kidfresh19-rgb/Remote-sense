@@ -5,7 +5,7 @@ _env_file=None so a developer's real .env can never flip an outcome."""
 
 from __future__ import annotations
 
-from rs_core.config import Settings
+from rs_core.config import Settings, aoi_pass_concurrency
 from rs_core.db import engine_kwargs, read_database_url
 
 
@@ -58,3 +58,18 @@ def test_worker_reserves_one_task_per_process() -> None:
 
     assert celery.conf.worker_prefetch_multiplier == 1
     assert celery.conf.task_acks_late is True
+
+
+# -- AOI Studio pass-level concurrency (ADR 0011): min(2 * rps, 16), default when off ----------
+
+
+def test_aoi_pass_concurrency_tracks_twice_the_rate() -> None:
+    assert aoi_pass_concurrency(Settings(_env_file=None, cdse_rate_limit_rps=4)) == 8
+
+
+def test_aoi_pass_concurrency_is_capped_at_16() -> None:
+    assert aoi_pass_concurrency(Settings(_env_file=None, cdse_rate_limit_rps=20)) == 16
+
+
+def test_aoi_pass_concurrency_defaults_without_a_configured_rate() -> None:
+    assert aoi_pass_concurrency(Settings(_env_file=None, cdse_rate_limit_rps=None)) == 8

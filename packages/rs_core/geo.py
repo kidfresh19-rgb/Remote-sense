@@ -8,11 +8,14 @@ east. We normalise stored geometry to WGS84 (EPSG:4326) and reproject on demand 
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Any
 
+import numpy as np
 import pyproj
+import shapely
 from shapely.geometry import mapping, shape
 from shapely.geometry.base import BaseGeometry
 from shapely.ops import transform as shapely_transform
@@ -58,6 +61,24 @@ def to_shape(geometry: dict[str, Any]) -> BaseGeometry:
 def to_geojson(geom: BaseGeometry) -> dict[str, Any]:
     """shapely geometry -> GeoJSON geometry mapping."""
     return mapping(geom)
+
+
+# AOI Studio result/search caches key on geometry (ADR 0011). 6 dp is sub-pixel at 10 m
+# (~0.11 m at the equator), so coordinate serialisation noise and sub-tolerance jitter collapse
+# to one cache key while a genuinely redrawn polygon misses.
+_CANONICAL_HASH_DP = 6
+
+
+def canonical_geometry_hash(geometry: dict[str, Any]) -> str:
+    """A stable content hash for an AOI polygon, invariant to coordinate serialisation and
+    sub-tolerance jitter (ADR 0011 cache keys). Rounds coordinates to `_CANONICAL_HASH_DP`
+    decimal places, canonicalises ring winding and the start vertex with shapely's `normalize`,
+    then hashes the WKB. Two encodings of the same polygon hash equal; a different polygon does
+    not. Geometry only - never mixed with mutable inputs such as dates or scene ids, so every
+    key built from it is immutable."""
+    geom = to_shape(geometry)
+    rounded = shapely.transform(geom, lambda coords: np.round(coords, _CANONICAL_HASH_DP))
+    return hashlib.sha256(rounded.normalize().wkb).hexdigest()
 
 
 @lru_cache(maxsize=64)

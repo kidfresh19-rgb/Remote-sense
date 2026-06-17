@@ -121,6 +121,13 @@ class Settings(BaseSettings):
     # and returns reflectance bands server-side. e.g. https://sh.dataspace.copernicus.eu/api/v1/process
     cdse_process_url: str = ""
 
+    # AOI Studio preview caches (ADR 0011). Immutable-key Redis caches on the preview read path;
+    # both fail open, so a Redis hiccup degrades to live reads, never an error. Empty = use the
+    # default. The result cache holds per-pass scene math (immutable -> generous TTL); the search
+    # cache holds STAC item lists (only new imagery invalidates them -> short TTL).
+    aoi_result_cache_ttl_s: int = 2592000  # 30 days
+    aoi_search_cache_ttl_s: int = 300  # 5 minutes
+
     # Weather access layer (improvement plan Tier 1, ADR 0004). Active adapter is a config switch.
     weather_adapter: WeatherAdapter = WeatherAdapter.MOCK
     weather_api_url: str = ""  # real provider base URL (e.g. Open-Meteo); empty for mock
@@ -166,3 +173,21 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+
+
+# AOI Studio pass-level concurrency (ADR 0011). The shared CDSE quota bucket is the throughput
+# ceiling, so we keep about twice the per-second budget of reads in flight to stay saturated
+# without overrunning it, capped at 16. The cap also bounds the read-thread pool and the read
+# storm when the bucket's Redis is unreachable (the bucket fails open). With no rate configured
+# (mock / dev) there is no quota to saturate, so a modest fixed default keeps the pool bounded.
+AOI_PASS_CONCURRENCY_CAP = 16
+AOI_PASS_CONCURRENCY_DEFAULT = 8
+
+
+def aoi_pass_concurrency(settings: Settings) -> int:
+    """How many AOI Studio preview passes to run concurrently: the bounded semaphore size
+    `min(2 * RS_CDSE_RATE_LIMIT_RPS, 16)`, or a fixed default when no rate is configured."""
+    rps = settings.cdse_rate_limit_rps
+    if not rps:
+        return AOI_PASS_CONCURRENCY_DEFAULT
+    return max(1, min(int(2 * rps), AOI_PASS_CONCURRENCY_CAP))
