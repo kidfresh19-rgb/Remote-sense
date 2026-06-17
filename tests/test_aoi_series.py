@@ -13,6 +13,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
 from rs_core import Principal, Role
+from rs_core.cache import RedisJsonCache
 from rs_core.config import ImageryAdapter, Settings
 from rs_imagery import AOI, TimeRange, get_access_adapter
 from rs_imagery.adapters.mock import MockAdapter
@@ -26,6 +27,7 @@ from services.worker.planning import backfill_window
 from services.worker.tasks.analysis import (
     _INTERP_PAD_DAYS,
     MAX_AOI_SPAN_DEG,
+    ResultCache,
     _analyse_aoi_series,
 )
 
@@ -261,6 +263,160 @@ async def test_series_progress_is_monotonic_and_order_preserved() -> None:
     assert all(t == n for _, t in ticks)  # total is constant
     got = [p["pass_date"] for p in out["passes"]]
     assert got == sorted(got)  # oldest-first order kept despite out-of-order settling
+
+
+# --------------------------------------------------------------------------- engine: result cache
+
+_NOW = datetime(2025, 6, 15, tzinfo=UTC)
+_GEOM2: dict = {  # a different AOI -> different canonical geometry hash
+    "type": "Polygon",
+    "coordinates": [
+        [[31.5, -17.8], [31.51, -17.8], [31.51, -17.81], [31.5, -17.81], [31.5, -17.8]]
+    ],
+}
+
+
+class _SharedFakeRedis:
+    """In-memory async stand-in sharing one store across cache instances (two preview runs)."""
+
+    def __init__(self, store: dict[str, str], *, fail: bool = False) -> None:
+        self._store = store
+        self._fail = fail
+
+    async def get(self, name: str) -> str | None:
+        if self._fail:
+            raise ConnectionError("redis down")
+        return self._store.get(name)
+
+    async def set(self, name: str, value: str, *, ex: int | None = None) -> None:
+        if self._fail:
+            raise ConnectionError("redis down")
+        self._store[name] = value
+
+
+class _FetchCounter(MockAdapter):
+    """Counts fetch calls so a result-cache hit (which skips the fetch) is observable."""
+
+    def __init__(self, **kw: object) -> None:
+        super().__init__(**kw)  # type: ignore[arg-type]
+        self.fetches = 0
+
+    async def fetch(self, *args: object, **kwargs: object):  # type: ignore[override]
+        self.fetches += 1
+        return await super().fetch(*args, **kwargs)  # type: ignore[arg-type]
+
+
+def _result_cache(store: dict[str, str], *, fail: bool = False) -> ResultCache:
+    return ResultCache(
+        RedisJsonCache(_SharedFakeRedis(store, fail=fail), namespace="aoi:result"), ttl_s=999
+    )
+
+
+async def test_result_cache_serves_rerun_without_fetching() -> None:
+    store: dict[str, str] = {}
+    a1 = _FetchCounter()
+    out1 = await _analyse_aoi_series(
+        _GEOM,
+        "ndvi",
+        "backfill",
+        None,
+        6,
+        adapter=a1,
+        backfill_months=18,
+        now=_NOW,
+        result_cache=_result_cache(store),
+    )
+    assert a1.fetches > 0
+    a2 = _FetchCounter()
+    out2 = await _analyse_aoi_series(
+        _GEOM,
+        "ndvi",
+        "backfill",
+        None,
+        6,
+        adapter=a2,
+        backfill_months=18,
+        now=_NOW,
+        result_cache=_result_cache(store),
+    )
+    assert a2.fetches == 0  # every pass was served from the result cache
+    assert [p["pass_date"] for p in out2["passes"]] == [p["pass_date"] for p in out1["passes"]]
+    assert out2["resolved"] == out1["resolved"]
+
+
+async def test_result_cache_key_separates_indexes() -> None:
+    store: dict[str, str] = {}
+    a1 = _FetchCounter()
+    await _analyse_aoi_series(
+        _GEOM,
+        "ndvi",
+        "backfill",
+        None,
+        6,
+        adapter=a1,
+        backfill_months=18,
+        now=_NOW,
+        result_cache=_result_cache(store),
+    )
+    a2 = _FetchCounter()
+    await _analyse_aoi_series(
+        _GEOM,
+        "savi",
+        "backfill",
+        None,
+        6,
+        adapter=a2,
+        backfill_months=18,
+        now=_NOW,
+        result_cache=_result_cache(store),
+    )
+    assert a2.fetches > 0  # different index -> different key -> recomputed
+
+
+async def test_result_cache_key_separates_geometries() -> None:
+    store: dict[str, str] = {}
+    a1 = _FetchCounter()
+    await _analyse_aoi_series(
+        _GEOM,
+        "ndvi",
+        "backfill",
+        None,
+        6,
+        adapter=a1,
+        backfill_months=18,
+        now=_NOW,
+        result_cache=_result_cache(store),
+    )
+    a2 = _FetchCounter()
+    await _analyse_aoi_series(
+        _GEOM2,
+        "ndvi",
+        "backfill",
+        None,
+        6,
+        adapter=a2,
+        backfill_months=18,
+        now=_NOW,
+        result_cache=_result_cache(store),
+    )
+    assert a2.fetches > 0  # different AOI -> different geometry hash -> recomputed
+
+
+async def test_result_cache_fails_open_and_still_computes() -> None:
+    a = _FetchCounter()
+    out = await _analyse_aoi_series(
+        _GEOM,
+        "ndvi",
+        "backfill",
+        None,
+        6,
+        adapter=a,
+        backfill_months=18,
+        now=_NOW,
+        result_cache=_result_cache({}, fail=True),
+    )
+    assert a.fetches > 0  # cache get/set raise -> fail open -> normal compute
+    assert out["status"] == "ok"
 
 
 # --------------------------------------------------------------------------- engine: guards

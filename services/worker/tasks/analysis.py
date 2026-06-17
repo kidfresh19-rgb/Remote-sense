@@ -25,7 +25,9 @@ from typing import Any
 
 from rs_analysis import analyze_index, get_index
 from rs_core import get_settings
-from rs_core.config import aoi_pass_concurrency
+from rs_core.cache import RedisJsonCache, redis_json_cache_from_settings
+from rs_core.config import Settings, aoi_pass_concurrency
+from rs_core.geo import canonical_geometry_hash
 from rs_imagery import AOI, AccessPort, SceneRef, TimeRange, get_access_adapter
 
 from services.worker.celery_app import celery
@@ -46,6 +48,43 @@ MAX_AOI_SPAN_DEG = 2.0
 _INTERP_PAD_DAYS = 7
 # Confidence ranks for _lower_confidence: pick the weaker of two bracketing passes.
 _CONF_RANK: dict[str, int] = {"low": 0, "medium": 1, "high": 2}
+
+
+class ResultCache:
+    """The per-pass result cache (ADR 0011): one scene's index stats keyed by what the pass was
+    resolved from - (canonical geometry hash, index, formula_version, provider scene id) - every
+    component immutable, so a re-run or an interpolation that reuses a bracket scene skips the
+    fetch, the quota token, and the read entirely. The key is fully known before fetching, so a
+    hit short-circuits `_analyse_scene`. Wraps a fail-open RedisJsonCache; interpolated passes are
+    assembled from their two cached per-scene results, so they need no key of their own."""
+
+    def __init__(self, cache: RedisJsonCache, *, ttl_s: int) -> None:
+        self._cache = cache
+        self._ttl_s = ttl_s
+
+    @staticmethod
+    def _key(aoi: AOI, index_name: str, scene_id: str) -> str:
+        formula_version = get_index(index_name).formula_version
+        return f"{canonical_geometry_hash(aoi.geometry)}:{index_name}:{formula_version}:{scene_id}"
+
+    async def get(self, aoi: AOI, index_name: str, scene_id: str) -> dict[str, Any] | None:
+        value = await self._cache.get(self._key(aoi, index_name, scene_id))
+        return value if isinstance(value, dict) else None
+
+    async def put(self, aoi: AOI, index_name: str, scene_id: str, result: dict[str, Any]) -> None:
+        await self._cache.set(self._key(aoi, index_name, scene_id), result, ttl_s=self._ttl_s)
+
+    async def aclose(self) -> None:
+        await self._cache.aclose()
+
+
+def _build_result_cache(settings: Settings) -> ResultCache | None:
+    """The per-pass result cache on the shared Redis, or None when no Redis URL is configured.
+    Built inside the running loop (the redis.asyncio client binds to it) and closed at task end."""
+    cache = redis_json_cache_from_settings(settings, namespace="aoi:result")
+    if cache is None:
+        return None
+    return ResultCache(cache, ttl_s=settings.aoi_result_cache_ttl_s)
 
 
 def _start_of_day(day: date) -> datetime:
@@ -83,12 +122,22 @@ def _guard_aoi_size(geometry: dict[str, Any]) -> None:
 
 
 async def _analyse_scene(
-    adapter: AccessPort, scene: SceneRef, aoi: AOI, index_name: str
+    adapter: AccessPort,
+    scene: SceneRef,
+    aoi: AOI,
+    index_name: str,
+    *,
+    result_cache: ResultCache | None = None,
 ) -> dict[str, Any]:
     """One index over one scene for an arbitrary AOI, as a JSON-safe pass-result dict. Fetches at
     the index's native resolution and lets `analyze_index` apply reflectance + SCL masking
     (invariants 2-4); nothing is persisted. Full provenance is included so 'ok' passes can be
-    converted to IndexResult for gateway push without a second fetch."""
+    converted to IndexResult for gateway push without a second fetch. With a `result_cache`, a hit
+    returns the stored pass without fetching (ADR 0011) - the key is immutable scene math."""
+    if result_cache is not None:
+        cached = await result_cache.get(aoi, index_name, scene.scene_id)
+        if cached is not None:
+            return cached
     spec = get_index(index_name)
     fetched = await adapter.fetch(
         scene, aoi, bands=sorted(spec.bands), resolution_m=float(spec.resolution_m)
@@ -100,7 +149,7 @@ async def _analyse_scene(
         clear_fraction_override=fetched.clear_fraction,
     )
     s = out.stats
-    return {
+    result = {
         "status": "ok",
         "index": out.index_name,
         "pass_date": scene.sensing_datetime.date().isoformat(),
@@ -119,16 +168,24 @@ async def _analyse_scene(
         "resolution_m": out.resolution_m,
         "pixels": s.count,
     }
+    if result_cache is not None:
+        await result_cache.put(aoi, index_name, scene.scene_id, result)
+    return result
 
 
 async def _clearest_scene_result(
-    adapter: AccessPort, scenes: list[SceneRef], aoi: AOI, index_name: str
+    adapter: AccessPort,
+    scenes: list[SceneRef],
+    aoi: AOI,
+    index_name: str,
+    *,
+    result_cache: ResultCache | None = None,
 ) -> dict[str, Any]:
     """The clearest pass among `scenes` (more than one can land on the same day). Computes each and
     keeps the highest clear-pixel fraction."""
     best: dict[str, Any] | None = None
     for scene in scenes:
-        result = await _analyse_scene(adapter, scene, aoi, index_name)
+        result = await _analyse_scene(adapter, scene, aoi, index_name, result_cache=result_cache)
         if best is None or result["clear_fraction"] > best["clear_fraction"]:
             best = result
     assert best is not None  # callers only pass a non-empty list
@@ -168,12 +225,20 @@ async def _interpolate_result(
     aoi: AOI,
     index_name: str,
     requested: date,
+    *,
+    result_cache: ResultCache | None = None,
 ) -> dict[str, Any]:
     """Average two bracketing passes for a date that has no same-day scene. Picks the clearest
     scene on each side, averages all index stats, and takes the weaker confidence + coarser
-    resolution so the result is never more certain than the underlying data warrants."""
-    before = await _clearest_scene_result(adapter, before_scenes, aoi, index_name)
-    after = await _clearest_scene_result(adapter, after_scenes, aoi, index_name)
+    resolution so the result is never more certain than the underlying data warrants. Each side's
+    per-scene result flows through the result cache, so an interpolated pass needs no key of its
+    own (ADR 0011)."""
+    before = await _clearest_scene_result(
+        adapter, before_scenes, aoi, index_name, result_cache=result_cache
+    )
+    after = await _clearest_scene_result(
+        adapter, after_scenes, aoi, index_name, result_cache=result_cache
+    )
     avg_clear = _avg_stat(before.get("clear_fraction", 0.0), after.get("clear_fraction", 0.0))
     return {
         "status": "interpolated",
@@ -192,10 +257,16 @@ async def _interpolate_result(
     }
 
 
-async def _analyse_aoi(geometry: dict[str, object], index_name: str) -> dict[str, object]:
+async def _analyse_aoi(
+    geometry: dict[str, object],
+    index_name: str,
+    *,
+    result_cache: ResultCache | None = None,
+) -> dict[str, object]:
     """Compute one index over an arbitrary AOI for its most recent usably-clear pass, without
     persisting anything. Only the few most-recent scenes are fetched (not the whole window) so a
-    single click never fans out to dozens of reads, and the clearest of them is returned."""
+    single click never fans out to dozens of reads, and the clearest of them is returned. Shares
+    the per-pass result cache, so a repeat click on the same AOI is served without a fetch."""
     settings = get_settings()
     adapter = get_access_adapter(settings)
     aoi = AOI(geometry=geometry, crs="EPSG:4326")
@@ -210,7 +281,7 @@ async def _analyse_aoi(geometry: dict[str, object], index_name: str) -> dict[str
 
     best: dict[str, Any] | None = None
     for scene in sorted(scenes, key=lambda s: s.sensing_datetime, reverse=True)[:3]:
-        result = await _analyse_scene(adapter, scene, aoi, index_name)
+        result = await _analyse_scene(adapter, scene, aoi, index_name, result_cache=result_cache)
         if best is None or result["clear_fraction"] > best["clear_fraction"]:
             best = result
         if result["clear_fraction"] >= 0.6:  # clear enough; stop early to stay responsive
@@ -253,19 +324,29 @@ async def _resolve_requested_day(
     aoi: AOI,
     index_name: str,
     day: date,
+    *,
+    result_cache: ResultCache | None = None,
 ) -> dict[str, Any]:
     """One requested calendar date -> its pass dict: the clearest same-day scene, else the
     average of the two nearest bracketing passes, else no_pass. Extracted so it can be dispatched
     concurrently per date (ADR 0011)."""
     same_day = by_day.get(day)
     if same_day:
-        result = await _clearest_scene_result(adapter, same_day, aoi, index_name)
+        result = await _clearest_scene_result(
+            adapter, same_day, aoi, index_name, result_cache=result_cache
+        )
         result["requested_date"] = day.isoformat()
         return result
     before_date, after_date = _bracket_passes(day, by_day)
     if before_date is not None and after_date is not None:
         return await _interpolate_result(
-            adapter, by_day[before_date], by_day[after_date], aoi, index_name, day
+            adapter,
+            by_day[before_date],
+            by_day[after_date],
+            aoi,
+            index_name,
+            day,
+            result_cache=result_cache,
         )
     return {"requested_date": day.isoformat(), "status": "no_pass"}
 
@@ -281,6 +362,7 @@ async def _analyse_aoi_series(
     backfill_months: int | None = None,
     now: datetime | None = None,
     concurrency: int | None = None,
+    result_cache: ResultCache | None = None,
     on_progress: Callable[[int, int], None] | None = None,
 ) -> dict[str, Any]:
     """Multi-pass preview over a custom AOI (AOI Studio). `mode="dates"` resolves each requested
@@ -293,9 +375,9 @@ async def _analyse_aoi_series(
     (invariant 6). `on_progress(done, total)` fires as each pass settles so the task can publish a
     job progress meter.
 
-    `adapter`, `backfill_months`, `now`, and `concurrency` are injectable so the engine is
-    testable against the mock adapter with no network (CLAUDE.md 3); the task resolves them from
-    settings."""
+    `adapter`, `backfill_months`, `now`, `concurrency`, and `result_cache` are injectable so the
+    engine is testable against the mock adapter with no network (CLAUDE.md 3); the task resolves
+    them from settings."""
     _guard_aoi_size(geometry)
     get_index(index_name)  # validate up front; KeyError surfaces as a task failure
     if adapter is None or backfill_months is None or concurrency is None:
@@ -326,7 +408,15 @@ async def _analyse_aoi_series(
 
         passes = await _gather_passes(
             [
-                partial(_resolve_requested_day, adapter, by_day, aoi, index_name, day)
+                partial(
+                    _resolve_requested_day,
+                    adapter,
+                    by_day,
+                    aoi,
+                    index_name,
+                    day,
+                    result_cache=result_cache,
+                )
                 for day in requested
             ],
             concurrency=concurrency,
@@ -347,7 +437,10 @@ async def _analyse_aoi_series(
         chosen = sorted(capped, key=lambda s: s.sensing_datetime)
 
         passes = await _gather_passes(
-            [partial(_analyse_scene, adapter, scene, aoi, index_name) for scene in chosen],
+            [
+                partial(_analyse_scene, adapter, scene, aoi, index_name, result_cache=result_cache)
+                for scene in chosen
+            ],
             concurrency=concurrency,
             on_progress=on_progress,
         )
@@ -371,23 +464,41 @@ def analyse_aoi_task(geometry: dict[str, object], index_name: str) -> dict[str, 
     most recent usable pass's index stats, computed through the same engine as stored analyses but
     never persisted. No field is created, so it cannot collide with gateway-owned identity
     (invariant 6)."""
-    return asyncio.run(_analyse_aoi(geometry, index_name))
+    settings = get_settings()
+
+    async def _runner() -> dict[str, object]:
+        result_cache = _build_result_cache(settings)
+        try:
+            return await _analyse_aoi(geometry, index_name, result_cache=result_cache)
+        finally:
+            if result_cache is not None:
+                await result_cache.aclose()
+
+    return asyncio.run(_runner())
 
 
 def _run_aoi_series(
-    make_coro: Callable[[], Awaitable[dict[str, Any]]], concurrency: int
+    settings: Settings,
+    concurrency: int,
+    make_coro: Callable[[ResultCache | None], Awaitable[dict[str, Any]]],
 ) -> dict[str, Any]:
     """Run an AOI-series coroutine on a fresh event loop whose default thread-pool executor is
     sized to `concurrency`, so the asyncio.to_thread CDSE reads inside WindowedCogAdapter.fetch
     are bounded by the pass semaphore and not throttled by the default pool (min(32, cpu + 4),
-    which can be smaller on a low-core worker). asyncio.run shuts the executor down with the
-    loop."""
+    which can be smaller on a low-core worker). The per-pass result cache is built inside the loop
+    (its redis.asyncio client binds to it) and closed at task end. asyncio.run shuts the executor
+    down with the loop."""
 
     async def _runner() -> dict[str, Any]:
         asyncio.get_running_loop().set_default_executor(
             ThreadPoolExecutor(max_workers=concurrency, thread_name_prefix="aoi-read")
         )
-        return await make_coro()
+        result_cache = _build_result_cache(settings)
+        try:
+            return await make_coro(result_cache)
+        finally:
+            if result_cache is not None:
+                await result_cache.aclose()
 
     return asyncio.run(_runner())
 
@@ -408,18 +519,21 @@ def analyse_aoi_series_task(
     def on_progress(done: int, total: int) -> None:
         self.update_state(state="PROGRESS", meta={"done": done, "total": total})
 
-    concurrency = aoi_pass_concurrency(get_settings())
+    settings = get_settings()
+    concurrency = aoi_pass_concurrency(settings)
     return _run_aoi_series(
-        lambda: _analyse_aoi_series(
+        settings,
+        concurrency,
+        lambda rc: _analyse_aoi_series(
             geometry,
             index_name,
             mode,
             dates,
             months,
             concurrency=concurrency,
+            result_cache=rc,
             on_progress=on_progress,
         ),
-        concurrency,
     )
 
 
@@ -456,6 +570,7 @@ async def _analyse_farm_series(
     backfill_months: int | None = None,
     now: datetime | None = None,
     concurrency: int | None = None,
+    result_cache: ResultCache | None = None,
     on_progress: Callable[[int, int], None] | None = None,
 ) -> dict[str, Any]:
     """Multi-pass preview for an entire farm: resolves the union of all field geometries and
@@ -477,6 +592,7 @@ async def _analyse_farm_series(
         backfill_months=backfill_months,
         now=now,
         concurrency=concurrency,
+        result_cache=result_cache,
         on_progress=on_progress,
     )
 
@@ -540,14 +656,20 @@ def analyse_farm_series_task(
             if f.boundary is not None
         ]
 
-        return await _analyse_farm_series(
-            fields,
-            index_name,
-            mode,
-            dates,
-            months,
-            concurrency=concurrency,
-            on_progress=on_progress,
-        )
+        result_cache = _build_result_cache(settings)
+        try:
+            return await _analyse_farm_series(
+                fields,
+                index_name,
+                mode,
+                dates,
+                months,
+                concurrency=concurrency,
+                result_cache=result_cache,
+                on_progress=on_progress,
+            )
+        finally:
+            if result_cache is not None:
+                await result_cache.aclose()
 
     return asyncio.run(_run())

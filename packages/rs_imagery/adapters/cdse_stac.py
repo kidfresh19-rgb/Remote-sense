@@ -76,6 +76,31 @@ class StacItem:
             scene_cloud_pct=self.cloud_cover,
         )
 
+    def to_json_dict(self) -> dict[str, Any]:
+        """A JSON-safe dict for the search cache (ADR 0011): the datetime becomes an ISO string;
+        every other field is already JSON-native."""
+        return {
+            "scene_id": self.scene_id,
+            "sensing_datetime": self.sensing_datetime.isoformat(),
+            "geometry": self.geometry,
+            "crs": self.crs,
+            "cloud_cover": self.cloud_cover,
+            "assets": self.assets,
+        }
+
+    @classmethod
+    def from_json_dict(cls, data: dict[str, Any]) -> StacItem:
+        """Rebuild a StacItem from `to_json_dict` output (a search-cache hit), so a cached search
+        repopulates the adapter's asset map for `fetch`/`metadata`."""
+        return cls(
+            scene_id=data["scene_id"],
+            sensing_datetime=datetime.fromisoformat(data["sensing_datetime"]),
+            geometry=data["geometry"],
+            crs=data["crs"],
+            cloud_cover=data["cloud_cover"],
+            assets=data["assets"],
+        )
+
 
 def parse_item(feature: dict[str, Any]) -> StacItem | None:
     """Normalise one STAC feature to a `StacItem`, or None if it lacks an id or a usable
