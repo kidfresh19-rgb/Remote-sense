@@ -46,6 +46,10 @@ weather and farm activity, and pushes reviewed results back to the gateway.
   geometry_version)`, travelling with every analysis for reproducibility.
 - **Backfill / forward-fill** the historical sweep (default 18 months) vs ongoing collection on the
   roughly 5-day Sentinel-2 cadence.
+- **CDSE quota budget** the CDSE account's request rate (a general account allows ~300/min), shared
+  by every satellite call (STAC search, Process API render, windowed and metadata reads) across all
+  workers. The systemic throughput ceiling for both collection and AOI Studio previews, so going
+  faster means making fewer requests, not adding workers. _Avoid_: rate limit, throttle, bucket.
 - **Split-ownership sync** the gateway owns identity and geometry (read-only here); remote-sense owns
   analyses. Joined on canonical farm ID, pushed additively, geometry never returned.
 - **Interpretation / review-gate** the plain-language agronomic read from `rs_interpret`; always a
@@ -162,7 +166,7 @@ ADRs, and invariant review are `architect` (read-only).
 
 - Binding build rules: `CLAUDE.md`
 - Product spec: `PLAN.md`
-- Architecture decisions: `docs/adr/` (0001 ports-and-adapters through 0010 region-boundary reference geometry)
+- Architecture decisions: `docs/adr/` (0001 ports-and-adapters through 0011 AOI Studio preview performance)
 - Working process: `docs/process/WORKFLOW.md`
 - Open backlog: `TODO.md` (groomed with `/triage`)
 - Cross-session memory: the agent memory system (`MEMORY.md` index)
