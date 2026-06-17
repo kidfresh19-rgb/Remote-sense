@@ -17,12 +17,15 @@ from __future__ import annotations
 
 import asyncio
 from collections import defaultdict
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, date, datetime, timedelta
+from functools import partial
 from typing import Any
 
 from rs_analysis import analyze_index, get_index
 from rs_core import get_settings
+from rs_core.config import aoi_pass_concurrency
 from rs_imagery import AOI, AccessPort, SceneRef, TimeRange, get_access_adapter
 
 from services.worker.celery_app import celery
@@ -217,6 +220,56 @@ async def _analyse_aoi(geometry: dict[str, object], index_name: str) -> dict[str
     return best
 
 
+async def _gather_passes(
+    factories: list[Callable[[], Awaitable[dict[str, Any]]]],
+    *,
+    concurrency: int,
+    on_progress: Callable[[int, int], None] | None,
+) -> list[dict[str, Any]]:
+    """Run per-pass coroutine factories concurrently under a bounded semaphore (ADR 0011),
+    returning results in the same order as `factories` so requested / oldest-first ordering is
+    preserved. Progress fires as each pass settles (not in dispatch order), so {done} climbs
+    monotonically to len(factories). The semaphore bounds concurrent passes; the scene reads
+    inside one pass stay sequential."""
+    total = len(factories)
+    semaphore = asyncio.Semaphore(concurrency)
+    done = 0
+
+    async def run(factory: Callable[[], Awaitable[dict[str, Any]]]) -> dict[str, Any]:
+        nonlocal done
+        async with semaphore:
+            result = await factory()
+        done += 1
+        if on_progress:
+            on_progress(done, total)
+        return result
+
+    return list(await asyncio.gather(*(run(f) for f in factories)))
+
+
+async def _resolve_requested_day(
+    adapter: AccessPort,
+    by_day: dict[date, list[SceneRef]],
+    aoi: AOI,
+    index_name: str,
+    day: date,
+) -> dict[str, Any]:
+    """One requested calendar date -> its pass dict: the clearest same-day scene, else the
+    average of the two nearest bracketing passes, else no_pass. Extracted so it can be dispatched
+    concurrently per date (ADR 0011)."""
+    same_day = by_day.get(day)
+    if same_day:
+        result = await _clearest_scene_result(adapter, same_day, aoi, index_name)
+        result["requested_date"] = day.isoformat()
+        return result
+    before_date, after_date = _bracket_passes(day, by_day)
+    if before_date is not None and after_date is not None:
+        return await _interpolate_result(
+            adapter, by_day[before_date], by_day[after_date], aoi, index_name, day
+        )
+    return {"requested_date": day.isoformat(), "status": "no_pass"}
+
+
 async def _analyse_aoi_series(
     geometry: dict[str, Any],
     index_name: str,
@@ -227,25 +280,32 @@ async def _analyse_aoi_series(
     adapter: AccessPort | None = None,
     backfill_months: int | None = None,
     now: datetime | None = None,
+    concurrency: int | None = None,
     on_progress: Callable[[int, int], None] | None = None,
 ) -> dict[str, Any]:
     """Multi-pass preview over a custom AOI (AOI Studio). `mode="dates"` resolves each requested
     calendar date to its same-day scene; when none exists the two nearest bracketing passes are
     averaged and returned as `status="interpolated"`. Only when no bracket exists on either side
     is `"no_pass"` returned. `mode="backfill"` sweeps the months-back window and returns every
-    usable pass up to `MAX_SERIES_PASSES`. Each pass runs through the production engine and nothing
-    is persisted (invariant 6). `on_progress(done, total)` fires per scene so the task can
-    publish a job progress meter.
+    usable pass up to `MAX_SERIES_PASSES`. Passes run concurrently under a bounded semaphore
+    (ADR 0011) - the quota bucket is the real ceiling - while results stay in requested /
+    oldest-first order. Each pass runs through the production engine and nothing is persisted
+    (invariant 6). `on_progress(done, total)` fires as each pass settles so the task can publish a
+    job progress meter.
 
-    `adapter`, `backfill_months`, and `now` are injectable so the engine is testable against the
-    mock adapter with no network (CLAUDE.md 3); the task resolves them from settings."""
+    `adapter`, `backfill_months`, `now`, and `concurrency` are injectable so the engine is
+    testable against the mock adapter with no network (CLAUDE.md 3); the task resolves them from
+    settings."""
     _guard_aoi_size(geometry)
     get_index(index_name)  # validate up front; KeyError surfaces as a task failure
-    if adapter is None or backfill_months is None:
+    if adapter is None or backfill_months is None or concurrency is None:
         settings = get_settings()
         adapter = adapter or get_access_adapter(settings)
-        backfill_months = settings.backfill_months if backfill_months is None else backfill_months
-    assert adapter is not None and backfill_months is not None
+        if backfill_months is None:
+            backfill_months = settings.backfill_months
+        if concurrency is None:
+            concurrency = aoi_pass_concurrency(settings)
+    assert adapter is not None and backfill_months is not None and concurrency is not None
     aoi = AOI(geometry=geometry, crs="EPSG:4326")
     now = now or datetime.now(UTC)
 
@@ -264,31 +324,14 @@ async def _analyse_aoi_series(
         for scene in scenes:
             by_day[scene.sensing_datetime.date()].append(scene)
 
-        passes: list[dict[str, Any]] = []
-        total = len(requested)
-        for done, day in enumerate(requested, start=1):
-            same_day = by_day.get(day)
-            if same_day:
-                result = await _clearest_scene_result(adapter, same_day, aoi, index_name)
-                result["requested_date"] = day.isoformat()
-                passes.append(result)
-            else:
-                before_date, after_date = _bracket_passes(day, by_day)
-                if before_date is not None and after_date is not None:
-                    passes.append(
-                        await _interpolate_result(
-                            adapter,
-                            by_day[before_date],
-                            by_day[after_date],
-                            aoi,
-                            index_name,
-                            day,
-                        )
-                    )
-                else:
-                    passes.append({"requested_date": day.isoformat(), "status": "no_pass"})
-            if on_progress:
-                on_progress(done, total)
+        passes = await _gather_passes(
+            [
+                partial(_resolve_requested_day, adapter, by_day, aoi, index_name, day)
+                for day in requested
+            ],
+            concurrency=concurrency,
+            on_progress=on_progress,
+        )
 
     elif mode == "backfill":
         depth = max(1, min(int(months or backfill_months), backfill_months))
@@ -303,12 +346,11 @@ async def _analyse_aoi_series(
         capped = sorted(scenes, key=lambda s: s.sensing_datetime, reverse=True)[:MAX_SERIES_PASSES]
         chosen = sorted(capped, key=lambda s: s.sensing_datetime)
 
-        passes = []
-        total = len(chosen)
-        for done, scene in enumerate(chosen, start=1):
-            passes.append(await _analyse_scene(adapter, scene, aoi, index_name))
-            if on_progress:
-                on_progress(done, total)
+        passes = await _gather_passes(
+            [partial(_analyse_scene, adapter, scene, aoi, index_name) for scene in chosen],
+            concurrency=concurrency,
+            on_progress=on_progress,
+        )
 
     else:
         raise ValueError(f"unknown AOI series mode {mode!r}")
@@ -332,6 +374,24 @@ def analyse_aoi_task(geometry: dict[str, object], index_name: str) -> dict[str, 
     return asyncio.run(_analyse_aoi(geometry, index_name))
 
 
+def _run_aoi_series(
+    make_coro: Callable[[], Awaitable[dict[str, Any]]], concurrency: int
+) -> dict[str, Any]:
+    """Run an AOI-series coroutine on a fresh event loop whose default thread-pool executor is
+    sized to `concurrency`, so the asyncio.to_thread CDSE reads inside WindowedCogAdapter.fetch
+    are bounded by the pass semaphore and not throttled by the default pool (min(32, cpu + 4),
+    which can be smaller on a low-core worker). asyncio.run shuts the executor down with the
+    loop."""
+
+    async def _runner() -> dict[str, Any]:
+        asyncio.get_running_loop().set_default_executor(
+            ThreadPoolExecutor(max_workers=concurrency, thread_name_prefix="aoi-read")
+        )
+        return await make_coro()
+
+    return asyncio.run(_runner())
+
+
 @celery.task(bind=True, name="analysis.analyse_aoi_series")
 def analyse_aoi_series_task(
     self: Any,
@@ -343,13 +403,23 @@ def analyse_aoi_series_task(
 ) -> dict[str, Any]:
     """AOI Studio's multi-pass preview (batch of dates, or a months-back backfill sweep over a
     custom AOI). Enqueued and polled by job id - it can run for minutes - and publishes a
-    `{done, total}` progress meter as each pass lands. Never persists (invariant 6)."""
+    `{done, total}` progress meter as each pass settles. Never persists (invariant 6)."""
 
     def on_progress(done: int, total: int) -> None:
         self.update_state(state="PROGRESS", meta={"done": done, "total": total})
 
-    return asyncio.run(
-        _analyse_aoi_series(geometry, index_name, mode, dates, months, on_progress=on_progress)
+    concurrency = aoi_pass_concurrency(get_settings())
+    return _run_aoi_series(
+        lambda: _analyse_aoi_series(
+            geometry,
+            index_name,
+            mode,
+            dates,
+            months,
+            concurrency=concurrency,
+            on_progress=on_progress,
+        ),
+        concurrency,
     )
 
 
@@ -385,6 +455,7 @@ async def _analyse_farm_series(
     adapter: AccessPort | None = None,
     backfill_months: int | None = None,
     now: datetime | None = None,
+    concurrency: int | None = None,
     on_progress: Callable[[int, int], None] | None = None,
 ) -> dict[str, Any]:
     """Multi-pass preview for an entire farm: resolves the union of all field geometries and
@@ -405,6 +476,7 @@ async def _analyse_farm_series(
         adapter=adapter,
         backfill_months=backfill_months,
         now=now,
+        concurrency=concurrency,
         on_progress=on_progress,
     )
 
@@ -436,6 +508,10 @@ def analyse_farm_series_task(
         from sqlalchemy.pool import NullPool
 
         settings = get_settings()
+        concurrency = aoi_pass_concurrency(settings)
+        asyncio.get_running_loop().set_default_executor(
+            ThreadPoolExecutor(max_workers=concurrency, thread_name_prefix="aoi-read")
+        )
         engine = create_async_engine(settings.database_url, poolclass=NullPool)
         try:
             async with async_sessionmaker(engine, expire_on_commit=False)() as session:
@@ -470,6 +546,7 @@ def analyse_farm_series_task(
             mode,
             dates,
             months,
+            concurrency=concurrency,
             on_progress=on_progress,
         )
 

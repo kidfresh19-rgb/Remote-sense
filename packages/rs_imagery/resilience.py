@@ -19,6 +19,7 @@ state is the right scope for "this process should stop calling out for a while".
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 from collections.abc import Awaitable, Callable
 from typing import Any, Protocol
@@ -217,7 +218,13 @@ class CircuitBreaker:
     """CLOSED -> OPEN after `failure_threshold` consecutive failures; OPEN -> HALF_OPEN after
     `reset_timeout_s` (one probe call); the probe's outcome closes or reopens the circuit. A
     failure here is a *final* failure - record it after a client's retry loop is exhausted, not
-    per attempt. Single-loop/single-thread use per process; no locking by design."""
+    per attempt.
+
+    Thread-safe (ADR 0011): a lock makes each check/transition atomic so the concurrent read
+    threads of an AOI Studio batch (band reads run in a thread pool) cannot lose a failure-count
+    increment or slip multiple probes past an open circuit. The lock guards only the state check
+    and the counter - the wrapped call runs outside it - so it is held for microseconds and
+    contention is negligible."""
 
     _CLOSED, _OPEN, _HALF_OPEN = "closed", "open", "half_open"
 
@@ -236,33 +243,39 @@ class CircuitBreaker:
         self._state = self._CLOSED
         self._failures = 0
         self._opened_at = 0.0
+        self._lock = threading.Lock()
 
     def allow(self) -> bool:
         """Whether a call may proceed now. Moving OPEN -> HALF_OPEN admits exactly one probe;
-        further calls are refused until the probe reports back."""
-        if self._state == self._CLOSED:
-            return True
-        if self._state == self._OPEN:
-            if self._clock() - self._opened_at >= self._reset_timeout_s:
-                self._state = self._HALF_OPEN
+        further calls are refused until the probe reports back. The lock makes the
+        check-and-transition atomic so two threads cannot each admit a probe at once."""
+        with self._lock:
+            if self._state == self._CLOSED:
                 return True
-            return False
-        return False  # half-open: the probe is already in flight
+            if self._state == self._OPEN:
+                if self._clock() - self._opened_at >= self._reset_timeout_s:
+                    self._state = self._HALF_OPEN
+                    return True
+                return False
+            return False  # half-open: the probe is already in flight
 
     def record_success(self) -> None:
-        self._state = self._CLOSED
-        self._failures = 0
+        with self._lock:
+            self._state = self._CLOSED
+            self._failures = 0
 
     def record_failure(self) -> None:
-        self._failures += 1
-        if self._state == self._HALF_OPEN or self._failures >= self._threshold:
-            self._state = self._OPEN
-            self._opened_at = self._clock()
-            self._failures = 0
-            log.warning("cdse.breaker.open", reset_timeout_s=self._reset_timeout_s)
+        with self._lock:
+            self._failures += 1
+            if self._state == self._HALF_OPEN or self._failures >= self._threshold:
+                self._state = self._OPEN
+                self._opened_at = self._clock()
+                self._failures = 0
+                log.warning("cdse.breaker.open", reset_timeout_s=self._reset_timeout_s)
 
     def _refuse(self) -> CircuitOpenError:
-        remaining = max(0.0, self._reset_timeout_s - (self._clock() - self._opened_at))
+        with self._lock:
+            remaining = max(0.0, self._reset_timeout_s - (self._clock() - self._opened_at))
         return CircuitOpenError(f"CDSE circuit open; retrying in ~{remaining:.0f}s")
 
     async def call(self, fn: Callable[..., Awaitable[Any]], /, *args: Any, **kwargs: Any) -> Any:

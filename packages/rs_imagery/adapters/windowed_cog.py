@@ -9,11 +9,13 @@ network and no `geo` extra by injecting a fake source. See ADR 0002."""
 
 from __future__ import annotations
 
+import asyncio
 import os
-from collections.abc import Sequence
+import threading
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 import numpy as np
 from rs_analysis.bands import coarsest_resolution_m
@@ -142,7 +144,9 @@ class WindowedCogAdapter(AccessPort):
     async def metadata(self, scene_id: str) -> SceneMetadata:
         item = self._item(scene_id)
         href = resolve_metadata_href(item.assets)
-        xml_bytes = self._source().read_bytes(href)
+        # The XML read is a blocking CDSE/S3 call; run it off the event loop so concurrent passes
+        # (ADR 0011) are not serialised by it. The per-task memo (read_bytes) dedupes repeats.
+        xml_bytes = await asyncio.to_thread(self._source().read_bytes, href)
         return parse_scene_metadata(scene_id, xml_bytes, crs=item.crs)
 
     async def fetch(
@@ -168,11 +172,16 @@ class WindowedCogAdapter(AccessPort):
         )
 
         # Read every reflectance band on the same grid; the first read is the reference grid.
+        # Each blocking CDSE read runs off the event loop (asyncio.to_thread) so concurrent passes
+        # (ADR 0011) overlap up to the quota ceiling; band reads stay sequential within one fetch
+        # so the reference-grid shape check holds and the per-task band memo can dedupe repeats.
         dn: dict[str, np.ndarray] = {}
         reference: ReadWindow | None = None
         for band in requested:
             href = resolve_band_asset(item.assets, band, res)
-            window = source.read_window(href, aoi=aoi, resolution_m=res, resampling="bilinear")
+            window = await asyncio.to_thread(
+                source.read_window, href, aoi=aoi, resolution_m=res, resampling="bilinear"
+            )
             if reference is None:
                 reference = window
             elif window.array.shape != reference.array.shape:
@@ -185,7 +194,11 @@ class WindowedCogAdapter(AccessPort):
 
         # SCL on the same grid (nearest only: it is a class label, never interpolate it).
         scl_href = resolve_band_asset(item.assets, _SCL_BAND, res)
-        scl = source.read_window(scl_href, aoi=aoi, resolution_m=res, resampling="nearest").array
+        scl = (
+            await asyncio.to_thread(
+                source.read_window, scl_href, aoi=aoi, resolution_m=res, resampling="nearest"
+            )
+        ).array
 
         meta = await self.metadata(scene_ref.scene_id)
         reflectance = stack_to_reflectance(
@@ -231,6 +244,44 @@ class WindowedCogAdapter(AccessPort):
         )
 
 
+class _ReadMemo:
+    """Per-task in-process memo for the windowed reads and the metadata XML of one analysis batch
+    (ADR 0011). The COG objects are immutable, so within a task the same (band, bbox, resolution)
+    window and the same metadata href can be served once and reused - interpolation re-reads its
+    bracket scenes across several requested dates, and every fetch re-reads its scene metadata.
+
+    Thread-safe: a guard lock protects the maps and a per-key lock collapses concurrent identical
+    reads to a single underlying read, so the read storm stays at the quota ceiling. Scoped to the
+    source instance, which the registry builds fresh per task, so it is dropped at task end
+    (invariant 7: raw bands stay transient, never a persisted per-field store)."""
+
+    def __init__(self) -> None:
+        self._values: dict[Any, Any] = {}
+        self._key_locks: dict[Any, threading.Lock] = {}
+        self._guard = threading.Lock()
+        self.hits = 0
+        self.misses = 0
+
+    def get_or_compute(self, key: Any, compute: Callable[[], Any]) -> Any:
+        """Return the cached value for `key`, or run `compute()` once and cache it. A read already
+        in flight for the same key is awaited rather than duplicated."""
+        with self._guard:
+            if key in self._values:
+                self.hits += 1
+                return self._values[key]
+            lock = self._key_locks.setdefault(key, threading.Lock())
+        with lock:
+            with self._guard:
+                if key in self._values:  # another thread filled it while we waited
+                    self.hits += 1
+                    return self._values[key]
+                self.misses += 1
+            value = compute()  # outside the guard so other keys are not blocked on this read
+            with self._guard:
+                self._values[key] = value
+            return value
+
+
 class RasterioWindowSource:
     """Default `WindowSource`: GDAL `/vsis3/` windowed reads against the CDSE `eodata` store. Needs
     the `geo` extra (rasterio) and runs in-container. Credentials follow the rasterio-1.4 pattern
@@ -242,11 +293,19 @@ class RasterioWindowSource:
             raise ValueError("RS_CDSE_S3_ENDPOINT is not configured; cannot read CDSE rasters.")
         self._settings = settings
         self._s3_client = None  # boto3 S3 client for the eodata store, built once on first use
+        self._s3_lock = threading.Lock()  # guards the lazy build under concurrent reads
         # Quota governance (S4.5): every windowed/metadata read draws from the same cross-worker
         # CDSE budget as the STAC search; the breaker stops a melting eodata store from burning
         # each task's full retry loop.
         self._bucket = sync_bucket_from_settings(settings)
         self._breaker = CircuitBreaker()
+        # Per-task band/metadata memo (ADR 0011): dedupes repeat reads within one analysis batch.
+        self._memo = _ReadMemo()
+
+    def cache_stats(self) -> dict[str, int]:
+        """The per-task band/metadata memo's hit and miss counts (ADR 0011 instrumentation): a
+        miss is one real CDSE read, so misses is the read count and hits is what was saved."""
+        return {"hits": self._memo.hits, "misses": self._memo.misses}
 
     def _gdal_env(self) -> dict[str, str]:
         s = self._settings
@@ -291,6 +350,38 @@ class RasterioWindowSource:
         )
 
     def read_window(
+        self, href: str, *, aoi: AOI, resolution_m: float, resampling: str = "bilinear"
+    ) -> ReadWindow:
+        # A memo hit returns the cached window without spending a quota token or touching CDSE.
+        return self._memo.get_or_compute(
+            self._window_key(href, aoi, resolution_m, resampling),
+            lambda: self._read_window_quota_guarded(
+                href, aoi=aoi, resolution_m=resolution_m, resampling=resampling
+            ),
+        )
+
+    @staticmethod
+    def _window_key(href: str, aoi: AOI, resolution_m: float, resampling: str) -> tuple[Any, ...]:
+        """The band-memo key (ADR 0011): the read is bbox-scoped (the AOI polygon mask is applied
+        later in fetch), so two AOIs sharing a bbox legitimately share one read - the polygon is
+        deliberately excluded. The bbox is the exact AOI bounds, rounded only to kill float noise,
+        i.e. finer than any read grid, so the key can never be coarser than the window derivation:
+        a near-miss costs at worst a reread, never a wrong array."""
+        from shapely.geometry import shape
+
+        minx, miny, maxx, maxy = shape(aoi.geometry).bounds
+        return (
+            href,
+            resampling,
+            round(float(resolution_m), 6),
+            aoi.crs,
+            round(minx, 9),
+            round(miny, 9),
+            round(maxx, 9),
+            round(maxy, 9),
+        )
+
+    def _read_window_quota_guarded(
         self, href: str, *, aoi: AOI, resolution_m: float, resampling: str = "bilinear"
     ) -> ReadWindow:
         if self._bucket is not None:
@@ -364,7 +455,13 @@ class RasterioWindowSource:
         objects in the eodata store, read with boto3 whose adaptive retry absorbs 429 throttling and
         transient S3 faults with backoff (R-3, the metadata-read analogue of the windowed-read
         retry). A plain http(s) href falls back to a retrying GET. boto3 is the `storage` extra,
-        installed alongside `geo` on the COG-emitting worker where this adapter runs."""
+        installed alongside `geo` on the COG-emitting worker where this adapter runs. A memo hit
+        returns the cached XML without spending a quota token or touching CDSE."""
+        return self._memo.get_or_compute(
+            ("__bytes__", href), lambda: self._read_bytes_quota_guarded(href)
+        )
+
+    def _read_bytes_quota_guarded(self, href: str) -> bytes:
         if self._bucket is not None:
             self._bucket.acquire()
         if href.startswith("s3://"):
@@ -376,22 +473,27 @@ class RasterioWindowSource:
         botocore's adaptive-retry token state across reads (R-3) and avoids per-read client setup,
         the way rs_core.storage.S3CogStore caches its client."""
         if self._s3_client is None:
-            import boto3
-            from botocore.config import Config
-
-            s = self._settings
-            self._s3_client = boto3.client(
-                "s3",
-                endpoint_url=f"https://{s.cdse_s3_endpoint}",
-                aws_access_key_id=s.cdse_s3_access_key,
-                aws_secret_access_key=s.cdse_s3_secret_key,
-                region_name=s.cdse_s3_region,
-                config=Config(
-                    signature_version="s3v4",
-                    retries={"max_attempts": 4, "mode": "adaptive"},
-                ),
-            )
+            with self._s3_lock:  # double-checked: build once even under concurrent reads
+                if self._s3_client is None:
+                    self._s3_client = self._build_s3_client()
         return self._s3_client
+
+    def _build_s3_client(self):  # noqa: ANN202 - boto3 client type needs the storage extra
+        import boto3
+        from botocore.config import Config
+
+        s = self._settings
+        return boto3.client(
+            "s3",
+            endpoint_url=f"https://{s.cdse_s3_endpoint}",
+            aws_access_key_id=s.cdse_s3_access_key,
+            aws_secret_access_key=s.cdse_s3_secret_key,
+            region_name=s.cdse_s3_region,
+            config=Config(
+                signature_version="s3v4",
+                retries={"max_attempts": 4, "mode": "adaptive"},
+            ),
+        )
 
     def _read_s3_bytes(self, href: str) -> bytes:
         bucket, _, key = href[len("s3://") :].partition("/")

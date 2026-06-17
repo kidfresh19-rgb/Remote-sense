@@ -5,6 +5,8 @@ mapping."""
 
 from __future__ import annotations
 
+import asyncio
+import time
 from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
 
@@ -13,6 +15,7 @@ from fastapi import HTTPException
 from rs_core import Principal, Role
 from rs_core.config import ImageryAdapter, Settings
 from rs_imagery import AOI, TimeRange, get_access_adapter
+from rs_imagery.adapters.mock import MockAdapter
 
 from services.api.workspace import (
     AOISeriesRequest,
@@ -173,6 +176,91 @@ async def test_backfill_mode_clamps_months_to_configured_depth() -> None:
     )
     horizon_start, _ = backfill_window(now.date(), 12)
     assert all(p["pass_date"] >= horizon_start.isoformat() for p in out["passes"])
+
+
+# --------------------------------------------------------------------------- engine: concurrency
+
+
+class _ConcurrencyProbe(MockAdapter):
+    """A mock adapter whose fetch sleeps and tracks how many fetches overlap, so the tests can
+    assert passes run concurrently and never exceed the semaphore. Single event loop, so the
+    active counter is mutated only at await boundaries - no lock needed."""
+
+    def __init__(self, *, delay: float = 0.02, **kw: object) -> None:
+        super().__init__(**kw)  # type: ignore[arg-type]
+        self.delay = delay
+        self.active = 0
+        self.max_active = 0
+
+    async def fetch(self, *args: object, **kwargs: object):  # type: ignore[override]
+        self.active += 1
+        self.max_active = max(self.max_active, self.active)
+        try:
+            await asyncio.sleep(self.delay)
+            return await super().fetch(*args, **kwargs)  # type: ignore[arg-type]
+        finally:
+            self.active -= 1
+
+
+async def test_series_runs_passes_concurrently_bounded_by_the_semaphore() -> None:
+    adapter = _ConcurrencyProbe(delay=0.02, scenes_per_search=12)
+    out = await _analyse_aoi_series(
+        _GEOM,
+        "ndvi",
+        "backfill",
+        None,
+        6,
+        adapter=adapter,
+        backfill_months=18,
+        now=datetime(2025, 6, 15, tzinfo=UTC),
+        concurrency=4,
+    )
+    assert len(out["passes"]) >= 5  # enough passes to observe bounding
+    assert adapter.max_active > 1  # genuinely concurrent, not serial
+    assert adapter.max_active <= 4  # never exceeds the semaphore
+
+
+async def test_series_concurrency_beats_serial_walltime() -> None:
+    delay = 0.05
+    adapter = _ConcurrencyProbe(delay=delay, scenes_per_search=10)
+    start = time.monotonic()
+    out = await _analyse_aoi_series(
+        _GEOM,
+        "ndvi",
+        "backfill",
+        None,
+        6,
+        adapter=adapter,
+        backfill_months=18,
+        now=datetime(2025, 6, 15, tzinfo=UTC),
+        concurrency=8,
+    )
+    elapsed = time.monotonic() - start
+    n = len(out["passes"])
+    assert n >= 5
+    assert elapsed < n * delay  # strictly faster than running the passes serially
+
+
+async def test_series_progress_is_monotonic_and_order_preserved() -> None:
+    adapter = _ConcurrencyProbe(delay=0.01, scenes_per_search=8)
+    ticks: list[tuple[int, int]] = []
+    out = await _analyse_aoi_series(
+        _GEOM,
+        "ndvi",
+        "backfill",
+        None,
+        6,
+        adapter=adapter,
+        backfill_months=18,
+        now=datetime(2025, 6, 15, tzinfo=UTC),
+        concurrency=4,
+        on_progress=lambda d, t: ticks.append((d, t)),
+    )
+    n = len(out["passes"])
+    assert [d for d, _ in ticks] == list(range(1, n + 1))  # done climbs 1..n, once per pass
+    assert all(t == n for _, t in ticks)  # total is constant
+    got = [p["pass_date"] for p in out["passes"]]
+    assert got == sorted(got)  # oldest-first order kept despite out-of-order settling
 
 
 # --------------------------------------------------------------------------- engine: guards

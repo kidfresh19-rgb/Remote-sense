@@ -7,6 +7,8 @@ provenance is the windowed_cog mode. The real rasterio reads live behind the sea
 
 from __future__ import annotations
 
+import threading
+import time
 from datetime import UTC, datetime
 
 import numpy as np
@@ -197,3 +199,91 @@ def test_rasterio_source_read_bytes_reads_s3_via_boto3(monkeypatch):
     assert captured["bucket"] == "eodata"
     assert captured["key"] == "Sentinel-2/MSI/L2A/scene.SAFE/MTD_MSIL2A.xml"
     assert captured["endpoint"] == "https://eodata.example"
+
+
+# --------------------------------------------------------------------------- band/metadata memo
+
+
+def _rio_settings() -> Settings:
+    return Settings(
+        _env_file=None,
+        cdse_s3_endpoint="eodata.example",
+        cdse_s3_access_key="a",
+        cdse_s3_secret_key="b",
+        cdse_rate_limit_rps=None,  # no bucket -> no Redis in these unit tests
+    )
+
+
+_AOI_OTHER = AOI(
+    geometry={
+        "type": "Polygon",
+        "coordinates": [
+            [[31.0, -18.9], [31.1, -18.9], [31.1, -19.0], [31.0, -19.0], [31.0, -18.9]]
+        ],
+    }
+)
+
+
+class _CountingRasterioSource(RasterioWindowSource):
+    """A real RasterioWindowSource with the actual reads stubbed, so the in-process memo can be
+    exercised with no network and no GDAL."""
+
+    def __init__(self, *, delay: float = 0.0) -> None:
+        super().__init__(_rio_settings())
+        self.reads = 0
+        self.byte_reads = 0
+        self._delay = delay
+
+    def _read_window_once(self, href, *, aoi, resolution_m, resampling="bilinear"):  # noqa: ANN001
+        if self._delay:
+            time.sleep(self._delay)
+        self.reads += 1
+        return ReadWindow(array=np.zeros((4, 4)), transform=_TRANSFORM, crs=_CRS)
+
+    def _read_s3_bytes(self, href):  # noqa: ANN001
+        self.byte_reads += 1
+        return b"<xml/>"
+
+
+def test_band_memo_serves_repeat_reads_once() -> None:
+    src = _CountingRasterioSource()
+    w1 = src.read_window("s3://eodata/x/B04_10m.jp2", aoi=_AOI, resolution_m=10.0)
+    w2 = src.read_window("s3://eodata/x/B04_10m.jp2", aoi=_AOI, resolution_m=10.0)
+    assert src.reads == 1  # the second read is served from the memo
+    assert w1 is w2
+    assert src.cache_stats() == {"hits": 1, "misses": 1}
+
+
+def test_band_memo_keys_on_bbox_and_resolution() -> None:
+    src = _CountingRasterioSource()
+    href = "s3://eodata/x/B04_10m.jp2"
+    src.read_window(href, aoi=_AOI, resolution_m=10.0)
+    src.read_window(href, aoi=_AOI_OTHER, resolution_m=10.0)  # different bbox -> real read
+    src.read_window(href, aoi=_AOI, resolution_m=20.0)  # different resolution -> real read
+    assert src.reads == 3
+
+
+def test_metadata_xml_is_memoized() -> None:
+    src = _CountingRasterioSource()
+    assert src.read_bytes("s3://eodata/x/MTD_MSIL2A.xml") == b"<xml/>"
+    assert src.read_bytes("s3://eodata/x/MTD_MSIL2A.xml") == b"<xml/>"
+    assert src.byte_reads == 1
+    assert src.cache_stats() == {"hits": 1, "misses": 1}
+
+
+def test_band_memo_collapses_concurrent_identical_reads() -> None:
+    src = _CountingRasterioSource(delay=0.02)  # widen the in-flight window so threads overlap
+    n = 16
+    barrier = threading.Barrier(n)
+
+    def hit() -> None:
+        barrier.wait()
+        src.read_window("s3://eodata/x/B04_10m.jp2", aoi=_AOI, resolution_m=10.0)
+
+    threads = [threading.Thread(target=hit) for _ in range(n)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert src.reads == 1  # the in-flight lock collapsed all n to a single read
+    assert src.cache_stats() == {"hits": n - 1, "misses": 1}
