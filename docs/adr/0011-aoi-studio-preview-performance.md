@@ -1,6 +1,6 @@
 # 0011: AOI Studio preview performance: concurrency and a three-layer cache
 
-Status: accepted (Phase 1). The deferred all-indices track is gated; see below.
+Status: accepted (Phase 1 implemented). The deferred all-indices track is gated; see below.
 
 ## Context
 

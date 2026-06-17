@@ -16,6 +16,7 @@ returned."""
 from __future__ import annotations
 
 import asyncio
+import time
 from collections import defaultdict
 from collections.abc import Awaitable, Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -28,10 +29,13 @@ from rs_core import get_settings
 from rs_core.cache import RedisJsonCache, redis_json_cache_from_settings
 from rs_core.config import Settings, aoi_pass_concurrency
 from rs_core.geo import canonical_geometry_hash
+from rs_core.logging import get_logger
 from rs_imagery import AOI, AccessPort, SceneRef, TimeRange, get_access_adapter
 
 from services.worker.celery_app import celery
 from services.worker.planning import backfill_window
+
+log = get_logger("services.worker.tasks.analysis")
 
 # Scene-level cloud pre-filter for the archive search (per-AOI SCL masking still decides clarity).
 _SEARCH_CLOUD_PCT = 70.0
@@ -61,6 +65,8 @@ class ResultCache:
     def __init__(self, cache: RedisJsonCache, *, ttl_s: int) -> None:
         self._cache = cache
         self._ttl_s = ttl_s
+        self.hits = 0
+        self.misses = 0
 
     @staticmethod
     def _key(aoi: AOI, index_name: str, scene_id: str) -> str:
@@ -69,7 +75,11 @@ class ResultCache:
 
     async def get(self, aoi: AOI, index_name: str, scene_id: str) -> dict[str, Any] | None:
         value = await self._cache.get(self._key(aoi, index_name, scene_id))
-        return value if isinstance(value, dict) else None
+        if isinstance(value, dict):
+            self.hits += 1
+            return value
+        self.misses += 1
+        return None
 
     async def put(self, aoi: AOI, index_name: str, scene_id: str, result: dict[str, Any]) -> None:
         await self._cache.set(self._key(aoi, index_name, scene_id), result, ttl_s=self._ttl_s)
@@ -85,6 +95,30 @@ def _build_result_cache(settings: Settings) -> ResultCache | None:
     if cache is None:
         return None
     return ResultCache(cache, ttl_s=settings.aoi_result_cache_ttl_s)
+
+
+def _build_search_cache(settings: Settings) -> RedisJsonCache | None:
+    """The STAC search cache on the shared Redis, or None when no Redis URL is configured.
+    Passed to WindowedCogAdapter so a re-run skips the STAC catalog query entirely (ADR 0011).
+    Built inside the running loop (the redis.asyncio client binds to it); the adapter holds the
+    reference, and the task closes the result cache's client (the search cache shares the same
+    Redis pool via redis_json_cache_from_settings)."""
+    return redis_json_cache_from_settings(settings, namespace="aoi:search")
+
+
+def _build_adapter(
+    settings: Settings, *, search_cache: RedisJsonCache | None = None
+) -> AccessPort:
+    """Build the configured imagery adapter. When the adapter is `windowed_cog` and a `search_cache`
+    is provided, the cache is injected so repeated searches skip the STAC catalog query (ADR 0011).
+    Other adapters (mock, server_compute) are returned without a cache — they don't hit CDSE STAC.
+    """
+    from rs_core.config import ImageryAdapter
+    from rs_imagery.adapters.windowed_cog import WindowedCogAdapter
+
+    if settings.imagery_adapter is ImageryAdapter.WINDOWED_COG and search_cache is not None:
+        return WindowedCogAdapter(settings, search_cache=search_cache)
+    return get_access_adapter(settings)
 
 
 def _start_of_day(day: date) -> datetime:
@@ -137,7 +171,14 @@ async def _analyse_scene(
     if result_cache is not None:
         cached = await result_cache.get(aoi, index_name, scene.scene_id)
         if cached is not None:
+            log.info(
+                "result_cache_hit",
+                index=index_name,
+                scene_id=scene.scene_id,
+                pass_date=cached.get("pass_date"),
+            )
             return cached
+        log.info("result_cache_miss", index=index_name, scene_id=scene.scene_id)
     spec = get_index(index_name)
     fetched = await adapter.fetch(
         scene, aoi, bands=sorted(spec.bands), resolution_m=float(spec.resolution_m)
@@ -261,14 +302,18 @@ async def _analyse_aoi(
     geometry: dict[str, object],
     index_name: str,
     *,
+    adapter: AccessPort | None = None,
     result_cache: ResultCache | None = None,
 ) -> dict[str, object]:
     """Compute one index over an arbitrary AOI for its most recent usably-clear pass, without
     persisting anything. Only the few most-recent scenes are fetched (not the whole window) so a
     single click never fans out to dozens of reads, and the clearest of them is returned. Shares
-    the per-pass result cache, so a repeat click on the same AOI is served without a fetch."""
-    settings = get_settings()
-    adapter = get_access_adapter(settings)
+    the per-pass result cache, so a repeat click on the same AOI is served without a fetch.
+
+    `adapter` is injectable so the task wrapper can pass a WindowedCogAdapter with a search cache
+    (ADR 0011); defaults to `get_access_adapter` when not provided."""
+    if adapter is None:
+        adapter = get_access_adapter(get_settings())
     aoi = AOI(geometry=geometry, crs="EPSG:4326")
     now = datetime.now(UTC)
     scenes = await adapter.search(
@@ -379,6 +424,7 @@ async def _analyse_aoi_series(
     engine is testable against the mock adapter with no network (CLAUDE.md 3); the task resolves
     them from settings."""
     _guard_aoi_size(geometry)
+    t0 = time.monotonic()
     get_index(index_name)  # validate up front; KeyError surfaces as a task failure
     if adapter is None or backfill_months is None or concurrency is None:
         settings = get_settings()
@@ -448,7 +494,7 @@ async def _analyse_aoi_series(
     else:
         raise ValueError(f"unknown AOI series mode {mode!r}")
 
-    return {
+    res = {
         "status": "ok",
         "index": index_name,
         "mode": mode,
@@ -456,6 +502,18 @@ async def _analyse_aoi_series(
         "resolved": sum(1 for p in passes if p.get("status") in ("ok", "interpolated")),
         "passes": passes,
     }
+    log.info(
+        "aoi.series.complete",
+        index=index_name,
+        mode=mode,
+        requested=res["requested"],
+        resolved=res["resolved"],
+        n_passes=len(passes),
+        wall_clock_s=round(time.monotonic() - t0, 2),
+        result_cache_hits=result_cache.hits if result_cache is not None else 0,
+        result_cache_misses=result_cache.misses if result_cache is not None else 0,
+    )
+    return res
 
 
 @celery.task(name="analysis.analyse_aoi")
@@ -468,11 +526,17 @@ def analyse_aoi_task(geometry: dict[str, object], index_name: str) -> dict[str, 
 
     async def _runner() -> dict[str, object]:
         result_cache = _build_result_cache(settings)
+        search_cache = _build_search_cache(settings)
+        adapter = _build_adapter(settings, search_cache=search_cache)
         try:
-            return await _analyse_aoi(geometry, index_name, result_cache=result_cache)
+            return await _analyse_aoi(
+                geometry, index_name, adapter=adapter, result_cache=result_cache
+            )
         finally:
             if result_cache is not None:
                 await result_cache.aclose()
+            if search_cache is not None:
+                await search_cache.aclose()
 
     return asyncio.run(_runner())
 
@@ -480,25 +544,29 @@ def analyse_aoi_task(geometry: dict[str, object], index_name: str) -> dict[str, 
 def _run_aoi_series(
     settings: Settings,
     concurrency: int,
-    make_coro: Callable[[ResultCache | None], Awaitable[dict[str, Any]]],
+    make_coro: Callable[[AccessPort, ResultCache | None], Awaitable[dict[str, Any]]],
 ) -> dict[str, Any]:
     """Run an AOI-series coroutine on a fresh event loop whose default thread-pool executor is
     sized to `concurrency`, so the asyncio.to_thread CDSE reads inside WindowedCogAdapter.fetch
     are bounded by the pass semaphore and not throttled by the default pool (min(32, cpu + 4),
-    which can be smaller on a low-core worker). The per-pass result cache is built inside the loop
-    (its redis.asyncio client binds to it) and closed at task end. asyncio.run shuts the executor
-    down with the loop."""
+    which can be smaller on a low-core worker). The per-pass result cache and search cache are built
+    inside the loop (their redis.asyncio clients bind to it) and closed at task end. asyncio.run
+    shuts the executor down with the loop."""
 
     async def _runner() -> dict[str, Any]:
         asyncio.get_running_loop().set_default_executor(
             ThreadPoolExecutor(max_workers=concurrency, thread_name_prefix="aoi-read")
         )
         result_cache = _build_result_cache(settings)
+        search_cache = _build_search_cache(settings)
+        adapter = _build_adapter(settings, search_cache=search_cache)
         try:
-            return await make_coro(result_cache)
+            return await make_coro(adapter, result_cache)
         finally:
             if result_cache is not None:
                 await result_cache.aclose()
+            if search_cache is not None:
+                await search_cache.aclose()
 
     return asyncio.run(_runner())
 
@@ -524,12 +592,13 @@ def analyse_aoi_series_task(
     return _run_aoi_series(
         settings,
         concurrency,
-        lambda rc: _analyse_aoi_series(
+        lambda adapter, rc: _analyse_aoi_series(
             geometry,
             index_name,
             mode,
             dates,
             months,
+            adapter=adapter,
             concurrency=concurrency,
             result_cache=rc,
             on_progress=on_progress,
@@ -657,6 +726,8 @@ def analyse_farm_series_task(
         ]
 
         result_cache = _build_result_cache(settings)
+        search_cache = _build_search_cache(settings)
+        adapter = _build_adapter(settings, search_cache=search_cache)
         try:
             return await _analyse_farm_series(
                 fields,
@@ -664,6 +735,7 @@ def analyse_farm_series_task(
                 mode,
                 dates,
                 months,
+                adapter=adapter,
                 concurrency=concurrency,
                 result_cache=result_cache,
                 on_progress=on_progress,
@@ -671,5 +743,7 @@ def analyse_farm_series_task(
         finally:
             if result_cache is not None:
                 await result_cache.aclose()
+            if search_cache is not None:
+                await search_cache.aclose()
 
     return asyncio.run(_run())

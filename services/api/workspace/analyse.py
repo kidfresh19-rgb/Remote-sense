@@ -15,9 +15,12 @@ from fastapi import APIRouter, HTTPException, status
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 from rs_core import get_settings
+from rs_core.logging import get_logger
 
 from services.api.workspace.deps import RunAnalysisPrincipal
 from services.worker.publish import gateway_from_settings, gateway_is_dry_run
+
+log = get_logger("services.api.workspace.analyse")
 
 router = APIRouter(tags=["workspace"])
 
@@ -105,6 +108,7 @@ async def analyse_aoi_series_endpoint(
     except KeyError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
 
+    log.info("aoi.series.dispatch", index=payload.index, mode=payload.mode)
     settings = get_settings()
     if payload.mode == "dates":
         dates = payload.dates or []
@@ -168,6 +172,7 @@ async def analyse_farm_series_endpoint(
     except KeyError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
 
+    log.info("aoi.series.dispatch", index=payload.index, mode=payload.mode)
     settings = get_settings()
     if payload.mode == "dates":
         dates = payload.dates or []

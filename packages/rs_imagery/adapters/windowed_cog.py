@@ -21,7 +21,9 @@ import numpy as np
 from rs_analysis.bands import coarsest_resolution_m
 from rs_analysis.reflectance import stack_to_reflectance
 from rs_analysis.scl import clear_fraction, clear_mask
+from rs_core.cache import RedisJsonCache
 from rs_core.config import Settings, get_settings
+from rs_core.geo import canonical_geometry_hash
 from rs_core.logging import get_logger
 
 from rs_imagery.adapters.cdse_metadata import parse_scene_metadata
@@ -97,12 +99,20 @@ class WindowedCogAdapter(AccessPort):
         stac_client: CdseStacClient | None = None,
         window_source: WindowSource | None = None,
         oauth: CdseOAuth2Client | None = None,
+        search_cache: RedisJsonCache | None = None,
+        search_cache_ttl_s: int | None = None,
     ) -> None:
         self._settings = settings or get_settings()
         self._stac_client = stac_client
         self._window_source = window_source
         self._oauth = oauth
         self._items: dict[str, StacItem] = {}
+        self._search_cache = search_cache
+        self._search_cache_ttl_s = (
+            search_cache_ttl_s
+            if search_cache_ttl_s is not None
+            else self._settings.aoi_search_cache_ttl_s
+        )
 
     # -- lazy construction of the network-facing collaborators ------------------------------------
 
@@ -134,11 +144,38 @@ class WindowedCogAdapter(AccessPort):
         *,
         max_scene_cloud_pct: float | None = None,
     ) -> list[SceneRef]:
+        # ADR 0011 search cache: key is (geometry_hash, start, end, cloud_pct), short TTL.
+        # A hit repopulates self._items so fetch/metadata resolve asset hrefs correctly.
+        cache_key: str | None = None
+        if self._search_cache is not None:
+            cloud_str = f"{max_scene_cloud_pct}" if max_scene_cloud_pct is not None else "none"
+            cache_key = (
+                f"{canonical_geometry_hash(aoi.geometry)}"
+                f":{time_range.start.isoformat()}:{time_range.end.isoformat()}"
+                f":{cloud_str}"
+            )
+            cached = await self._search_cache.get(cache_key)
+            if isinstance(cached, list):
+                log.info("search_cache_hit", key=cache_key, count=len(cached))
+                items = [StacItem.from_json_dict(d) for d in cached]
+                for item in items:
+                    self._items[item.scene_id] = item
+                return [item.to_scene_ref() for item in items]
+            log.info("search_cache_miss", key=cache_key)
+
         items = await self._stac().search_items(
             aoi, time_range, max_scene_cloud_pct=max_scene_cloud_pct
         )
         for item in items:
             self._items[item.scene_id] = item
+
+        if self._search_cache is not None and cache_key is not None:
+            await self._search_cache.set(
+                cache_key,
+                [item.to_json_dict() for item in items],
+                ttl_s=self._search_cache_ttl_s,
+            )
+
         return [item.to_scene_ref() for item in items]
 
     async def metadata(self, scene_id: str) -> SceneMetadata:

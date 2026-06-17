@@ -11,6 +11,7 @@ from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
+import structlog
 from fastapi import HTTPException
 from rs_core import Principal, Role
 from rs_core.cache import RedisJsonCache
@@ -417,6 +418,33 @@ async def test_result_cache_fails_open_and_still_computes() -> None:
     )
     assert a.fetches > 0  # cache get/set raise -> fail open -> normal compute
     assert out["status"] == "ok"
+
+
+async def test_analyse_aoi_series_emits_telemetry() -> None:
+    adapter = _adapter()
+    with structlog.testing.capture_logs() as caps:
+        await _analyse_aoi_series(
+            _GEOM,
+            "ndvi",
+            "backfill",
+            None,
+            6,
+            adapter=adapter,
+            backfill_months=18,
+            now=_NOW,
+        )
+
+    events = [e for e in caps if e.get("event") == "aoi.series.complete"]
+    assert len(events) == 1
+    ev = events[0]
+    assert ev["index"] == "ndvi"
+    assert ev["mode"] == "backfill"
+    assert "requested" in ev
+    assert "resolved" in ev
+    assert "n_passes" in ev
+    assert "wall_clock_s" in ev
+    assert "result_cache_hits" in ev
+    assert "result_cache_misses" in ev
 
 
 # --------------------------------------------------------------------------- engine: guards
