@@ -19,8 +19,10 @@ class ZonalStats:
     min: float | None = None
     max: float | None = None
     std: float | None = None
+    p5: float | None = None
     p10: float | None = None
     p90: float | None = None
+    p95: float | None = None
 
 
 def zonal_stats(values: np.ndarray, include: np.ndarray | None = None) -> ZonalStats:
@@ -32,13 +34,15 @@ def zonal_stats(values: np.ndarray, include: np.ndarray | None = None) -> ZonalS
     valid = selected[np.isfinite(selected)]
     if valid.size == 0:
         return ZonalStats(count=0)
-    p10, p90 = np.percentile(valid, [10, 90])
+    p5, p10, p90, p95 = np.percentile(valid, [5, 10, 90, 95])
     return ZonalStats(
         count=int(valid.size),
         mean=float(np.mean(valid)),
         min=float(np.min(valid)),
         max=float(np.max(valid)),
         std=float(np.std(valid)),
+        p5=float(p5),
         p10=float(p10),
         p90=float(p90),
+        p95=float(p95),
     )

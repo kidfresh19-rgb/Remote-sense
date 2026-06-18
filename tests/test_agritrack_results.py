@@ -64,14 +64,14 @@ def test_to_satellite_results_aggregates_field_and_subplot():
         _ir("4.1", "ndvi", 0.25),
     ]
     recs = to_satellite_results(build_payload("2", results))
-    assert [(r.fieldId, r.subPlotId, r.scope) for r in recs] == [
-        (4, None, "field"),
-        (4, 1, "sub_plot"),
-    ]
-    field = recs[0]
+    assert len(recs) == 2
+
+    field = next(r for r in recs if r.scope == "field")
     assert field.sourceSystem == "satellite"
     assert field.farmId == 2
+    assert field.fieldId == 4
     assert field.analysisDate == "2026-05-28"
+    assert field.metrics is not None
     assert field.metrics.ndvi_mean == 0.62
     assert field.metrics.ndvi_min == 0.30
     assert field.metrics.ndvi_max == 0.80
@@ -82,11 +82,21 @@ def test_to_satellite_results_aggregates_field_and_subplot():
     assert field.metrics.health_score == 0.62
     assert field.interpretation is not None and field.interpretation.stress_level == "none"
     assert field.extId == "2:4:2026-05-28"
+    assert field.subPlots is None
 
-    sub = recs[1]
-    assert sub.metrics.classification == "stressed"  # ndvi 0.25 -> sparse
-    assert sub.interpretation is not None and sub.interpretation.stress_level == "moderate"
-    assert sub.extId == "2:4.1:2026-05-28"
+    # Sub-plots for field 4 are grouped into one record with a subPlots array.
+    sub_group = next(r for r in recs if r.scope == "sub_plot")
+    assert sub_group.farmId == 2
+    assert sub_group.fieldId == 4
+    assert sub_group.extId is None
+    assert sub_group.metrics is None
+    assert sub_group.interpretation is None
+    assert sub_group.subPlots is not None
+    assert len(sub_group.subPlots) == 1
+    subplot = sub_group.subPlots[0]
+    assert subplot.subPlotId == 1
+    assert subplot.extId == "2:sub:1:2026-05-28"
+    assert subplot.metrics.classification == "stressed"  # ndvi 0.25 -> sparse
 
 
 @pytest.mark.parametrize(
@@ -101,6 +111,7 @@ def test_to_satellite_results_aggregates_field_and_subplot():
 )
 def test_classification_maps_ndvi_vigour_band(ndvi: float, expected: str):
     recs = to_satellite_results(build_payload("2", [_ir("4", "ndvi", ndvi)]))
+    assert recs[0].metrics is not None
     assert recs[0].metrics.classification == expected
 
 
@@ -132,15 +143,17 @@ async def test_push_posts_one_record_per_field_date_with_api_key():
     await client.aclose()
 
     assert result.ok
-    assert len(captured) == 1  # one (field, date) record
+    assert len(captured) == 1  # one (field, date) flat record
     url, key, body = captured[0]
     assert url == "https://agri.example/integrations/satellite/results"
     assert key == "atk_key"
     assert body["sourceSystem"] == "satellite"
     assert body["farmId"] == 2
     assert body["fieldId"] == 4
+    assert body["scope"] == "field"
     assert body["metrics"]["ndvi_mean"] == 0.62
     assert body["metrics"]["ndwi_mean"] == 0.40
+    assert "subPlots" not in body
 
 
 async def test_push_dead_letters_on_server_error():
@@ -197,10 +210,15 @@ def test_narrative_matched_per_field_and_date():
     recs = to_satellite_results(
         build_payload("2", results, narratives=[_narr("4", "Field-level read only.")])
     )
-    by_ext = {r.extId: r for r in recs}
-    assert by_ext["2:4:2026-05-28"].interpretation.notes == "Field-level read only."
-    # the sub-plot got no published narrative -> notes stays None
-    assert by_ext["2:4.1:2026-05-28"].interpretation.notes is None
+    # field record carries the narrative
+    field_rec = next(r for r in recs if r.scope == "field")
+    assert field_rec.extId == "2:4:2026-05-28"
+    assert field_rec.interpretation is not None
+    assert field_rec.interpretation.notes == "Field-level read only."
+    # sub-plot grouped records have no interpretation block (gateway spec 2026-06-18)
+    sub_rec = next(r for r in recs if r.scope == "sub_plot")
+    assert sub_rec.interpretation is None
+    assert sub_rec.subPlots is not None and len(sub_rec.subPlots) == 1
 
 
 def test_idempotency_key_unchanged_without_narratives():
@@ -270,9 +288,75 @@ async def test_push_concurrent_posts_records_with_semaphore():
     await client.aclose()
 
     assert result.ok
-    assert len(captured) == 2  # two individual requests
+    # One flat field record + one grouped sub_plot record = two POSTs.
+    assert len(captured) == 2
     assert captured[0][0] == "https://agri.example/integrations/satellite/results"
     assert captured[1][0] == "https://agri.example/integrations/satellite/results"
+    bodies = [c[2] for c in captured]
+    field_body = next(b for b in bodies if b["scope"] == "field")
+    sub_body = next(b for b in bodies if b["scope"] == "sub_plot")
+    assert field_body["metrics"]["ndvi_mean"] == 0.62
+    assert "subPlots" in sub_body and len(sub_body["subPlots"]) == 1
+    assert sub_body["subPlots"][0]["subPlotId"] == 1
+
+
+async def test_push_posts_sub_plot_grouped_body():
+    """The grouped sub_plot POST matches the gateway spec (2026-06-18): one body per
+    (fieldId, analysisDate) with all sub-plots in a `subPlots` array, no top-level
+    metrics or extId."""
+    captured: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(json.loads(request.content))
+        return httpx.Response(200, json={"ok": True})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    port = AgriTrackGatewayPort("https://agri.example/", "atk_key", client=client)
+    payload = build_payload(
+        "1",
+        [
+            _ir("4.1", "ndvi", 0.31, mn=0.22, mx=0.50),
+            _ir("4.2", "ndvi", 0.45, mn=0.30, mx=0.60),
+            _ir("4.3", "ndvi", 0.28, mn=0.18, mx=0.40),
+            _ir("4.4", "ndvi", 0.52, mn=0.40, mx=0.65),
+        ],
+    )
+    result = await port.push(payload)
+    await client.aclose()
+
+    assert result.ok
+    assert len(captured) == 1  # one grouped record for field 4
+    body = captured[0]
+    assert body["sourceSystem"] == "satellite"
+    assert body["farmId"] == 1
+    assert body["fieldId"] == 4
+    assert body["scope"] == "sub_plot"
+    assert body["analysisDate"] == "2026-05-28"
+    # top-level flat fields must be absent (not None, not null - entirely missing)
+    assert "metrics" not in body
+    assert "extId" not in body
+    assert "interpretation" not in body
+    # all four sub-plots in one array, sorted by subPlotId
+    assert len(body["subPlots"]) == 4
+    sp1 = body["subPlots"][0]
+    assert sp1["subPlotId"] == 1
+    assert sp1["extId"] == "1:sub:1:2026-05-28"
+    assert sp1["metrics"]["ndvi_mean"] == 0.31
+    assert sp1["metrics"]["ndvi_min"] == 0.22
+    assert sp1["metrics"]["ndvi_max"] == 0.50
+    assert sp1["metrics"]["classification"] == "stressed"
+    sp2 = body["subPlots"][1]
+    assert sp2["subPlotId"] == 2
+    assert sp2["metrics"]["ndvi_mean"] == 0.45
+    assert sp2["metrics"]["classification"] == "moderate"
+    sp3 = body["subPlots"][2]
+    assert sp3["subPlotId"] == 3
+    assert sp3["metrics"]["ndvi_mean"] == 0.28
+    assert sp3["metrics"]["classification"] == "stressed"
+    sp4 = body["subPlots"][3]
+    assert sp4["subPlotId"] == 4
+    assert sp4["metrics"]["ndvi_mean"] == 0.52
+    assert sp4["metrics"]["classification"] == "moderate"
 
 
 def test_destination_key_identifies_target():

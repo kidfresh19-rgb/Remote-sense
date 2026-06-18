@@ -146,8 +146,8 @@ async def test_agritrack_push_reports_partial_failure_ratio() -> None:
     # retry, extId-deduped) and report the ratio, not a lone error with no sense of scale.
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
-        # the sub-plot record fails server-side; the field record succeeds
-        return httpx.Response(500) if body.get("subPlotId") is not None else httpx.Response(200)
+        # the sub-plot grouped record fails server-side; the flat field record succeeds
+        return httpx.Response(500) if body.get("scope") == "sub_plot" else httpx.Response(200)
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     port = AgriTrackGatewayPort(

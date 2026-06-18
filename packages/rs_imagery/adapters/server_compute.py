@@ -286,7 +286,7 @@ class ServerComputeAdapter(AccessPort):
                         "type": "sentinel-2-l2a",
                         "dataFilter": {
                             "timeRange": {"from": datetime_iso, "to": datetime_iso},
-                            "mosaickingOrder": "leastCC",
+                            "mosaickingOrder": "mostRecent",
                         },
                     }
                 ],

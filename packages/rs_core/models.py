@@ -207,8 +207,10 @@ class Analysis(Base):
     min_val: Mapped[float | None] = mapped_column(Float, nullable=True)
     max_val: Mapped[float | None] = mapped_column(Float, nullable=True)
     std: Mapped[float | None] = mapped_column(Float, nullable=True)
+    p5: Mapped[float | None] = mapped_column(Float, nullable=True)
     p10: Mapped[float | None] = mapped_column(Float, nullable=True)
     p90: Mapped[float | None] = mapped_column(Float, nullable=True)
+    p95: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     clear_fraction: Mapped[float] = mapped_column(Float)
     resolution_m: Mapped[float] = mapped_column(Float)

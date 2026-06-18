@@ -8,7 +8,12 @@ AgriTrack adapter delivers to /integrations/satellite/results; a generic HTTP pu
 sink remain behind the port."""
 
 from rs_sync.adapters import HttpGatewayPort, RecordingGatewayPort
-from rs_sync.agritrack import AgriTrackGatewayPort, SatelliteResult, to_satellite_results
+from rs_sync.agritrack import (
+    AgriTrackGatewayPort,
+    SatelliteResult,
+    SubPlotEntry,
+    to_satellite_results,
+)
 from rs_sync.exporters import analyses_to_csv, index_geotiff
 from rs_sync.payload import (
     PAYLOAD_VERSION,
@@ -27,6 +32,7 @@ __all__ = [
     "RecordingGatewayPort",
     "AgriTrackGatewayPort",
     "SatelliteResult",
+    "SubPlotEntry",
     "to_satellite_results",
     "analyses_to_csv",
     "index_geotiff",

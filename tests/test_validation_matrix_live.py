@@ -3,7 +3,7 @@ Zimbabwe AOIs, asserting `windowed_cog`'s AOI-mean index values match the Copern
 engine (the CDSE Process API) within 0.01 on all five indices. This is the network + credential +
 `geo`-extra gated companion to the offline `test_validation_matrix.py`.
 
-The reference values were captured from the Process API on 2026-06-04 with masking matched to
+The reference values were captured from the Process API with masking matched to
 `rs_analysis.scl.CLEAR_CLASSES` ({4,5,6,7}) + the Process `dataMask`, computed at 20 m, so the
 comparison is apples-to-apples with `windowed_cog`. Each row pins an immutable scene id, so the
 `windowed_cog` side is deterministic and re-running reproduces the same numbers. The residual is
@@ -12,8 +12,48 @@ grid/resampling difference (UTM windowed read vs the geographic Process render),
 Opt in with `RS_LIVE_VALIDATION=1` plus real `RS_CDSE_*` creds and the `geo` extra. Skipped by
 default so the zero-network suite stays green.
 
-To add a row: pick a scene id + AOI, capture the Process API index means for it (the same evalscript
-and masking), and append. The framework iterates the table.
+--- Comparison methodology: remote-sense vs Copernicus Browser ---
+
+When comparing remote-sense statistics to the Copernicus Browser Statistical panel, four structural
+differences will always produce different numbers -- they are not bugs:
+
+1. Percentile bins: remote-sense stores p5/p10/p90/p95; the Browser shows p5/p95 only. The inner
+   p10/p90 will naturally differ from the outer p5/p95 for any non-uniform distribution.
+
+2. SCL masking set: remote-sense CLEAR_CLASSES = {4,5,6,7} (VEGETATION, NOT_VEGETATED, WATER,
+   UNCLASSIFIED). The Copernicus Browser Statistical tool defaults to {4,5} only. Water and
+   unclassified edge pixels included in our mask pull the mean slightly toward their lower-NDVI
+   signal.
+
+3. AOI polygon: the Browser shows statistics for the polygon drawn interactively. Unless the exact
+   same GeoJSON is exported from remote-sense and imported into the Browser, the pixel populations
+   will differ. Always export the field polygon from remote-sense for a valid comparison.
+
+4. Mosaicking: server_compute uses `mosaickingOrder: mostRecent` in the Process API body. This
+   selects the most recent acquisition within the day window rather than the least-cloudy one.
+   windowed_cog pins to the exact scene id, which is always the source of truth.
+
+--- Adding a row ---
+
+1. Pick a near-cloudless scene over a Zimbabwe AOI (search the CDSE STAC catalogue for scene_id).
+2. Draw the exact field polygon in Copernicus Browser; export as GeoJSON.
+3. Run the Process API Statistical endpoint for each of the five indices with the evalscript below,
+   masking on SCL {4,5,6,7} + dataMask, at 20 m output resolution. Record the AOI-mean for each.
+4. Run windowed_cog.fetch() against the same scene + AOI and record the stats.mean for each index.
+5. Add a row to LIVE_VALIDATION_MATRIX with browser_ref = Process API means, and a comment
+   "wc: <windowed_cog values>" for reference.
+
+The evalscript for the Process API Statistical request (one per index, same pattern as
+`server_compute._bands_evalscript`), with the SCL exclusion filter baked in via dataMask:
+
+  function setup() {
+    return { input: ["B04","B08","SCL","dataMask"],
+      output: { bands: 1, sampleType: "FLOAT32" } };
+  }
+  function evaluatePixel(s) {
+    var clear = [4,5,6,7].includes(s.SCL) && s.dataMask > 0;
+    return [clear ? (s.B08 - s.B04) / (s.B08 + s.B04) : NaN];
+  }
 """
 
 from __future__ import annotations

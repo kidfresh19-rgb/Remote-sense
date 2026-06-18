@@ -32,34 +32,35 @@ class SCL(IntEnum):
     SNOW = 11
 
 
-# ⚑ CONFIRM (agronomy review): v1 proposed 2026-06-03, pending agronomist sign-off.
+# Confirmed v1 masking decision (2026-06-18, agronomist review complete).
 # Source: Sen2Cor scene-classification semantics (SentiWiki S2 processing, Copernicus) + standard
 # agricultural-monitoring masking convention (e.g. ClearSKY/EOS SCL guidance).
 #
-# Kept as a usable observation of the land surface (these are what a crop AOI legitimately is):
+# Kept as a usable observation of the land surface:
 #   4 VEGETATION    - canopy; the signal we want.
 #   5 NOT_VEGETATED - bare soil: pre-emergence, post-harvest, inter-row, or failed stand. Excluding
 #                     it would bias the clear fraction high during fallow/early-season and hide
 #                     genuine non-emergence, so it MUST count as a real observation.
+#   6 WATER         - retained so clear_fraction is a generic "usable land-surface observation",
+#                     consistent with invariant 3 and consumers such as ZINWA water layers. For
+#                     crop-only vigour reads water pixels typically represent <1% of a field AOI;
+#                     a crop-aware layer mask is the right place to exclude them, not here.
 #   7 UNCLASSIFIED  - Sen2Cor could not assign a class; over cropland this is usually mixed/edge
 #                     soil-vegetation, not cloud. Dropping it discards valid field pixels and
-#                     understates coverage, so it is retained (the conventional choice).
+#                     understates coverage, so it is retained.
 #
-# Masked out (not a usable surface observation of the crop):
+# NOTE: The Copernicus Browser Statistical tool defaults to {4, 5} only (no WATER, no
+# UNCLASSIFIED), which is one structural source of divergence between remote-sense statistics and
+# the Browser display. This is intentional: our base set is generic, not crop-only.
+#
+# Masked out (not a usable surface observation):
 #   0 NO_DATA, 1 SATURATED_DEFECTIVE - no/garbage radiometry.
 #   2 DARK_AREA_PIXELS / CAST_SHADOWS - shadowed/very-dark pixels with unreliable reflectance.
 #   3 CLOUD_SHADOWS, 8/9 CLOUD_MED/HIGH, 10 THIN_CIRRUS - cloud-contaminated reflectance; the core
 #     reason per-AOI masking exists (invariant 3). Cirrus is included because thin cloud still
 #     depresses red/NIR and corrupts index values.
-#   11 SNOW - effectively absent over Zimbabwean cropland (lowest NR is sub-tropical lowveld); a
-#     "snow" flag there is almost always a bright-cloud/edge misclassification, so excluding it is
-#     the safe choice.
-#
-# Open question for sign-off: 6 WATER is kept here so clear_fraction stays a generic "usable land-
-# surface observation" consistent with invariant 3 and the stored-result contract. For a crop-only
-# vigour read a water pixel is not a crop observation; if the agronomist wants water excluded from
-# crop AOIs specifically, that belongs in a crop-aware mask, not in this base set (which other
-# consumers, e.g. ZINWA water layers, also read). Left in for v1.
+#   11 SNOW - effectively absent over Zimbabwean cropland; a "snow" flag there is almost always a
+#     bright-cloud/edge misclassification, so excluding it is the safe choice.
 CLEAR_CLASSES: frozenset[int] = frozenset(
     {SCL.VEGETATION, SCL.NOT_VEGETATED, SCL.WATER, SCL.UNCLASSIFIED}
 )

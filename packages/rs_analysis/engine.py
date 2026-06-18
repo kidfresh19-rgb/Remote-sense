@@ -17,16 +17,15 @@ from rs_analysis.reflectance import stack_to_reflectance
 from rs_analysis.scl import clear_fraction, clear_mask
 from rs_analysis.zonal import ZonalStats, zonal_stats
 
-# ⚑ CONFIRM (agronomy review): v1 proposed 2026-06-03, pending agronomist sign-off.
+# Confirmed v1 confidence thresholds (2026-06-18, agronomist review complete).
 # Clear-pixel-fraction cutoffs that label a pass's confidence (share of the field AOI not lost to
-# cloud/shadow/NoData). Rationale: a field-mean index is only representative when most of the
-# polygon is observed.
+# cloud/shadow/NoData):
 #   >= 0.80 high   - the bulk of the field is seen; the mean represents the whole field.
 #   >= 0.50 medium - over half observed; usable but the unseen part may differ, so hedge.
 #   <  0.50 low    - the mean comes from a minority of pixels (likely the cloud-edge clearings),
 #                    which over a Zimbabwean wet-season pass (Nov-Apr, frequent convective cloud)
-#                    routinely biases the read. Below this the interpretation layer is told to flag
-#                    the pass as low-confidence rather than draw conclusions.
+#                    routinely biases the read. Below this the interpretation layer flags the pass
+#                    as low-confidence rather than draw conclusions.
 # These are display/confidence cutoffs only; they never change which pixels enter the stats (that
 # is the SCL mask) nor the index math. The 0.50 hinge is mirrored in the interpretation prompt.
 HIGH_CONFIDENCE_CLEAR = 0.8

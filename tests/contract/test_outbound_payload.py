@@ -16,6 +16,7 @@ from rs_sync import (
     IndexResult,
     PublishedNarrative,
     SatelliteResult,
+    SubPlotEntry,
 )
 
 _GEO_TERMS = (
@@ -30,7 +31,7 @@ _GEO_TERMS = (
     "longitude",
 )
 
-_OUTBOUND_MODELS = (IndexResult, PublishedNarrative, GatewayPayload, SatelliteResult)
+_OUTBOUND_MODELS = (IndexResult, PublishedNarrative, GatewayPayload, SatelliteResult, SubPlotEntry)
 
 
 def test_payload_version_is_pinned() -> None:
@@ -54,8 +55,10 @@ def test_index_result_fields() -> None:
         "min",
         "max",
         "std",
+        "p5",
         "p10",
         "p90",
+        "p95",
         "clear_fraction",
         "confidence",
         "resolution_m",
@@ -82,4 +85,27 @@ def test_gateway_payload_fields() -> None:
         "results",
         "interpretations",
         "idempotency_key",
+    }
+
+
+def test_satellite_result_fields() -> None:
+    assert set(SatelliteResult.model_fields) == {
+        "sourceSystem",
+        "farmId",
+        "fieldId",
+        "subPlotId",
+        "scope",
+        "analysisDate",
+        "extId",
+        "metrics",
+        "interpretation",
+        "subPlots",
+    }
+
+
+def test_sub_plot_entry_fields() -> None:
+    assert set(SubPlotEntry.model_fields) == {
+        "subPlotId",
+        "extId",
+        "metrics",
     }

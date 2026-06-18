@@ -30,8 +30,10 @@ class AnalysisRow(Protocol):
     min_val: float | None
     max_val: float | None
     std: float | None
+    p5: float | None
     p10: float | None
     p90: float | None
+    p95: float | None
     clear_fraction: float
     confidence: str | None
     resolution_m: float
@@ -55,8 +57,10 @@ class IndexResult(BaseModel):
     min: float | None
     max: float | None
     std: float | None
+    p5: float | None = None
     p10: float | None
     p90: float | None
+    p95: float | None = None
     clear_fraction: float
     confidence: str | None
     resolution_m: float
@@ -76,8 +80,10 @@ class IndexResult(BaseModel):
             min=row.min_val,
             max=row.max_val,
             std=row.std,
+            p5=row.p5,
             p10=row.p10,
             p90=row.p90,
+            p95=row.p95,
             clear_fraction=row.clear_fraction,
             confidence=row.confidence,
             resolution_m=row.resolution_m,

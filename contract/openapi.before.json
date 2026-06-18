@@ -20,6 +20,95 @@
         "title": "AOIAnalysisRequest",
         "type": "object"
       },
+      "AOIPushRequest": {
+        "description": "Push passes of a completed AOI Studio job to the gateway, tagged to a farm.\nBoth exact same-day passes (status='ok') and averaged/interpolated passes\n(status='interpolated') are included.",
+        "properties": {
+          "canonical_farm_id": {
+            "title": "Canonical Farm Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "canonical_farm_id"
+        ],
+        "title": "AOIPushRequest",
+        "type": "object"
+      },
+      "AOISeriesRequest": {
+        "description": "A multi-pass AOI preview. `mode=\"dates\"` resolves each requested calendar date to its\nsame-day scene (exact day only); `mode=\"backfill\"` sweeps `months` of history (default + max\nis the configured backfill depth). Provide either a single `index` or a non-empty `indices`\nlist for the all-indices path (ADR 0011 Phase 2), never both.",
+        "properties": {
+          "dates": {
+            "anyOf": [
+              {
+                "items": {
+                  "format": "date",
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dates"
+          },
+          "geometry": {
+            "additionalProperties": true,
+            "title": "Geometry",
+            "type": "object"
+          },
+          "index": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Index"
+          },
+          "indices": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Indices"
+          },
+          "mode": {
+            "enum": [
+              "dates",
+              "backfill"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "months": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Months"
+          }
+        },
+        "required": [
+          "geometry",
+          "mode"
+        ],
+        "title": "AOISeriesRequest",
+        "type": "object"
+      },
       "AgriTrackSyncIn": {
         "description": "One AgriTrack sync push: a farmer and their farms.",
         "properties": {
@@ -134,6 +223,64 @@
         "title": "AnnotationOut",
         "type": "object"
       },
+      "AsOfResolution": {
+        "description": "An arbitrary calendar date resolved against a field's stored passes (S3.1, L3): the\nnearest usable pass on each side of the date, plus the policy's pick. All three slots are\nNone-able; when no stored pass qualifies, nothing is fabricated.",
+        "properties": {
+          "after": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ResolvedPass"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "before": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ResolvedPass"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "index": {
+            "title": "Index",
+            "type": "string"
+          },
+          "min_clear": {
+            "title": "Min Clear",
+            "type": "number"
+          },
+          "requested_date": {
+            "format": "date",
+            "title": "Requested Date",
+            "type": "string"
+          },
+          "resolved": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ResolvedPass"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "requested_date",
+          "index",
+          "min_clear",
+          "before",
+          "after",
+          "resolved"
+        ],
+        "title": "AsOfResolution",
+        "type": "object"
+      },
       "AuditRecordOut": {
         "description": "The provenance tuple (CLAUDE.md invariant 5) of one stored analysis, surfaced so an analyst\ncan see exactly which scene, formula, geometry version, and processing mode produced a value.\nRead-only and geometry-free; this is internal reproducibility metadata, not the gateway push.",
         "properties": {
@@ -222,6 +369,23 @@
           "created_at"
         ],
         "title": "AuditRecordOut",
+        "type": "object"
+      },
+      "CollectDatesRequest": {
+        "properties": {
+          "dates": {
+            "items": {
+              "format": "date",
+              "type": "string"
+            },
+            "title": "Dates",
+            "type": "array"
+          }
+        },
+        "required": [
+          "dates"
+        ],
+        "title": "CollectDatesRequest",
         "type": "object"
       },
       "FarmIn": {
@@ -437,6 +601,75 @@
           "region"
         ],
         "title": "FarmOut",
+        "type": "object"
+      },
+      "FarmSeriesRequest": {
+        "description": "Multi-pass AOI preview over an entire farm: the farm's stored field geometries are unioned\nserver-side so the analyst doesn't need to draw or upload a boundary. Same mode/date/months and\nsingle-`index`-or-`indices` semantics as `AOISeriesRequest`, but the geometry comes from the\nDB.",
+        "properties": {
+          "dates": {
+            "anyOf": [
+              {
+                "items": {
+                  "format": "date",
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dates"
+          },
+          "index": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Index"
+          },
+          "indices": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Indices"
+          },
+          "mode": {
+            "enum": [
+              "dates",
+              "backfill"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "months": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Months"
+          }
+        },
+        "required": [
+          "mode"
+        ],
+        "title": "FarmSeriesRequest",
         "type": "object"
       },
       "FieldIn": {
@@ -837,6 +1070,142 @@
         "title": "PublishStatusOut",
         "type": "object"
       },
+      "RegionDrawRequest": {
+        "description": "An analyst-drawn region. `geometry` is a GeoJSON Polygon or MultiPolygon (the frontend\ncompiles a radius circle to a polygon before sending, so the server sees one rule).",
+        "properties": {
+          "geometry": {
+            "additionalProperties": true,
+            "title": "Geometry",
+            "type": "object"
+          },
+          "name": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "geometry"
+        ],
+        "title": "RegionDrawRequest",
+        "type": "object"
+      },
+      "RegionOut": {
+        "properties": {
+          "dominant_nr": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dominant Nr"
+          },
+          "farms_captured": {
+            "title": "Farms Captured",
+            "type": "integer"
+          },
+          "layer_id": {
+            "title": "Layer Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "nr_composition": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "title": "Nr Composition",
+            "type": "object"
+          },
+          "region_boundary_id": {
+            "title": "Region Boundary Id",
+            "type": "string"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "region_boundary_id",
+          "layer_id",
+          "name",
+          "source",
+          "nr_composition",
+          "dominant_nr",
+          "farms_captured"
+        ],
+        "title": "RegionOut",
+        "type": "object"
+      },
+      "RegionUploadOut": {
+        "properties": {
+          "created": {
+            "title": "Created",
+            "type": "integer"
+          },
+          "farms_assigned": {
+            "title": "Farms Assigned",
+            "type": "integer"
+          },
+          "layer_id": {
+            "title": "Layer Id",
+            "type": "string"
+          },
+          "skipped": {
+            "items": {
+              "$ref": "#/components/schemas/SkippedFeatureOut"
+            },
+            "title": "Skipped",
+            "type": "array"
+          }
+        },
+        "required": [
+          "layer_id",
+          "created",
+          "skipped",
+          "farms_assigned"
+        ],
+        "title": "RegionUploadOut",
+        "type": "object"
+      },
+      "ResolvedPass": {
+        "description": "One usable pass resolved from an as-of-date request. `day_gap` is signed days from the\nrequested date (zero or negative = on/before, positive = after), so the UI can state the\ntrue acquisition date and the gap honestly (invariant 4).",
+        "properties": {
+          "clear_fraction": {
+            "title": "Clear Fraction",
+            "type": "number"
+          },
+          "day_gap": {
+            "title": "Day Gap",
+            "type": "integer"
+          },
+          "pass_date": {
+            "format": "date",
+            "title": "Pass Date",
+            "type": "string"
+          },
+          "scene_id": {
+            "title": "Scene Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "scene_id",
+          "pass_date",
+          "day_gap",
+          "clear_fraction"
+        ],
+        "title": "ResolvedPass",
+        "type": "object"
+      },
       "ReviewQueueItem": {
         "description": "One row of the cross-field review surface: a drafted/published read plus the canonical ids\nneeded to open its field. Geometry-free (this is a triage list, not a map view).",
         "properties": {
@@ -1086,15 +1455,22 @@
         "type": "object"
       },
       "SatelliteResult": {
-        "description": "One AgriTrack `/integrations/satellite/results` record: a field (or sub-plot) on one analysis\ndate. Field names are the contract's camelCase wire keys.",
+        "description": "One AgriTrack `/integrations/satellite/results` record.\n\nFor `scope in (\"farm\", \"field\")`: flat record with top-level `extId`, `metrics`,\n`interpretation`.  For `scope == \"sub_plot\"`: grouped record with a `subPlots` array; the\nflat fields are absent (excluded from the JSON body). Field names are the contract's camelCase\nwire keys.",
         "properties": {
           "analysisDate": {
             "title": "Analysisdate",
             "type": "string"
           },
           "extId": {
-            "title": "Extid",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Extid"
           },
           "farmId": {
             "title": "Farmid",
@@ -1112,10 +1488,24 @@
             "title": "Fieldid"
           },
           "interpretation": {
-            "$ref": "#/components/schemas/SatelliteInterpretation"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SatelliteInterpretation"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "metrics": {
-            "$ref": "#/components/schemas/SatelliteMetrics"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SatelliteMetrics"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "scope": {
             "title": "Scope",
@@ -1136,20 +1526,36 @@
               }
             ],
             "title": "Subplotid"
+          },
+          "subPlots": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/SubPlotEntry"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subplots"
           }
         },
         "required": [
           "farmId",
           "scope",
-          "analysisDate",
-          "extId",
-          "metrics"
+          "analysisDate"
         ],
         "title": "SatelliteResult",
         "type": "object"
       },
       "SceneOut": {
         "properties": {
+          "clear_fraction": {
+            "title": "Clear Fraction",
+            "type": "number"
+          },
           "pass_date": {
             "format": "date",
             "title": "Pass Date",
@@ -1162,9 +1568,63 @@
         },
         "required": [
           "scene_id",
-          "pass_date"
+          "pass_date",
+          "clear_fraction"
         ],
         "title": "SceneOut",
+        "type": "object"
+      },
+      "SkippedFeatureOut": {
+        "properties": {
+          "index": {
+            "title": "Index",
+            "type": "integer"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "index",
+          "name",
+          "reason"
+        ],
+        "title": "SkippedFeatureOut",
+        "type": "object"
+      },
+      "SubPlotEntry": {
+        "description": "One sub-plot within a grouped `scope: sub_plot` record (gateway spec 2026-06-18).",
+        "properties": {
+          "extId": {
+            "title": "Extid",
+            "type": "string"
+          },
+          "metrics": {
+            "$ref": "#/components/schemas/SatelliteMetrics"
+          },
+          "subPlotId": {
+            "title": "Subplotid",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "subPlotId",
+          "extId",
+          "metrics"
+        ],
+        "title": "SubPlotEntry",
         "type": "object"
       },
       "SyncResponse": {
@@ -1604,6 +2064,205 @@
         ]
       }
     },
+    "/analyse/aoi/jobs/{job_id}": {
+      "get": {
+        "description": "Status + results for a multi-pass AOI preview job. `state` is `queued` | `running` (with a\n`{done, total}` progress meter) | `done` (with `result`) | `error` (with `error`). Requires\n`run_analysis`.",
+        "operationId": "aoi_job_endpoint_analyse_aoi_jobs__job_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Aoi Job Endpoint Analyse Aoi Jobs  Job Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Aoi Job Endpoint",
+        "tags": [
+          "workspace"
+        ]
+      }
+    },
+    "/analyse/aoi/jobs/{job_id}/push": {
+      "post": {
+        "description": "Push passes of a completed AOI Studio job to the gateway under a farm's canonical id.\nBoth exact same-day passes (status='ok') and averaged/interpolated passes\n(status='interpolated') are included. For interpolated passes, a synthetic\nprovider_scene_id is built from the two source scenes and processing_mode is set to\n'interpolated' so the gateway can distinguish them. Requires `run_analysis`.\n\n# ⚑ CONFIRM: deliberate relaxation of invariant 6 for AOI Studio - ad-hoc analyses are not\npersisted to the DB but can be pushed to the gateway tagged to an existing farm.",
+        "operationId": "push_aoi_results_endpoint_analyse_aoi_jobs__job_id__push_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AOIPushRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Push Aoi Results Endpoint Analyse Aoi Jobs  Job Id  Push Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Push Aoi Results Endpoint",
+        "tags": [
+          "workspace"
+        ]
+      }
+    },
+    "/analyse/aoi/series": {
+      "post": {
+        "description": "Start a multi-pass AOI preview (AOI Studio) and return its job id immediately. The sweep can\ntake minutes, so it is not waited on here - poll `GET /analyse/aoi/jobs/{job_id}` for progress\nand results. Nothing is persisted (invariant 6). Requires `run_analysis`. A bad index, an empty\nor oversized date batch, or out-of-range months are rejected as 422 before anything is queued.",
+        "operationId": "analyse_aoi_series_endpoint_analyse_aoi_series_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AOISeriesRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Analyse Aoi Series Endpoint Analyse Aoi Series Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Analyse Aoi Series Endpoint",
+        "tags": [
+          "workspace"
+        ]
+      }
+    },
+    "/analyse/farm/{canonical_farm_id}/series": {
+      "post": {
+        "description": "Start a multi-pass AOI preview (AOI Studio) for an entire farm: the farm's stored field\ngeometries are unioned into a single AOI on the worker, then the same engine as\n`analyse_aoi_series_endpoint` runs. Returns a job id immediately; poll\n`GET /analyse/aoi/jobs/{job_id}` for progress and results. Nothing is persisted (invariant 6).\nRequires `run_analysis`. A bad index, an empty date batch, or out-of-range months are rejected\nas 422 before anything is queued. A farm with no stored field geometries surfaces as a worker\nfailure (the task raises ValueError, which Celery stores as FAILURE).",
+        "operationId": "analyse_farm_series_endpoint_analyse_farm__canonical_farm_id__series_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "canonical_farm_id",
+            "required": true,
+            "schema": {
+              "title": "Canonical Farm Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FarmSeriesRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Analyse Farm Series Endpoint Analyse Farm  Canonical Farm Id  Series Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Analyse Farm Series Endpoint",
+        "tags": [
+          "workspace"
+        ]
+      }
+    },
     "/api/v1/mobile/data": {
       "get": {
         "description": "Pull a farm's stored satellite results in the AgriTrack contract shape (ADR 0006 section 4);\nAgriTrack triggers this per farm when a push could not be delivered. Geometry is never returned\n(invariant 6).",
@@ -2028,6 +2687,82 @@
         ]
       }
     },
+    "/fields/{field_id}/as-of": {
+      "get": {
+        "description": "Resolve `?date=` to the field's nearest usable passes for `index` (S3.1). `min_clear`\nis the per-AOI clear-fraction floor a pass must meet to count (0 admits every stored pass);\nthe default matches the alerting floor, below which a pass is not a reliable signal.",
+        "operationId": "field_as_of_endpoint_fields__field_id__as_of_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "field_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Field Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "date",
+            "required": true,
+            "schema": {
+              "format": "date",
+              "title": "Date",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "index",
+            "required": false,
+            "schema": {
+              "default": "ndvi",
+              "title": "Index",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "min_clear",
+            "required": false,
+            "schema": {
+              "default": 0.5,
+              "maximum": 1.0,
+              "minimum": 0.0,
+              "title": "Min Clear",
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AsOfResolution"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Field As Of Endpoint",
+        "tags": [
+          "workspace"
+        ]
+      }
+    },
     "/fields/{field_id}/audit": {
       "get": {
         "operationId": "field_audit_endpoint_fields__field_id__audit_get",
@@ -2118,6 +2853,62 @@
           }
         },
         "summary": "Field Collect Endpoint",
+        "tags": [
+          "workspace"
+        ]
+      }
+    },
+    "/fields/{field_id}/collect-dates": {
+      "post": {
+        "description": "Collect a targeted batch of dates for one field. Each requested date snaps to the field's\nnearest usable pass within +/-7 days (deduped) and is collected exactly like a backfill pass,\nso the results persist (provenance, COG, interpretation draft) and become pushable through the\nper-farm publish - the cheaper, targeted alternative to a full backfill. Needs `run_analysis`.\n\nThe plan (one archive search + fan-out) is waited on briefly so the caller gets the per-date\nresolution; the collection itself runs async in the fanned-out tasks. A missing field is a 404,\nan empty/oversized batch or a future date a 422, before anything is enqueued.",
+        "operationId": "field_collect_dates_endpoint_fields__field_id__collect_dates_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "field_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Field Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CollectDatesRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Field Collect Dates Endpoint Fields  Field Id  Collect Dates Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Field Collect Dates Endpoint",
         "tags": [
           "workspace"
         ]
@@ -2481,53 +3272,6 @@
         ]
       }
     },
-    "/publish/farm/{canonical_farm_id}": {
-      "post": {
-        "description": "Enqueue an additive push of a farm's results to the gateway (L7). Requires `publish`.",
-        "operationId": "publish_farm_endpoint_publish_farm__canonical_farm_id__post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "canonical_farm_id",
-            "required": true,
-            "schema": {
-              "title": "Canonical Farm Id",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "202": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": {
-                    "type": "string"
-                  },
-                  "title": "Response Publish Farm Endpoint Publish Farm  Canonical Farm Id  Post",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Publish Farm Endpoint",
-        "tags": [
-          "operations"
-        ]
-      }
-    },
     "/readyz": {
       "get": {
         "operationId": "readyz_readyz_get",
@@ -2546,6 +3290,105 @@
           }
         },
         "summary": "Readyz"
+      }
+    },
+    "/regions/draw": {
+      "post": {
+        "description": "Persist an analyst-drawn region (create_region_cluster). The viewed farm is only the entry\npoint; the region is free-standing and reusable, owned by no farm (ADR 0010 amendment).",
+        "operationId": "draw_region_endpoint_regions_draw_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegionDrawRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RegionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Draw Region Endpoint",
+        "tags": [
+          "workspace"
+        ]
+      }
+    },
+    "/regions/upload": {
+      "post": {
+        "description": "Persist a multi/single-feature boundary upload (upload_region_boundary). The request body is\nthe file bytes (.zip shapefile / GeoJSON / GeoPackage); geopandas reads every feature; broken\nfeatures are skipped and reported, never fatal to the layer.",
+        "operationId": "upload_region_layer_endpoint_regions_upload_post",
+        "parameters": [
+          {
+            "description": "layer attribute that names each region",
+            "in": "query",
+            "name": "name_column",
+            "required": true,
+            "schema": {
+              "description": "layer attribute that names each region",
+              "title": "Name Column",
+              "type": "string"
+            }
+          },
+          {
+            "description": "original filename; its suffix picks driver",
+            "in": "query",
+            "name": "filename",
+            "required": false,
+            "schema": {
+              "default": "upload.geojson",
+              "description": "original filename; its suffix picks driver",
+              "title": "Filename",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RegionUploadOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Upload Region Layer Endpoint",
+        "tags": [
+          "workspace"
+        ]
       }
     }
   }
