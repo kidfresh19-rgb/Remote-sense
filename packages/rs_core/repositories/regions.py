@@ -1,0 +1,314 @@
+"""Region clusters: the seeded/uploaded/drawn boundary layers and each farm's centroid assignment
+(comparison groups, PRD 0002 / ADR 0010). Seeding is idempotent on the layer identity so re-running
+init - or replacing a candidate map with the authoritative one - never duplicates. Assignment is the
+one centroid point-in-polygon rule for every boundary `source`, stamped with the layer version so a
+re-survey or a boundary edit is a tracked re-assignment (the recompute upserts), never a silent
+overwrite. Reference geometry is owned by remote-sense and never pushed (invariant 6)."""
+
+from __future__ import annotations
+
+import uuid
+from collections.abc import Sequence
+from datetime import date
+
+from geoalchemy2.shape import from_shape
+from geoalchemy2.shape import to_shape as wkb_to_shape
+from shapely.geometry import MultiPolygon
+from shapely.geometry.base import BaseGeometry
+from sqlalchemy import delete, func, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from rs_core.models import Farm, FarmRegionAssignment, RegionBoundary, RegionBoundaryLayer
+from rs_core.regions import (
+    ParsedRegionFeature,
+    RegionSource,
+    assign_centroid,
+    natural_region_composition,
+)
+
+
+async def get_layer_by_identity(
+    session: AsyncSession, *, source: str, year: int | None, version: str
+) -> RegionBoundaryLayer | None:
+    """The layer matching a published-map identity, or None. Backs the idempotent seed check."""
+    return (
+        await session.execute(
+            select(RegionBoundaryLayer).where(
+                RegionBoundaryLayer.source == source,
+                RegionBoundaryLayer.year == year,
+                RegionBoundaryLayer.version == version,
+            )
+        )
+    ).scalar_one_or_none()
+
+
+async def list_layers(session: AsyncSession) -> Sequence[RegionBoundaryLayer]:
+    """Every region-boundary layer, seeded and analyst-created."""
+    return (await session.execute(select(RegionBoundaryLayer))).scalars().all()
+
+
+async def seed_natural_regions(
+    session: AsyncSession,
+    *,
+    name: str,
+    source: str,
+    year: int | None,
+    version: str,
+    crs: str,
+    features: Sequence[ParsedRegionFeature],
+    publishing_authority: str | None = None,
+    citation: str | None = None,
+    naming_column: str | None = None,
+    acquisition_date: date | None = None,
+    acquisition_path: str | None = None,
+    file_path: str | None = None,
+) -> RegionBoundaryLayer:
+    """Seed a read-only Natural Region layer from validated features. Idempotent on
+    (source, year, version): an existing layer is returned untouched, so re-running init is
+    a no-op and the authoritative map can supersede a candidate by carrying a new version. Each
+    seeded boundary is `source=seeded` with the trivial self-composition ({name: 1.0}, dominant_nr =
+    the region itself), because the seeded layer *is* the Natural Region reference."""
+    existing = await get_layer_by_identity(session, source=source, year=year, version=version)
+    if existing is not None:
+        return existing
+
+    layer = RegionBoundaryLayer(
+        name=name,
+        source=source,
+        year=year,
+        version=version,
+        publishing_authority=publishing_authority,
+        citation=citation,
+        naming_column=naming_column,
+        crs=crs,
+        acquisition_date=acquisition_date,
+        acquisition_path=acquisition_path,
+        file_path=file_path,
+        read_only=True,
+    )
+    session.add(layer)
+    await session.flush()  # assign layer.id before the boundaries reference it
+
+    for feature in features:
+        session.add(
+            RegionBoundary(
+                layer_id=layer.id,
+                name=feature.name,
+                boundary=from_shape(feature.geometry, srid=4326),
+                source=RegionSource.SEEDED.value,
+                creator=None,
+                nr_composition={feature.name: 1.0},
+                dominant_nr=feature.name,
+            )
+        )
+    await session.flush()
+    return layer
+
+
+async def _layer_candidates(
+    session: AsyncSession, *, layer_id: uuid.UUID | None = None
+) -> list[tuple[uuid.UUID, str, list[tuple[uuid.UUID, BaseGeometry]]]]:
+    """Every layer (or one, when `layer_id` is given) as (layer_id, layer_version,
+    [(region_boundary_id, WGS84 polygon), ...]), the shape `assign_centroid` consumes. Read once per
+    recompute so a many-farm sweep does not re-query boundaries per farm."""
+    out: list[tuple[uuid.UUID, str, list[tuple[uuid.UUID, BaseGeometry]]]] = []
+    stmt = select(RegionBoundaryLayer)
+    if layer_id is not None:
+        stmt = stmt.where(RegionBoundaryLayer.id == layer_id)
+    layers = (await session.execute(stmt)).scalars().all()
+    for layer in layers:
+        boundaries = (
+            (
+                await session.execute(
+                    select(RegionBoundary).where(RegionBoundary.layer_id == layer.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        candidates = [(b.id, wkb_to_shape(b.boundary)) for b in boundaries]
+        out.append((layer.id, layer.version, candidates))
+    return out
+
+
+async def recompute_farm_region_assignments(
+    session: AsyncSession,
+    *,
+    canonical_farm_id: str | None = None,
+    layer_id: uuid.UUID | None = None,
+    edge_tolerance_m: float,
+) -> int:
+    """Assign each farm to the region containing its centroid, per layer. `canonical_farm_id`
+    set: one farm (on register or geometry-version change). None: every farm (after a seed or a
+    boundary edit). `layer_id` set scopes the sweep to one layer (after a create), so a new drawn or
+    uploaded region assigns its captured farms without re-walking other layers. Idempotent - the
+    assignment is upserted on (canonical_farm_id, layer_id) and
+    stamped with the layer version, and a farm now outside a layer has its stale assignment
+    removed - re-running changes nothing. Returns the number of (farm, layer) assignments written.
+
+    The boundary-adjacent flag and all distance work happen in the working UTM zone inside
+    `assign_centroid` (§2). No geometry leaves remote-sense (invariant 6)."""
+    layer_candidates = await _layer_candidates(session, layer_id=layer_id)
+    if not layer_candidates:
+        return 0
+
+    farm_stmt = select(Farm.canonical_farm_id, Farm.centroid_lon, Farm.centroid_lat)
+    if canonical_farm_id is not None:
+        farm_stmt = farm_stmt.where(Farm.canonical_farm_id == canonical_farm_id)
+    farms = (await session.execute(farm_stmt)).all()
+
+    written = 0
+    for farm_cid, lon, lat in farms:
+        for layer_id, layer_version, candidates in layer_candidates:
+            assignment = assign_centroid(lon, lat, candidates, edge_tolerance_m=edge_tolerance_m)
+            if assignment is None:
+                await session.execute(
+                    delete(FarmRegionAssignment).where(
+                        FarmRegionAssignment.canonical_farm_id == farm_cid,
+                        FarmRegionAssignment.layer_id == layer_id,
+                    )
+                )
+                continue
+            await session.execute(
+                pg_insert(FarmRegionAssignment)
+                .values(
+                    canonical_farm_id=farm_cid,
+                    layer_id=layer_id,
+                    region_boundary_id=assignment.region_boundary_id,
+                    layer_version=layer_version,
+                    boundary_adjacent=assignment.boundary_adjacent,
+                )
+                .on_conflict_do_update(
+                    constraint="uq_farm_region_assignment",
+                    set_={
+                        "region_boundary_id": assignment.region_boundary_id,
+                        "layer_version": layer_version,
+                        "boundary_adjacent": assignment.boundary_adjacent,
+                        "assigned_at": func.now(),
+                    },
+                )
+            )
+            written += 1
+    await session.flush()
+    return written
+
+
+async def get_assignments_for_farm(
+    session: AsyncSession, *, canonical_farm_id: str
+) -> Sequence[FarmRegionAssignment]:
+    """A farm's region assignments, one per layer it falls inside."""
+    return (
+        (
+            await session.execute(
+                select(FarmRegionAssignment).where(
+                    FarmRegionAssignment.canonical_farm_id == canonical_farm_id
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+
+async def natural_region_polygons(session: AsyncSession) -> list[tuple[str, BaseGeometry]]:
+    """The seeded Natural Region polygons (name, WGS84 shapely) used to derive a created boundary's
+    composition. Reads the most recent read-only (seeded) layer; returns [] when none is seeded yet,
+    so composition degrades gracefully to ({}, None)."""
+    layer = (
+        (
+            await session.execute(
+                select(RegionBoundaryLayer)
+                .where(RegionBoundaryLayer.read_only.is_(True))
+                .order_by(RegionBoundaryLayer.created_at.desc())
+            )
+        )
+        .scalars()
+        .first()
+    )
+    if layer is None:
+        return []
+    boundaries = (
+        (await session.execute(select(RegionBoundary).where(RegionBoundary.layer_id == layer.id)))
+        .scalars()
+        .all()
+    )
+    return [(b.name, wkb_to_shape(b.boundary)) for b in boundaries]
+
+
+async def create_drawn_region(
+    session: AsyncSession,
+    *,
+    name: str,
+    geometry: MultiPolygon,
+    creator: str | None,
+    nr_polygons: Sequence[tuple[str, BaseGeometry]],
+) -> RegionBoundary:
+    """Persist one analyst-drawn region as its own free-standing layer (owned by no farm), tagged
+    `source=drawn` with its creator and the NR composition + dominant NR. Each drawn region is
+    its own layer so a farm can belong to several overlapping drawn regions at once (one assignment
+    per layer). The version is a fresh token, so creating two regions never collides on the layer
+    identity (unlike the idempotent seed)."""
+    composition, dominant = natural_region_composition(geometry, nr_polygons)
+    layer = RegionBoundaryLayer(
+        name=name,
+        source="analyst-draw",
+        year=None,
+        version=uuid.uuid4().hex,
+        crs="EPSG:4326",
+        read_only=False,
+    )
+    session.add(layer)
+    await session.flush()
+    boundary = RegionBoundary(
+        layer_id=layer.id,
+        name=name,
+        boundary=from_shape(geometry, srid=4326),
+        source=RegionSource.DRAWN.value,
+        creator=creator,
+        nr_composition=composition,
+        dominant_nr=dominant,
+    )
+    session.add(boundary)
+    await session.flush()
+    return boundary
+
+
+async def create_uploaded_layer(
+    session: AsyncSession,
+    *,
+    name: str,
+    features: Sequence[ParsedRegionFeature],
+    creator: str | None,
+    nr_polygons: Sequence[tuple[str, BaseGeometry]],
+) -> RegionBoundaryLayer:
+    """Persist a multi-feature upload as one layer of `source=uploaded` regions in a single
+    transaction (a single-feature file is the natural one-region case). Each boundary carries its
+    creator and derived NR composition + dominant NR. The caller has already validated each feature
+    and skip-reported broken ones via `read_region_layer`."""
+    source_crs = features[0].source_crs if features else "EPSG:4326"
+    layer = RegionBoundaryLayer(
+        name=name,
+        source="analyst-upload",
+        year=None,
+        version=uuid.uuid4().hex,
+        crs=source_crs,
+        read_only=False,
+    )
+    session.add(layer)
+    await session.flush()
+    for feature in features:
+        composition, dominant = natural_region_composition(feature.geometry, nr_polygons)
+        session.add(
+            RegionBoundary(
+                layer_id=layer.id,
+                name=feature.name,
+                boundary=from_shape(feature.geometry, srid=4326),
+                source=RegionSource.UPLOADED.value,
+                creator=creator,
+                nr_composition=composition,
+                dominant_nr=dominant,
+            )
+        )
+    await session.flush()
+    return layer

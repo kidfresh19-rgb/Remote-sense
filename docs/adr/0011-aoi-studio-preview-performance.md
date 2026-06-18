@@ -1,6 +1,6 @@
 # 0011: AOI Studio preview performance: concurrency and a three-layer cache
 
-Status: accepted (Phase 1 implemented). The deferred all-indices track is gated; see below.
+Status: accepted (Phase 2 implemented - multi-index contract reshape).
 
 ## Context
 
@@ -98,25 +98,16 @@ zonal stats, then discard; persisting raw scenes per field is forbidden (unbound
   persisted artifacts), it is size-capped, and it is not per-field accumulation. §1.7 is correctly
   stated and is left unedited; this ADR records where its boundary sits.
 
-## Deferred: the all-indices track (gate-at-pickup, empirical)
+## Phase 2: the all-indices track (multi-index contract reshape)
 
-The all-indices path (five per-index jobs contending on the one bucket, so roughly serializing) is
-deferred behind the Phase 1 read-level seam. Crossing the invariant-7 boundary to a Redis band cache,
-or reshaping the request contract from single-index to multi-index, is gated on `architect` review at
-pickup. The gate is a decision from named data, not a re-confirmation of this reasoning:
+The all-indices path is now implemented as a request-contract reshape (the recommended Phase 2 track):
+- A single Celery task computes all requested indices for a run.
+- Because the indices are processed within a single worker task, the existing per-task in-process `_ReadMemo` cache naturally dedupes overlapping band and resolution reads across different indices (e.g. NDVI and SAVI sharing B04 and B08).
+- The CDSE quota bucket is contended once instead of five times.
+- The single-index path is left completely untouched.
+- Telemetry was folded in: completion logging (`aoi.series.complete` and `aoi.series.multi.complete`) now surfaces the band-memo hit rate (`band_memo_hits` and `band_memo_misses`), making the per-run read budget and memoization saving observable in production.
+- This design fully respects Invariant 7 since the band-window memo remains strictly transient, living only for the duration of the single Celery task and discarded at task end (no persistent raw scenes, no Redis band cache).
 
-1. **Phase 1's measured latency on the all-indices path.** Bracket memoization and pass-level
-   concurrency apply there too; Phase 1 alone may drop it below the felt-slow threshold, in which case
-   crossing the boundary buys nothing real. This is the input most likely to retire the track.
-2. **Measured all/single dispatch frequency** (from the Phase 1 instrumentation). If all-indices is a
-   small fraction of usage, the track may not be worth building at all.
-3. **Production band-memo and result-cache hit rates.** A high intra-task band hit rate means
-   cross-task sharing has diminishing returns.
-4. **Whether the CDSE quota has been raised** in the interim, which reframes the whole conversation.
-
-The seam stays mechanically cheap to swap (in-process dict to Redis at the same key). Only the
-decision to cross the boundary is deferred, and it has a defined exit criterion rather than an
-open-ended "later."
 
 ## Consequences
 

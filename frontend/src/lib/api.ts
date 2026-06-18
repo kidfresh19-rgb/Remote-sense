@@ -158,11 +158,14 @@ export interface AOIAnalysisResult {
 export type AOISeriesMode = "dates" | "backfill";
 
 /** A multi-pass AOI preview request (POST /analyse/aoi/series). `dates` (ISO YYYY-MM-DD) drives
- *  the "dates" mode; `months` drives the "backfill" sweep. Mirrors AOISeriesRequest in
- *  services/api/workspace/analyse.py. Nothing is persisted - this is a preview, not a field. */
+ *  the "dates" mode; `months` drives the "backfill" sweep. Provide either a single `index` or a
+ *  non-empty `indices` list (the all-indices path, ADR 0011 Phase 2), never both. Mirrors
+ *  AOISeriesRequest in services/api/workspace/analyse.py. Nothing is persisted - a preview, not a
+ *  field. */
 export interface AOISeriesRequest {
   geometry: Geometry;
-  index: string;
+  index?: string;
+  indices?: string[];
   mode: AOISeriesMode;
   dates?: string[];
   months?: number;
@@ -204,6 +207,16 @@ export interface AOISeriesResult {
   passes: AOISeriesPass[];
 }
 
+/** Result of an all-indices series job (ADR 0011 Phase 2): one `AOISeriesResult` per index, keyed
+ *  by index name. The single-index job returns a flat `AOISeriesResult` instead; `AOIJob.result`
+ *  carries the common single shape, and the studio widens/discriminates when it polls a job it
+ *  started with `indices`. */
+export interface MultiIndexResult {
+  status: string;
+  mode: AOISeriesMode;
+  indices: Record<string, AOISeriesResult>;
+}
+
 /** Status of a multi-pass AOI preview job (GET /analyse/aoi/jobs/{id}). `state` walks
  *  queued -> running (with a {done,total} progress meter) -> done (with `result`) or error. */
 export interface AOIJob {
@@ -234,9 +247,11 @@ export interface AOIPushResult {
 }
 
 /** Request to POST /analyse/farm/{id}/series: run the studio engine over the farm's union
- *  geometry. Mirrors FarmSeriesRequest in services/api/workspace/analyse.py. */
+ *  geometry. Provide either a single `index` or a non-empty `indices` list (ADR 0011 Phase 2).
+ *  Mirrors FarmSeriesRequest in services/api/workspace/analyse.py. */
 export interface FarmSeriesRequest {
-  index: string;
+  index?: string;
+  indices?: string[];
   mode: AOISeriesMode;
   dates?: string[];
   months?: number;

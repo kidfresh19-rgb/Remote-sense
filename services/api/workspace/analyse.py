@@ -13,8 +13,8 @@ from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, status
 from fastapi.concurrency import run_in_threadpool
-from pydantic import BaseModel
-from rs_core import get_settings
+from pydantic import BaseModel, model_validator
+from rs_core import Settings, get_settings
 from rs_core.logging import get_logger
 
 from services.api.workspace.deps import RunAnalysisPrincipal
@@ -27,6 +27,56 @@ router = APIRouter(tags=["workspace"])
 # A batch is an analyst typing in a handful of dates, not a bulk import - cap it so one request
 # can never fan out to an unbounded number of reads. The backfill cap lives on the worker.
 MAX_BATCH_DATES = 24
+
+
+def _require_exactly_one_index(index: str | None, indices: list[str] | None) -> None:
+    """Series requests carry either a single `index` (single-index path) or a non-empty `indices`
+    list (the all-indices path, ADR 0011 Phase 2), never both and never neither. Raised as a
+    Pydantic ValueError so FastAPI surfaces it as a 422."""
+    if (index is None) == (indices is None):
+        raise ValueError("provide exactly one of `index` or `indices`")
+    if indices is not None and not indices:
+        raise ValueError("`indices` must be non-empty")
+
+
+def _validate_index_names(names: list[str]) -> None:
+    """422 on the first unknown index name, before anything is queued."""
+    from rs_analysis import get_index
+
+    for name in names:
+        try:
+            get_index(name)
+        except KeyError as exc:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+
+
+def _series_window(
+    mode: str, dates: list[date] | None, months: int | None, settings: Settings
+) -> tuple[list[str] | None, int | None]:
+    """Validate and normalise the series window once for both the single- and all-indices paths,
+    returning the `(iso_dates, months)` pair the worker tasks take: dates mode yields the ISO date
+    list and a None months; backfill yields None dates and the clamped months. 422 on an empty or
+    oversized batch, a future date, or out-of-range months."""
+    if mode == "dates":
+        batch = dates or []
+        if not 1 <= len(batch) <= MAX_BATCH_DATES:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                f"provide between 1 and {MAX_BATCH_DATES} dates",
+            )
+        today = datetime.now(UTC).date()
+        if any(d > today for d in batch):
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY, "dates cannot be in the future"
+            )
+        return [d.isoformat() for d in batch], None
+    resolved_months = months or settings.backfill_months
+    if not 1 <= resolved_months <= settings.backfill_months:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            f"months must be between 1 and {settings.backfill_months}",
+        )
+    return None, resolved_months
 
 
 class AOIAnalysisRequest(BaseModel):
@@ -45,13 +95,20 @@ class AOIPushRequest(BaseModel):
 class AOISeriesRequest(BaseModel):
     """A multi-pass AOI preview. `mode="dates"` resolves each requested calendar date to its
     same-day scene (exact day only); `mode="backfill"` sweeps `months` of history (default + max
-    is the configured backfill depth)."""
+    is the configured backfill depth). Provide either a single `index` or a non-empty `indices`
+    list for the all-indices path (ADR 0011 Phase 2), never both."""
 
     geometry: dict[str, Any]
-    index: str
+    index: str | None = None
+    indices: list[str] | None = None
     mode: Literal["dates", "backfill"]
     dates: list[date] | None = None
     months: int | None = None
+
+    @model_validator(mode="after")
+    def _one_index_field(self) -> AOISeriesRequest:
+        _require_exactly_one_index(self.index, self.indices)
+        return self
 
 
 @router.post("/analyse/aoi")
@@ -99,41 +156,24 @@ async def analyse_aoi_series_endpoint(
     and results. Nothing is persisted (invariant 6). Requires `run_analysis`. A bad index, an empty
     or oversized date batch, or out-of-range months are rejected as 422 before anything is queued.
     """
-    from rs_analysis import get_index
+    from services.worker.tasks import analyse_aoi_series_multi_task, analyse_aoi_series_task
 
-    from services.worker.tasks import analyse_aoi_series_task
+    names = payload.indices if payload.indices is not None else [payload.index]
+    assert all(n is not None for n in names)  # the validator guarantees one path or the other
+    _validate_index_names([n for n in names if n is not None])
 
-    try:
-        get_index(payload.index)
-    except KeyError as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
-
-    log.info("aoi.series.dispatch", index=payload.index, mode=payload.mode)
     settings = get_settings()
-    if payload.mode == "dates":
-        dates = payload.dates or []
-        if not 1 <= len(dates) <= MAX_BATCH_DATES:
-            raise HTTPException(
-                status.HTTP_422_UNPROCESSABLE_ENTITY,
-                f"provide between 1 and {MAX_BATCH_DATES} dates",
-            )
-        today = datetime.now(UTC).date()
-        if any(d > today for d in dates):
-            raise HTTPException(
-                status.HTTP_422_UNPROCESSABLE_ENTITY, "dates cannot be in the future"
-            )
-        async_result = analyse_aoi_series_task.delay(
-            payload.geometry, payload.index, "dates", [d.isoformat() for d in dates], None
+    iso_dates, months = _series_window(payload.mode, payload.dates, payload.months, settings)
+
+    if payload.indices is not None:
+        log.info("aoi.series.dispatch", indices=payload.indices, mode=payload.mode)
+        async_result = analyse_aoi_series_multi_task.delay(
+            payload.geometry, payload.indices, payload.mode, iso_dates, months
         )
-    else:  # backfill
-        months = payload.months or settings.backfill_months
-        if not 1 <= months <= settings.backfill_months:
-            raise HTTPException(
-                status.HTTP_422_UNPROCESSABLE_ENTITY,
-                f"months must be between 1 and {settings.backfill_months}",
-            )
+    else:
+        log.info("aoi.series.dispatch", index=payload.index, mode=payload.mode)
         async_result = analyse_aoi_series_task.delay(
-            payload.geometry, payload.index, "backfill", None, months
+            payload.geometry, payload.index, payload.mode, iso_dates, months
         )
 
     return {"job_id": async_result.id, "state": "queued"}
@@ -141,13 +181,20 @@ async def analyse_aoi_series_endpoint(
 
 class FarmSeriesRequest(BaseModel):
     """Multi-pass AOI preview over an entire farm: the farm's stored field geometries are unioned
-    server-side so the analyst doesn't need to draw or upload a boundary. Same mode/date/months
-    semantics as `AOISeriesRequest`, but the geometry comes from the DB."""
+    server-side so the analyst doesn't need to draw or upload a boundary. Same mode/date/months and
+    single-`index`-or-`indices` semantics as `AOISeriesRequest`, but the geometry comes from the
+    DB."""
 
-    index: str
+    index: str | None = None
+    indices: list[str] | None = None
     mode: Literal["dates", "backfill"]
     dates: list[date] | None = None
     months: int | None = None
+
+    @model_validator(mode="after")
+    def _one_index_field(self) -> FarmSeriesRequest:
+        _require_exactly_one_index(self.index, self.indices)
+        return self
 
 
 @router.post("/analyse/farm/{canonical_farm_id}/series", status_code=status.HTTP_202_ACCEPTED)
@@ -163,41 +210,23 @@ async def analyse_farm_series_endpoint(
     Requires `run_analysis`. A bad index, an empty date batch, or out-of-range months are rejected
     as 422 before anything is queued. A farm with no stored field geometries surfaces as a worker
     failure (the task raises ValueError, which Celery stores as FAILURE)."""
-    from rs_analysis import get_index
+    from services.worker.tasks import analyse_farm_series_multi_task, analyse_farm_series_task
 
-    from services.worker.tasks import analyse_farm_series_task
+    names = payload.indices if payload.indices is not None else [payload.index]
+    _validate_index_names([n for n in names if n is not None])
 
-    try:
-        get_index(payload.index)
-    except KeyError as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
-
-    log.info("aoi.series.dispatch", index=payload.index, mode=payload.mode)
     settings = get_settings()
-    if payload.mode == "dates":
-        dates = payload.dates or []
-        if not 1 <= len(dates) <= MAX_BATCH_DATES:
-            raise HTTPException(
-                status.HTTP_422_UNPROCESSABLE_ENTITY,
-                f"provide between 1 and {MAX_BATCH_DATES} dates",
-            )
-        today = datetime.now(UTC).date()
-        if any(d > today for d in dates):
-            raise HTTPException(
-                status.HTTP_422_UNPROCESSABLE_ENTITY, "dates cannot be in the future"
-            )
-        async_result = analyse_farm_series_task.delay(
-            canonical_farm_id, payload.index, "dates", [d.isoformat() for d in dates], None
+    iso_dates, months = _series_window(payload.mode, payload.dates, payload.months, settings)
+
+    if payload.indices is not None:
+        log.info("aoi.series.dispatch", indices=payload.indices, mode=payload.mode)
+        async_result = analyse_farm_series_multi_task.delay(
+            canonical_farm_id, payload.indices, payload.mode, iso_dates, months
         )
-    else:  # backfill
-        months = payload.months or settings.backfill_months
-        if not 1 <= months <= settings.backfill_months:
-            raise HTTPException(
-                status.HTTP_422_UNPROCESSABLE_ENTITY,
-                f"months must be between 1 and {settings.backfill_months}",
-            )
+    else:
+        log.info("aoi.series.dispatch", index=payload.index, mode=payload.mode)
         async_result = analyse_farm_series_task.delay(
-            canonical_farm_id, payload.index, "backfill", None, months
+            canonical_farm_id, payload.index, payload.mode, iso_dates, months
         )
 
     return {"job_id": async_result.id, "state": "queued"}
@@ -238,6 +267,21 @@ async def aoi_job_endpoint(
     return await run_in_threadpool(_job_status, job_id)
 
 
+def _all_passes(job_result: dict[str, Any]) -> list[dict[str, Any]]:
+    """Every pass of a completed series job, across both result shapes: the single-index job has a
+    top-level `passes` list; the all-indices job (ADR 0011 Phase 2) nests one series result per
+    index under `indices`, so we flatten across them. Each pass carries its own `index`, so the
+    per-pass mapping in `_build_result` is identical for either shape."""
+    indices = job_result.get("indices")
+    if isinstance(indices, dict):
+        passes: list[dict[str, Any]] = []
+        for series in indices.values():
+            if isinstance(series, dict):
+                passes.extend(series.get("passes", []))
+        return passes
+    return list(job_result.get("passes", []))
+
+
 @router.post("/analyse/aoi/jobs/{job_id}/push")
 async def push_aoi_results_endpoint(
     job_id: str,
@@ -269,9 +313,7 @@ async def push_aoi_results_endpoint(
         )
 
     pushable_passes = [
-        p
-        for p in job_result.get("passes", [])
-        if p.get("status") in ("ok", "interpolated")
+        p for p in _all_passes(job_result) if p.get("status") in ("ok", "interpolated")
     ]
     if not pushable_passes:
         raise HTTPException(

@@ -128,6 +128,22 @@ class Settings(BaseSettings):
     aoi_result_cache_ttl_s: int = 2592000  # 30 days
     aoi_search_cache_ttl_s: int = 300  # 5 minutes
 
+    # Comparison groups - Natural Region foundation (PRD 0002, ADR 0010). The seeded Natural Region
+    # layer is committed reference geometry under data/natural_regions/ (tracked past the data/
+    # gitignore). natural_region_name_column is the attribute the seed reads region names from;
+    # it is file-specific (the current candidate uses `gez_name`), so it stays config, not code. A
+    # farm whose centroid sits within region_boundary_adjacent_tolerance_m of its region edge is
+    # flagged for a human sanity check (backlog 0002).
+    natural_region_seed_path: str = (
+        "data/natural_regions/zimbabwe_agroecological_zones_2020_candidate.geojson"
+    )
+    natural_region_name_column: str = "gez_name"
+    region_boundary_adjacent_tolerance_m: float = 250.0
+    # ⚑ CONFIRM (PRD 0002 Open Item 4, gates Slice 5): a region boundary spanning Natural Regions is
+    # benchmarked within its dominant NR until the dominant share drops below this, then analysis
+    # layer breaks out a per-NR view. Agronomy-scientist confirms the default before launch.
+    region_dominant_nr_threshold: float = 0.85
+
     # Weather access layer (improvement plan Tier 1, ADR 0004). Active adapter is a config switch.
     weather_adapter: WeatherAdapter = WeatherAdapter.MOCK
     weather_api_url: str = ""  # real provider base URL (e.g. Open-Meteo); empty for mock

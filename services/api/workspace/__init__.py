@@ -94,6 +94,16 @@ from services.api.workspace.publish import (
 from services.api.workspace.publish import (
     router as publish_router,
 )
+from services.api.workspace.regions import (
+    RegionDrawRequest,
+    RegionOut,
+    RegionUploadOut,
+    draw_region_endpoint,
+    upload_region_layer_endpoint,
+)
+from services.api.workspace.regions import (
+    router as regions_router,
+)
 
 # Sub-routers in the original registration order, so the OpenAPI path listing stays familiar.
 router = APIRouter()
@@ -103,6 +113,7 @@ router.include_router(fields_router)
 router.include_router(interpretations_router)
 router.include_router(annotations_router)
 router.include_router(analyse_router)
+router.include_router(regions_router)
 
 __all__ = [
     "AOIAnalysisRequest",
@@ -121,6 +132,9 @@ __all__ = [
     "PublishEnqueuedOut",
     "PublishPrincipal",
     "PublishStatusOut",
+    "RegionDrawRequest",
+    "RegionOut",
+    "RegionUploadOut",
     "ResolvedPass",
     "ReviewQueueItem",
     "RunAnalysisPrincipal",
@@ -135,6 +149,7 @@ __all__ = [
     "choose_nearer_pass",
     "create_annotation_endpoint",
     "delete_annotation_endpoint",
+    "draw_region_endpoint",
     "field_as_of",
     "field_as_of_endpoint",
     "field_audit",
@@ -158,4 +173,5 @@ __all__ = [
     "review_queue",
     "review_queue_endpoint",
     "router",
+    "upload_region_layer_endpoint",
 ]

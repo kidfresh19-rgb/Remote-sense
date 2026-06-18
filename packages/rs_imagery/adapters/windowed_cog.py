@@ -126,6 +126,16 @@ class WindowedCogAdapter(AccessPort):
             self._window_source = RasterioWindowSource(self._settings)
         return self._window_source
 
+    def read_cache_stats(self) -> dict[str, int] | None:
+        """The per-task band/metadata memo's hit/miss counts (ADR 0011 instrumentation), or None
+        when no read source is built yet (a search with no fetches) or the injected source has no
+        memo. `misses` is the real CDSE read count, so a multi-index run surfaces how many band
+        reads the shared memo saved. Reads the existing source defensively - never force-builds a
+        RasterioWindowSource (which would need CDSE S3 config) just to report stats."""
+        source = self._window_source
+        getter = getattr(source, "cache_stats", None)
+        return getter() if callable(getter) else None
+
     def _item(self, scene_id: str) -> StacItem:
         try:
             return self._items[scene_id]

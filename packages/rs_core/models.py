@@ -372,3 +372,98 @@ class SyncOutbox(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+
+class RegionBoundaryLayer(Base):
+    """A named layer of region boundaries (comparison groups, ADR 0010): the seeded Zimbabwe Natural
+    Region map, or an analyst-uploaded ward / district / custom layer. Layer-level provenance is
+    stamped here and version-stamped (invariant 5); `read_only` is set on the seeded layer so no
+    upload or draw can edit or overwrite it. Unique on (source, year, version) so re-seeding the
+    same published map - or replacing a candidate with the authoritative one - is idempotent."""
+
+    __tablename__ = "region_boundary_layer"
+    __table_args__ = (
+        UniqueConstraint("source", "year", "version", name="uq_region_layer_identity"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    name: Mapped[str] = mapped_column(String(256))
+    # `source` here is the data provider / custodian (e.g. "ZINGSA"), distinct from the per-boundary
+    # `RegionBoundary.source` creation method (seeded | uploaded | drawn) below.
+    source: Mapped[str] = mapped_column(String(256))
+    year: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    version: Mapped[str] = mapped_column(String(64))
+    publishing_authority: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    citation: Mapped[str | None] = mapped_column(Text, nullable=True)
+    naming_column: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    crs: Mapped[str] = mapped_column(String(32))
+    acquisition_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    acquisition_path: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    file_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    read_only: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    boundaries: Mapped[list[RegionBoundary]] = relationship(
+        back_populates="layer", cascade="all, delete-orphan"
+    )
+
+
+class RegionBoundary(Base):
+    """One region polygon within a layer (ADR 0010 + 2026-06-17 amendment). Every boundary - seeded,
+    uploaded, or drawn - is the same reference-geometry category, tagged with its `source`
+    (creation method) and `creator`. A boundary may span Natural Regions, so it carries a derived
+    area-weighted `nr_composition` (e.g. {"Region III": 0.71}) and a `dominant_nr`,
+    both recomputed when the geometry changes; a cross-zone boundary is never clipped or rejected.
+    Geometry is canonical WGS84 (SRID 4326); area math reprojects to UTM at compute time (§2)."""
+
+    __tablename__ = "region_boundary"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    layer_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("region_boundary_layer.id", ondelete="CASCADE"), index=True
+    )
+    name: Mapped[str] = mapped_column(String(256))
+    boundary: Mapped[WKBElement] = mapped_column(_MULTIPOLYGON_4326)
+    # Creation method "seeded" | "uploaded" | "drawn" (RegionSource), stored as a string in the
+    # house style (cf. SyncOutbox.status) and validated in code, never a native PG enum.
+    source: Mapped[str] = mapped_column(String(16))
+    creator: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    nr_composition: Mapped[dict[str, float]] = mapped_column(JSONB, default=dict)
+    dominant_nr: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    layer: Mapped[RegionBoundaryLayer] = relationship(back_populates="boundaries")
+
+
+class FarmRegionAssignment(Base):
+    """A farm's assignment to the region whose polygon contains its centroid, per layer (ADR 0010).
+    Deterministic centroid point-in-polygon; `boundary_adjacent` flags a centroid within the
+    configured edge tolerance for a sanity check. Keyed on the canonical farm id (invariant 6):
+    unique on (canonical_farm_id, layer_id) so a farm has exactly one assignment per layer, stamped
+    with `layer_version`. A re-survey or boundary edit re-runs the recompute, which upserts this row
+    to the new boundary + version - a tracked re-assignment, never a silent overwrite."""
+
+    __tablename__ = "farm_region_assignment"
+    __table_args__ = (
+        UniqueConstraint("canonical_farm_id", "layer_id", name="uq_farm_region_assignment"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    canonical_farm_id: Mapped[str] = mapped_column(String(128), index=True)
+    layer_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("region_boundary_layer.id", ondelete="CASCADE"), index=True
+    )
+    region_boundary_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("region_boundary.id", ondelete="CASCADE"), index=True
+    )
+    layer_version: Mapped[str] = mapped_column(String(64))
+    boundary_adjacent: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    assigned_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )

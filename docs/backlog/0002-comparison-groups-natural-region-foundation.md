@@ -1,6 +1,10 @@
 # Backlog 0002 — Natural Region foundation
 
-- Status: ready-for-agent
+- Status: built 2026-06-18 (against a NON-AUTHORITATIVE candidate file per an explicit user override;
+  see `data/natural_regions/README.md`). Models, migration `0009_region_clusters`, loader, seed
+  (`python -m rs_core.seed_regions` + compose `seed` service), centroid assignment + recompute task,
+  and the ingest recompute trigger are in and green (ruff/mypy/pytest). **Before merge:** replace the
+  candidate with the authoritative ZINGSA AEZ 2020 file and re-seed (idempotent on source/year/version).
 - Type: AFK (with a prerequisite data input, see below)
 - Parent: PRD 0002 (`docs/prd/0002-farm-comparison-groups.md`), slice 1
 - Blocked by: None - can start immediately once the prerequisite Natural Region file is in hand

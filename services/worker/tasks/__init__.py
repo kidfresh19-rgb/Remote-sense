@@ -11,8 +11,10 @@ public name is re-exported here so callers keep importing from services.worker.t
 """
 
 from services.worker.tasks.analysis import (
+    analyse_aoi_series_multi_task,
     analyse_aoi_series_task,
     analyse_aoi_task,
+    analyse_farm_series_multi_task,
     analyse_farm_series_task,
 )
 from services.worker.tasks.collection import (
@@ -32,13 +34,16 @@ from services.worker.tasks.collection import (
 )
 from services.worker.tasks.interpret import interpret_field_pass_task
 from services.worker.tasks.maintenance import ensure_analysis_partitions_task, prune_cogs_task
+from services.worker.tasks.regions import recompute_farm_region_assignments_task
 from services.worker.tasks.sync import publish_farm_task
 
 __all__ = [
     "CORE_INDICES",
     "CollectionSummary",
+    "analyse_aoi_series_multi_task",
     "analyse_aoi_series_task",
     "analyse_aoi_task",
+    "analyse_farm_series_multi_task",
     "analyse_farm_series_task",
     "backfill_field",
     "collect_dates_field",
@@ -53,6 +58,7 @@ __all__ = [
     "prepare_and_run",
     "prune_cogs_task",
     "publish_farm_task",
+    "recompute_farm_region_assignments_task",
     "run_collection",
     "scan_and_enqueue",
 ]

@@ -15,7 +15,7 @@ import {
 } from "@phosphor-icons/react";
 import { getRouteApi, Link } from "@tanstack/react-router";
 import type { Geometry, Polygon } from "geojson";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { TokenGate } from "@/auth/TokenGate";
 import { useToken } from "@/auth/TokenProvider";
@@ -30,7 +30,15 @@ import { FileUploadPanel } from "@/components/FileUploadPanel";
 import { bboxOf, useFieldMap } from "@/components/useFieldMap";
 import { Badge, Button, IconButton, SegmentedControl } from "@/components/ui";
 import { useFarmPush } from "@/lib/useFarmPush";
-import { api, type AOIJob, type AOISeriesMode, type Farm } from "@/lib/api";
+import {
+  api,
+  type AOIJob,
+  type AOIJobEnqueued,
+  type AOISeriesMode,
+  type AOISeriesResult,
+  type Farm,
+  type MultiIndexResult,
+} from "@/lib/api";
 import { deleteCustomAOI, saveCustomAOI, useCustomAOIs } from "@/lib/customAOIs";
 import { cn } from "@/lib/format";
 import { DEFAULT_INDEX, INDICES, type IndexKey } from "@/lib/indices";
@@ -115,14 +123,11 @@ function Studio() {
   const [dates, setDates] = useState<string[]>([]);
   const [months, setMonths] = useState(6);
 
-  // Track job ID per index
-  const [jobIds, setJobIds] = useState<Record<IndexKey, string | null>>({
-    ndvi: null,
-    evi2: null,
-    savi: null,
-    ndre: null,
-    ndmi: null,
-  });
+  // One job covers the whole run: a single index, or all indices in one task (ADR 0011 Phase 2).
+  // `ranIndices` records which indices that job carries so the single result can be unpacked back
+  // into the per-index shape the table, report, and send surfaces consume.
+  const [jobId, setJobId] = useState<string | null>(null);
+  const [ranIndices, setRanIndices] = useState<IndexKey[]>([]);
 
   // Local state to track which index we are currently viewing in the results tab.
   const [viewIndex, setViewIndex] = useState<IndexKey>("ndvi");
@@ -148,24 +153,31 @@ function Studio() {
   const [running, setRunning] = useState(false);
   const [localError, setLocalError] = useState<Error | null>(null);
 
-  // Call useAOIJob unconditionally for all 5 indices to satisfy the Rules of Hooks
-  const ndviJob = useAOIJob(jobIds.ndvi);
-  const evi2Job = useAOIJob(jobIds.evi2);
-  const saviJob = useAOIJob(jobIds.savi);
-  const ndreJob = useAOIJob(jobIds.ndre);
-  const ndmiJob = useAOIJob(jobIds.ndmi);
+  const job = useAOIJob(jobId);
 
-  const jobs: Record<IndexKey, ReturnType<typeof useAOIJob>> = {
-    ndvi: ndviJob,
-    evi2: evi2Job,
-    savi: saviJob,
-    ndre: ndreJob,
-    ndmi: ndmiJob,
-  };
+  // Unpack the one polled job into the per-index map the results UI consumes. The poll returns a
+  // flat AOISeriesResult for a single-index job, or {indices:{...}} for an all-indices job; AOIJob
+  // is typed for the common single case, so we widen once here to discriminate (ADR 0011 Phase 2).
+  const jobData = useMemo<Record<IndexKey, AOIJob | undefined>>(() => {
+    const out: Partial<Record<IndexKey, AOIJob>> = {};
+    const data = job.data;
+    if (data) {
+      const raw = data.result as AOISeriesResult | MultiIndexResult | null | undefined;
+      for (const key of ranIndices) {
+        if (data.state === "done" && raw) {
+          const perIndex = "indices" in raw ? raw.indices[key] : raw;
+          out[key] = { ...data, result: perIndex ?? null };
+        } else {
+          // queued / running / error are shared across every index the job covers.
+          out[key] = data;
+        }
+      }
+    }
+    return out as Record<IndexKey, AOIJob | undefined>;
+  }, [job.data, ranIndices]);
 
   const busy =
-    running ||
-    Object.values(jobs).some((j) => j.data?.state === "queued" || j.data?.state === "running");
+    running || job.data?.state === "queued" || job.data?.state === "running";
 
   const canRun =
     !busy &&
@@ -182,31 +194,28 @@ function Studio() {
   const farms = useFarms();
   const push = usePushAOIResults();
   const pushAll = usePushAllAOIResults();
-  const viewedJob = jobs[viewIndex];
-  const result = viewedJob.data?.state === "done" ? (viewedJob.data.result ?? null) : null;
+  const viewedJob = jobData[viewIndex];
+  const result = viewedJob?.state === "done" ? (viewedJob.result ?? null) : null;
   const okPassCount =
     result?.passes.filter((p) => p.status === "ok" || p.status === "interpolated").length ?? 0;
 
-  // Every index whose job finished with at least one exact ('ok') pass: the set "Push all" sends.
-  const pushableIndexJobs = (Object.keys(jobIds) as IndexKey[])
+  // Every index that finished with at least one exact/averaged pass: the set "Push all" sends. They
+  // all share the one job id (its result already carries every index), so the send dedupes to a
+  // single gateway push.
+  const pushableIndexJobs = ranIndices
     .map((key) => {
-      const id = jobIds[key];
-      const data = jobs[key].data;
+      const data = jobData[key];
       const okCount =
         data?.state === "done"
           ? (data.result?.passes.filter(
               (p) => p.status === "ok" || p.status === "interpolated",
             ).length ?? 0)
           : 0;
-      return id && okCount > 0 ? { key, jobId: id, okCount } : null;
+      return jobId && okCount > 0 ? { key, jobId, okCount } : null;
     })
     .filter((x): x is { key: IndexKey; jobId: string; okCount: number } => x !== null);
   const totalOkPasses = pushableIndexJobs.reduce((sum, j) => sum + j.okCount, 0);
 
-  // The job data the results table and report read from, shaped to AOIJob | undefined per index.
-  const jobData = Object.fromEntries(
-    Object.entries(jobs).map(([k, v]) => [k, v.data]),
-  ) as Record<IndexKey, AOIJob | undefined>;
   const anyResults = Object.values(jobData).some(
     (j) => j?.state === "done" && (j.result?.passes.length ?? 0) > 0,
   );
@@ -225,7 +234,8 @@ function Studio() {
     setAoi(null);
     setMarker(null);
     setFarmTarget({ canonicalFarmId: farm.canonical_farm_id, label: farm.name ?? farm.canonical_farm_id });
-    setJobIds({ ndvi: null, evi2: null, savi: null, ndre: null, ndmi: null });
+    setJobId(null);
+    setRanIndices([]);
     setLocalError(null);
     push.reset();
     pushAll.reset();
@@ -234,7 +244,8 @@ function Studio() {
   const clearTarget = () => {
     setAoi(null);
     setFarmTarget(null);
-    setJobIds({ ndvi: null, evi2: null, savi: null, ndre: null, ndmi: null });
+    setJobId(null);
+    setRanIndices([]);
     setLocalError(null);
     push.reset();
     pushAll.reset();
@@ -259,45 +270,32 @@ function Studio() {
     push.reset();
     pushAll.reset();
     setRunning(true);
+    setJobId(null);
+    setRanIndices(indicesToRun);
+    setViewIndex(index === "all" ? "ndvi" : index);
 
-    // Clear previous job ids for the indices we are running
-    setJobIds((prev) => {
-      const next = { ...prev };
-      for (const idx of indicesToRun) {
-        next[idx] = null;
-      }
-      return next;
-    });
-
-    if (index !== "all") {
-      setViewIndex(index);
-    } else {
-      setViewIndex("ndvi");
-    }
+    // One request, one job: a single `index`, or the all-indices `indices` list whose one task
+    // shares a band read across every index (ADR 0011 Phase 2). The window is dates or months.
+    const indexField = index === "all" ? { indices: indicesToRun } : { index };
+    const seriesWindow = mode === "dates" ? { mode, dates } : { mode, months };
 
     try {
-      await Promise.all(
-        indicesToRun.map(async (idx) => {
-          if (farmTarget) {
-            const data = await api.analyseFarmSeries(
-              farmTarget.canonicalFarmId,
-              mode === "dates"
-                ? { index: idx, mode, dates }
-                : { index: idx, mode, months },
-              token!
-            );
-            setJobIds((prev) => ({ ...prev, [idx]: data.job_id }));
-          } else if (aoi) {
-            const data = await api.analyseAOISeries(
-              mode === "dates"
-                ? { geometry: aoi, index: idx, mode, dates }
-                : { geometry: aoi, index: idx, mode, months },
-              token!
-            );
-            setJobIds((prev) => ({ ...prev, [idx]: data.job_id }));
-          }
-        })
-      );
+      let enqueued: AOIJobEnqueued;
+      if (farmTarget) {
+        enqueued = await api.analyseFarmSeries(
+          farmTarget.canonicalFarmId,
+          { ...indexField, ...seriesWindow },
+          token!
+        );
+      } else if (aoi) {
+        enqueued = await api.analyseAOISeries(
+          { geometry: aoi, ...indexField, ...seriesWindow },
+          token!
+        );
+      } else {
+        return;
+      }
+      setJobId(enqueued.job_id);
     } catch (err) {
       setLocalError(err instanceof Error ? err : new Error("Could not start the analysis."));
     } finally {
@@ -551,7 +549,7 @@ function Studio() {
           farms={farms.data ?? []}
           push={push}
           pushAll={pushAll}
-          viewedJobId={jobIds[viewIndex]}
+          viewedJobId={jobId}
           onClose={() => setShowSend(false)}
         />
       ) : null}

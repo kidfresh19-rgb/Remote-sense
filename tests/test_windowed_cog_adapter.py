@@ -342,7 +342,7 @@ async def test_search_cache_hits_redis_and_bypasses_stac_query() -> None:
     assert len(scenes2) == 1
     assert scenes2[0].scene_id == "S2_TEST"
     assert stac2.searches == 0  # bypassed!
-    
+
     # Verify the items dictionary is repopulated so fetch works
     assert "S2_TEST" in adapter2._items
 
@@ -354,7 +354,7 @@ async def test_search_cache_separates_keys() -> None:
     source = _FakeSource()
 
     adapter = _adapter(source, stac_client=stac, search_cache=cache)
-    
+
     # Run a search to populate cache
     await adapter.search(_AOI, _RANGE, max_scene_cloud_pct=70.0)
     assert stac.searches == 1
@@ -376,10 +376,47 @@ async def test_search_cache_fails_open() -> None:
     source = _FakeSource()
 
     adapter = _adapter(source, stac_client=stac, search_cache=cache)
-    
+
     # Search succeeds by falling back to live query, no crash
     scenes = await adapter.search(_AOI, _RANGE)
     assert len(scenes) == 1
     assert scenes[0].scene_id == "S2_TEST"
     assert stac.searches == 1
 
+
+async def test_multi_index_collapses_shared_reads(monkeypatch) -> None:
+    from services.worker.tasks.analysis import _analyse_aoi_series_multi
+
+    # Inject a counting RasterioWindowSource
+    src = _CountingRasterioSource()
+    monkeypatch.setattr(src, "_read_s3_bytes", lambda href: _mtd())
+    adapter = _adapter(src)
+
+    # Pre-populate items in the adapter by running search
+    await adapter.search(_AOI, _RANGE)
+
+    # Run NDVI and SAVI (which both fetch B04, B08, and SCL) for the same scene date
+    out = await _analyse_aoi_series_multi(
+        _AOI.geometry,
+        ["ndvi", "savi"],
+        "dates",
+        ["2023-06-15"],
+        None,
+        adapter=adapter,
+        backfill_months=18,
+        now=datetime(2023, 6, 15, tzinfo=UTC),
+    )
+
+    # Assert correct structure
+    assert out["status"] == "ok"
+    assert "ndvi" in out["indices"]
+    assert "savi" in out["indices"]
+    assert out["indices"]["ndvi"]["passes"][0]["status"] == "ok"
+    assert out["indices"]["savi"]["passes"][0]["status"] == "ok"
+
+    # NDVI fetches metadata, B04, B08, SCL -> 4 misses.
+    # SAVI fetches metadata, B04, B08, SCL -> 4 hits.
+    # Total window reads made to the GDAL source is 3 (bands).
+    assert src.reads == 3
+    # Cache stats: hits = 4 (XML + B04, B08, SCL during SAVI), misses = 4 (during NDVI)
+    assert src.cache_stats() == {"hits": 4, "misses": 4}

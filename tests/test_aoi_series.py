@@ -612,3 +612,145 @@ def test_job_status_error(monkeypatch) -> None:
 def test_job_status_queued_for_pending(monkeypatch) -> None:
     _patch_async_result(monkeypatch, state="PENDING")
     assert _job_status("j") == {"job_id": "j", "state": "queued"}
+
+
+# --------------------------------------------------------------------------- multi engine / api
+
+
+async def test_analyse_aoi_series_multi_dates() -> None:
+    from services.worker.tasks.analysis import _analyse_aoi_series_multi
+
+    adapter = _adapter()
+    d_min = date(2025, 1, 1)
+    d_on_grid = d_min + timedelta(days=3)
+    d_off_grid = d_min
+
+    out = await _analyse_aoi_series_multi(
+        _GEOM,
+        ["ndvi", "savi"],
+        "dates",
+        [d_off_grid.isoformat(), d_on_grid.isoformat()],
+        None,
+        adapter=adapter,
+    )
+    assert out["status"] == "ok"
+    assert out["mode"] == "dates"
+    assert set(out["indices"].keys()) == {"ndvi", "savi"}
+
+    # Parity check: NDVI in multi matches NDVI in single
+    single_ndvi = await _analyse_aoi_series(
+        _GEOM,
+        "ndvi",
+        "dates",
+        [d_off_grid.isoformat(), d_on_grid.isoformat()],
+        None,
+        adapter=adapter,
+    )
+    assert out["indices"]["ndvi"]["passes"] == single_ndvi["passes"]
+
+
+async def test_analyse_aoi_series_multi_backfill() -> None:
+    from services.worker.tasks.analysis import _analyse_aoi_series_multi
+
+    adapter = _adapter()
+    now = datetime(2025, 6, 15, tzinfo=UTC)
+    out = await _analyse_aoi_series_multi(
+        _GEOM,
+        ["ndvi", "savi"],
+        "backfill",
+        None,
+        6,
+        adapter=adapter,
+        backfill_months=18,
+        now=now,
+    )
+    assert out["status"] == "ok"
+    assert out["mode"] == "backfill"
+    assert set(out["indices"].keys()) == {"ndvi", "savi"}
+
+    # Parity check
+    single_ndvi = await _analyse_aoi_series(
+        _GEOM,
+        "ndvi",
+        "backfill",
+        None,
+        6,
+        adapter=adapter,
+        backfill_months=18,
+        now=now,
+    )
+    assert out["indices"]["ndvi"]["passes"] == single_ndvi["passes"]
+
+
+async def test_endpoint_enqueues_multi_dates_job(monkeypatch) -> None:
+    import services.worker.tasks as tasks
+
+    captured: dict = {}
+    monkeypatch.setattr(
+        tasks.analyse_aoi_series_multi_task,
+        "delay",
+        lambda *args: captured.update(args=args) or SimpleNamespace(id="job-multi-abc"),
+    )
+    req = AOISeriesRequest(
+        geometry=_GEOM,
+        indices=["ndvi", "savi"],
+        mode="dates",
+        dates=[date(2025, 1, 15), date(2025, 1, 20)],
+    )
+    out = await analyse_aoi_series_endpoint(req, _ANALYST)
+    assert out == {"job_id": "job-multi-abc", "state": "queued"}
+    assert captured["args"] == (
+        _GEOM,
+        ["ndvi", "savi"],
+        "dates",
+        ["2025-01-15", "2025-01-20"],
+        None,
+    )
+
+
+async def test_endpoint_enqueues_multi_backfill_job(monkeypatch) -> None:
+    import services.worker.tasks as tasks
+
+    captured: dict = {}
+    monkeypatch.setattr(
+        tasks.analyse_aoi_series_multi_task,
+        "delay",
+        lambda *args: captured.update(args=args) or SimpleNamespace(id="job-multi-bf"),
+    )
+    req = AOISeriesRequest(geometry=_GEOM, indices=["ndvi", "savi"], mode="backfill", months=6)
+    out = await analyse_aoi_series_endpoint(req, _ANALYST)
+    assert out["state"] == "queued"
+    assert captured["args"] == (_GEOM, ["ndvi", "savi"], "backfill", None, 6)
+
+
+async def test_endpoint_rejects_missing_both_index_and_indices() -> None:
+    import pydantic
+
+    with pytest.raises(pydantic.ValidationError, match="provide exactly one of"):
+        AOISeriesRequest(geometry=_GEOM, mode="backfill", months=6)
+
+
+async def test_endpoint_rejects_providing_both_index_and_indices() -> None:
+    import pydantic
+
+    with pytest.raises(pydantic.ValidationError, match="provide exactly one of"):
+        AOISeriesRequest(
+            geometry=_GEOM, index="ndvi", indices=["ndvi", "savi"], mode="backfill", months=6
+        )
+
+
+async def test_endpoint_rejects_empty_indices() -> None:
+    import pydantic
+
+    with pytest.raises(pydantic.ValidationError, match="must be non-empty"):
+        AOISeriesRequest(geometry=_GEOM, indices=[], mode="backfill", months=6)
+
+
+def test_job_status_done_multi(monkeypatch) -> None:
+    payload = {
+        "status": "ok",
+        "mode": "dates",
+        "indices": {"ndvi": {"status": "ok", "index": "ndvi", "passes": []}},
+    }
+    _patch_async_result(monkeypatch, state="SUCCESS", result=payload)
+    assert _job_status("j") == {"job_id": "j", "state": "done", "result": payload}

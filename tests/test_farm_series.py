@@ -232,3 +232,86 @@ async def test_endpoint_rejects_future_dates(monkeypatch) -> None:
     with pytest.raises(HTTPException) as ei:
         await analyse_farm_series_endpoint("FARM-001", req, _ANALYST)
     assert ei.value.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# Multi-index Farm Series
+# ---------------------------------------------------------------------------
+
+
+async def test_farm_series_multi_backfill_returns_passes() -> None:
+    from services.worker.tasks.analysis import _analyse_farm_series_multi
+
+    adapter = _adapter()
+    now = datetime(2025, 6, 15, tzinfo=UTC)
+    out = await _analyse_farm_series_multi(
+        _MOCK_FIELDS,
+        ["ndvi", "savi"],
+        "backfill",
+        None,
+        6,
+        adapter=adapter,
+        backfill_months=18,
+        now=now,
+    )
+    assert out["status"] == "ok"
+    assert out["mode"] == "backfill"
+    assert set(out["indices"].keys()) == {"ndvi", "savi"}
+    assert len(out["indices"]["ndvi"]["passes"]) > 0
+
+
+async def test_endpoint_enqueues_farm_multi_dates_job(monkeypatch) -> None:
+    import services.worker.tasks as tasks
+
+    captured: dict = {}
+    monkeypatch.setattr(
+        tasks,
+        "analyse_farm_series_multi_task",
+        type(
+            "FakeTask",
+            (),
+            {
+                "delay": staticmethod(
+                    lambda *args: (
+                        captured.update(args=args) or SimpleNamespace(id="job-farm-multi-dates")
+                    )
+                )
+            },
+        )(),
+    )
+    req = FarmSeriesRequest(
+        indices=["ndvi", "savi"], mode="dates", dates=[date(2025, 1, 15), date(2025, 1, 20)]
+    )
+    out = await analyse_farm_series_endpoint("FARM-001", req, _ANALYST)
+    assert out["state"] == "queued"
+    assert out["job_id"] == "job-farm-multi-dates"
+    assert captured["args"][0] == "FARM-001"
+    assert captured["args"][1] == ["ndvi", "savi"]
+
+
+async def test_endpoint_enqueues_farm_multi_backfill_job(monkeypatch) -> None:
+    import services.worker.tasks as tasks
+
+    captured: dict = {}
+    monkeypatch.setattr(
+        tasks,
+        "analyse_farm_series_multi_task",
+        type(
+            "FakeTask",
+            (),
+            {
+                "delay": staticmethod(
+                    lambda *args: (
+                        captured.update(args=args) or SimpleNamespace(id="job-farm-multi-bf")
+                    )
+                )
+            },
+        )(),
+    )
+    req = FarmSeriesRequest(indices=["ndvi", "savi"], mode="backfill", months=6)
+    out = await analyse_farm_series_endpoint("FARM-001", req, _ANALYST)
+    assert out["state"] == "queued"
+    assert out["job_id"] == "job-farm-multi-bf"
+    assert captured["args"][0] == "FARM-001"
+    assert captured["args"][1] == ["ndvi", "savi"]
+    assert captured["args"][4] == 6

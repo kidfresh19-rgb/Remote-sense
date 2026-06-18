@@ -93,9 +93,9 @@ def test_describe_push_error_includes_body_snippet() -> None:
     assert "422" in detail
     assert "field 4 not found" in detail
 
-    long_html = httpx.Response(502, html="<html>\n  " + "x" * 500 + "\n</html>", request=req)
-    long_detail = describe_push_error(httpx.HTTPStatusError("e", request=req, response=long_html))
-    assert long_detail.endswith("...")  # collapsed + truncated, not a multi-line dump
+    long_resp = httpx.Response(502, text="gateway error\n  " + "x" * 500, request=req)
+    long_detail = describe_push_error(httpx.HTTPStatusError("e", request=req, response=long_resp))
+    assert long_detail.endswith("…")  # collapsed + truncated, not a multi-line dump
     assert "\n" not in long_detail
 
 

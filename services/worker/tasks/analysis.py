@@ -106,9 +106,7 @@ def _build_search_cache(settings: Settings) -> RedisJsonCache | None:
     return redis_json_cache_from_settings(settings, namespace="aoi:search")
 
 
-def _build_adapter(
-    settings: Settings, *, search_cache: RedisJsonCache | None = None
-) -> AccessPort:
+def _build_adapter(settings: Settings, *, search_cache: RedisJsonCache | None = None) -> AccessPort:
     """Build the configured imagery adapter. When the adapter is `windowed_cog` and a `search_cache`
     is provided, the cache is injected so repeated searches skip the STAC catalog query (ADR 0011).
     Other adapters (mock, server_compute) are returned without a cache — they don't hit CDSE STAC.
@@ -119,6 +117,18 @@ def _build_adapter(
     if settings.imagery_adapter is ImageryAdapter.WINDOWED_COG and search_cache is not None:
         return WindowedCogAdapter(settings, search_cache=search_cache)
     return get_access_adapter(settings)
+
+
+def _band_memo_stats(adapter: AccessPort) -> dict[str, int] | None:
+    """The adapter's per-task band/metadata memo hit/miss counts, or None when the active adapter
+    has no read-level memo (mock, server_compute). `misses` is the real CDSE read count, so this is
+    the per-run read budget the ADR 0011 gate wants surfaced. Read defensively via getattr so the
+    engine stays adapter-agnostic (CLAUDE.md invariant 1)."""
+    getter = getattr(adapter, "read_cache_stats", None)
+    if getter is None:
+        return None
+    stats = getter()
+    return stats if isinstance(stats, dict) else None
 
 
 def _start_of_day(day: date) -> datetime:
@@ -502,6 +512,7 @@ async def _analyse_aoi_series(
         "resolved": sum(1 for p in passes if p.get("status") in ("ok", "interpolated")),
         "passes": passes,
     }
+    band_stats = _band_memo_stats(adapter)
     log.info(
         "aoi.series.complete",
         index=index_name,
@@ -512,8 +523,153 @@ async def _analyse_aoi_series(
         wall_clock_s=round(time.monotonic() - t0, 2),
         result_cache_hits=result_cache.hits if result_cache is not None else 0,
         result_cache_misses=result_cache.misses if result_cache is not None else 0,
+        band_memo_hits=band_stats["hits"] if band_stats is not None else None,
+        band_memo_misses=band_stats["misses"] if band_stats is not None else None,
     )
     return res
+
+
+async def _analyse_aoi_series_multi(
+    geometry: dict[str, Any],
+    index_names: list[str],
+    mode: str,
+    dates: list[str] | None,
+    months: int | None,
+    *,
+    adapter: AccessPort | None = None,
+    backfill_months: int | None = None,
+    now: datetime | None = None,
+    concurrency: int | None = None,
+    result_cache: ResultCache | None = None,
+    on_progress: Callable[[int, int], None] | None = None,
+) -> dict[str, Any]:
+    """All-indices AOI Studio preview in one task (ADR 0011 Phase 2). The single-index engine is
+    fanned out across `index_names` over one shared search, one bounded gather, one adapter (one
+    in-process band memo), and one result cache, so a scene's overlapping bands (B04/B08 ...) are
+    read once across every index instead of once per index, and the CDSE quota bucket is contended
+    once, not per index. Nothing is persisted (invariant 6); the band memo stays per-task and is
+    dropped at task end (invariant 7). Returns ``{"status", "mode", "indices": {name: result}}``
+    where each per-index value is the same shape `_analyse_aoi_series` returns.
+
+    `adapter`, `backfill_months`, `now`, `concurrency`, and `result_cache` are injectable for the
+    zero-network mock tests (CLAUDE.md 3); the task resolves them from settings."""
+    _guard_aoi_size(geometry)
+    t0 = time.monotonic()
+    if not index_names:
+        raise ValueError("at least one index is required")
+    for name in index_names:
+        get_index(name)  # validate every name up front; KeyError surfaces as a task failure
+    if adapter is None or backfill_months is None or concurrency is None:
+        settings = get_settings()
+        adapter = adapter or get_access_adapter(settings)
+        if backfill_months is None:
+            backfill_months = settings.backfill_months
+        if concurrency is None:
+            concurrency = aoi_pass_concurrency(settings)
+    assert adapter is not None and backfill_months is not None and concurrency is not None
+    aoi = AOI(geometry=geometry, crs="EPSG:4326")
+    now = now or datetime.now(UTC)
+
+    # One search, independent of index; pass factories are then the cross product of indices and
+    # the resolved days/scenes so the band memo dedupes shared reads across indices.
+    index_factories: list[tuple[str, Callable[[], Awaitable[dict[str, Any]]]]] = []
+
+    if mode == "dates":
+        requested = sorted({date.fromisoformat(d) for d in (dates or [])})
+        if not requested:
+            raise ValueError("dates mode needs at least one date")
+        search_range = TimeRange(
+            start=_start_of_day(requested[0]) - timedelta(days=_INTERP_PAD_DAYS),
+            end=_start_of_day(requested[-1]) + timedelta(days=1 + _INTERP_PAD_DAYS),
+        )
+        scenes = await adapter.search(aoi, search_range, max_scene_cloud_pct=_SEARCH_CLOUD_PCT)
+        by_day: dict[date, list[SceneRef]] = defaultdict(list)
+        for scene in scenes:
+            by_day[scene.sensing_datetime.date()].append(scene)
+        for index_name in index_names:
+            for day in requested:
+                index_factories.append(
+                    (
+                        index_name,
+                        partial(
+                            _resolve_requested_day,
+                            adapter,
+                            by_day,
+                            aoi,
+                            index_name,
+                            day,
+                            result_cache=result_cache,
+                        ),
+                    )
+                )
+
+    elif mode == "backfill":
+        depth = max(1, min(int(months or backfill_months), backfill_months))
+        window_start, _ = backfill_window(now.date(), depth)
+        scenes = await adapter.search(
+            aoi,
+            TimeRange(start=_start_of_day(window_start), end=now),
+            max_scene_cloud_pct=_SEARCH_CLOUD_PCT,
+        )
+        capped = sorted(scenes, key=lambda s: s.sensing_datetime, reverse=True)[:MAX_SERIES_PASSES]
+        chosen = sorted(capped, key=lambda s: s.sensing_datetime)
+        for index_name in index_names:
+            for scene in chosen:
+                index_factories.append(
+                    (
+                        index_name,
+                        partial(
+                            _analyse_scene,
+                            adapter,
+                            scene,
+                            aoi,
+                            index_name,
+                            result_cache=result_cache,
+                        ),
+                    )
+                )
+
+    else:
+        raise ValueError(f"unknown AOI series mode {mode!r}")
+
+    flat = await _gather_passes(
+        [factory for _, factory in index_factories],
+        concurrency=concurrency,
+        on_progress=on_progress,
+    )
+
+    # Regroup flat results back to their index, preserving the requested / oldest-first order
+    # _gather_passes guarantees (results come back in factory order).
+    by_index: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for (index_name, _), pass_result in zip(index_factories, flat, strict=True):
+        by_index[index_name].append(pass_result)
+
+    indices_out: dict[str, Any] = {}
+    for index_name in index_names:
+        passes = by_index[index_name]
+        indices_out[index_name] = {
+            "status": "ok",
+            "index": index_name,
+            "mode": mode,
+            "requested": len(passes),
+            "resolved": sum(1 for p in passes if p.get("status") in ("ok", "interpolated")),
+            "passes": passes,
+        }
+
+    band_stats = _band_memo_stats(adapter)
+    log.info(
+        "aoi.series.multi.complete",
+        indices=index_names,
+        n_indices=len(index_names),
+        mode=mode,
+        n_passes=len(flat),
+        wall_clock_s=round(time.monotonic() - t0, 2),
+        result_cache_hits=result_cache.hits if result_cache is not None else 0,
+        result_cache_misses=result_cache.misses if result_cache is not None else 0,
+        band_memo_hits=band_stats["hits"] if band_stats is not None else None,
+        band_memo_misses=band_stats["misses"] if band_stats is not None else None,
+    )
+    return {"status": "ok", "mode": mode, "indices": indices_out}
 
 
 @celery.task(name="analysis.analyse_aoi")
@@ -606,6 +762,42 @@ def analyse_aoi_series_task(
     )
 
 
+@celery.task(bind=True, name="analysis.analyse_aoi_series_multi")
+def analyse_aoi_series_multi_task(
+    self: Any,
+    geometry: dict[str, Any],
+    index_names: list[str],
+    mode: str,
+    dates: list[str] | None = None,
+    months: int | None = None,
+) -> dict[str, Any]:
+    """AOI Studio's all-indices preview in one job (ADR 0011 Phase 2). Same enqueue/poll/progress
+    shape as `analyse_aoi_series_task`, but every index shares one search, one bounded gather, one
+    adapter (one band memo), and one result cache, so shared bands are read once across indices.
+    Never persists (invariant 6). Returns ``{"status","mode","indices": {name: series-result}}``."""
+
+    def on_progress(done: int, total: int) -> None:
+        self.update_state(state="PROGRESS", meta={"done": done, "total": total})
+
+    settings = get_settings()
+    concurrency = aoi_pass_concurrency(settings)
+    return _run_aoi_series(
+        settings,
+        concurrency,
+        lambda adapter, rc: _analyse_aoi_series_multi(
+            geometry,
+            index_names,
+            mode,
+            dates,
+            months,
+            adapter=adapter,
+            concurrency=concurrency,
+            result_cache=rc,
+            on_progress=on_progress,
+        ),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Farm AOI series: union of field geometries → same engine
 # ---------------------------------------------------------------------------
@@ -666,23 +858,54 @@ async def _analyse_farm_series(
     )
 
 
-@celery.task(bind=True, name="analysis.analyse_farm_series")
-def analyse_farm_series_task(
-    self: Any,
-    canonical_farm_id: str,
-    index_name: str,
+async def _analyse_farm_series_multi(
+    fields: list[dict[str, Any]],
+    index_names: list[str],
     mode: str,
-    dates: list[str] | None = None,
-    months: int | None = None,
+    dates: list[str] | None,
+    months: int | None,
+    *,
+    adapter: AccessPort | None = None,
+    backfill_months: int | None = None,
+    now: datetime | None = None,
+    concurrency: int | None = None,
+    result_cache: ResultCache | None = None,
+    on_progress: Callable[[int, int], None] | None = None,
 ) -> dict[str, Any]:
-    """Farm-level AOI Studio series: fetches the farm's field geometries from the DB, unions them
-    into a single AOI on the worker, and runs the same multi-pass engine as
-    `analyse_aoi_series_task`. Polled by job id; publishes a `{done, total}` progress meter per
-    pass. Never persists (invariant 6). Uses a per-task NullPool async engine so forked workers
-    never share a connection pool across event loops (same pattern as collect_pass_task)."""
+    """All-indices farm preview (ADR 0011 Phase 2): unions the field geometries and delegates to
+    `_analyse_aoi_series_multi`. `fields` mirrors `_analyse_farm_series`. Raises ValueError when
+    `fields` is empty (no field geometry → no AOI)."""
+    if not fields:
+        raise ValueError("at least one field geometry is required to construct a farm AOI")
 
-    def on_progress(done: int, total: int) -> None:
-        self.update_state(state="PROGRESS", meta={"done": done, "total": total})
+    union_geom = _union_geometries([f["geometry"] for f in fields])
+    return await _analyse_aoi_series_multi(
+        union_geom,
+        index_names,
+        mode,
+        dates,
+        months,
+        adapter=adapter,
+        backfill_months=backfill_months,
+        now=now,
+        concurrency=concurrency,
+        result_cache=result_cache,
+        on_progress=on_progress,
+    )
+
+
+def _run_farm_series(
+    canonical_farm_id: str,
+    make_coro: Callable[
+        [list[dict[str, Any]], AccessPort, ResultCache | None, int], Awaitable[dict[str, Any]]
+    ],
+) -> dict[str, Any]:
+    """Shared farm-series runner for the single- and all-indices tasks. A fresh loop with a
+    concurrency-sized executor (so the to_thread CDSE reads are bounded by the pass semaphore, not
+    the default pool), the farm's field geometries fetched over a per-task NullPool engine (forked
+    workers never share a pool across loops, as in collect_pass_task), and the result + search
+    caches built inside the loop and closed at task end. `make_coro` receives the fetched fields,
+    the adapter, the result cache, and the resolved concurrency."""
 
     async def _run() -> dict[str, Any]:
         from geoalchemy2.shape import to_shape
@@ -729,17 +952,7 @@ def analyse_farm_series_task(
         search_cache = _build_search_cache(settings)
         adapter = _build_adapter(settings, search_cache=search_cache)
         try:
-            return await _analyse_farm_series(
-                fields,
-                index_name,
-                mode,
-                dates,
-                months,
-                adapter=adapter,
-                concurrency=concurrency,
-                result_cache=result_cache,
-                on_progress=on_progress,
-            )
+            return await make_coro(fields, adapter, result_cache, concurrency)
         finally:
             if result_cache is not None:
                 await result_cache.aclose()
@@ -747,3 +960,68 @@ def analyse_farm_series_task(
                 await search_cache.aclose()
 
     return asyncio.run(_run())
+
+
+@celery.task(bind=True, name="analysis.analyse_farm_series")
+def analyse_farm_series_task(
+    self: Any,
+    canonical_farm_id: str,
+    index_name: str,
+    mode: str,
+    dates: list[str] | None = None,
+    months: int | None = None,
+) -> dict[str, Any]:
+    """Farm-level AOI Studio series: fetches the farm's field geometries from the DB, unions them
+    into a single AOI on the worker, and runs the same multi-pass engine as
+    `analyse_aoi_series_task`. Polled by job id; publishes a `{done, total}` progress meter per
+    pass. Never persists (invariant 6)."""
+
+    def on_progress(done: int, total: int) -> None:
+        self.update_state(state="PROGRESS", meta={"done": done, "total": total})
+
+    return _run_farm_series(
+        canonical_farm_id,
+        lambda fields, adapter, rc, concurrency: _analyse_farm_series(
+            fields,
+            index_name,
+            mode,
+            dates,
+            months,
+            adapter=adapter,
+            concurrency=concurrency,
+            result_cache=rc,
+            on_progress=on_progress,
+        ),
+    )
+
+
+@celery.task(bind=True, name="analysis.analyse_farm_series_multi")
+def analyse_farm_series_multi_task(
+    self: Any,
+    canonical_farm_id: str,
+    index_names: list[str],
+    mode: str,
+    dates: list[str] | None = None,
+    months: int | None = None,
+) -> dict[str, Any]:
+    """Farm-level all-indices AOI Studio preview in one job (ADR 0011 Phase 2). Same DB-fetch and
+    union as `analyse_farm_series_task`, but runs every index through the shared multi engine so a
+    scene's bands are read once across indices. Never persists (invariant 6)."""
+
+    def on_progress(done: int, total: int) -> None:
+        self.update_state(state="PROGRESS", meta={"done": done, "total": total})
+
+    return _run_farm_series(
+        canonical_farm_id,
+        lambda fields, adapter, rc, concurrency: _analyse_farm_series_multi(
+            fields,
+            index_names,
+            mode,
+            dates,
+            months,
+            adapter=adapter,
+            concurrency=concurrency,
+            result_cache=rc,
+            on_progress=on_progress,
+        ),
+    )

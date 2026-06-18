@@ -70,7 +70,7 @@ def _body_snippet(response: httpx.Response, *, limit: int = 120) -> str:
         # Try to pull a human-readable title from the HTML.
         title_m = re.search(r"<title[^>]*>([^<]+)</title>", text, re.IGNORECASE)
         h1_m = re.search(r"<h1[^>]*>([^<]+)</h1>", text, re.IGNORECASE)
-        label = (title_m or h1_m)
+        label = title_m or h1_m
         if label:
             readable = " ".join(label.group(1).split())
             return f"HTML error page: {readable}"[:limit]

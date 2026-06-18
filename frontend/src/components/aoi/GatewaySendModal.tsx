@@ -28,7 +28,11 @@ export interface GatewaySendProps {
   /** Single-index push mutation. */
   push: UseMutationResult<AOIPushResult, Error, { jobId: string; req: AOIPushRequest }>;
   /** All-indices push mutation. */
-  pushAll: UseMutationResult<PushAllAOIResult, Error, { jobIds: string[]; canonicalFarmId: string }>;
+  pushAll: UseMutationResult<
+    PushAllAOIResult,
+    Error,
+    { jobIds: string[]; indexCount: number; canonicalFarmId: string }
+  >;
   /** Job id for `viewIndex` (null when that index has not run). */
   viewedJobId: string | null;
   onClose: () => void;
@@ -76,6 +80,7 @@ export function GatewaySendModal({
     if (!selectedFarmId || pushableIndexJobs.length === 0) return;
     pushAll.mutate({
       jobIds: pushableIndexJobs.map((j) => j.jobId),
+      indexCount: pushableIndexJobs.length,
       canonicalFarmId: selectedFarmId,
     });
   };

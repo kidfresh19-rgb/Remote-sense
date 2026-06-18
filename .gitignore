@@ -17,7 +17,10 @@ venv/
 !.env.example
 
 # Data & artifacts (raw bands are transient; index COGs live in MinIO/S3)
-data/
+data/*
+# Exception: the Natural Region seed layer is committed reference geometry (PRD 0002 / ADR 0010),
+# not a transient raw band, so it must be present at init and in CI.
+!data/natural_regions/
 *.tif
 *.tiff
 *.SAFE/

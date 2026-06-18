@@ -1,6 +1,10 @@
 # Backlog 0005 — Region creation: upload (multi + single) and draw-to-create
 
-- Status: ready-for-agent
+- Status: built 2026-06-18 (0002, its dependency, also built). Draw `POST /regions/draw` (JSON) and
+  upload `POST /regions/upload` (raw body, no multipart dependency added) in the workspace BFF;
+  source-tagged seeded|uploaded|drawn boundaries with area-weighted NR composition + dominant_nr;
+  RBAC create_region_cluster (analyst) / upload_region_boundary (admin). Green ruff/mypy/pytest.
+  **Before merge:** confirm Open Item 3 (RBAC mappings) + Open Item 4 (dominant-NR 0.85 threshold).
 - Type: AFK
 - Parent: PRD 0002 (`docs/prd/0002-farm-comparison-groups.md`), slice 5
 - Blocked by: 0002
