@@ -7,10 +7,13 @@ provenance is the windowed_cog mode. The real rasterio reads live behind the sea
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+import threading
+import time
+from datetime import UTC, datetime, timedelta
 
 import numpy as np
 import pytest
+from rs_core.cache import RedisJsonCache
 from rs_core.config import Settings
 from rs_imagery.adapters.cdse_stac import StacItem
 from rs_imagery.adapters.windowed_cog import (
@@ -59,9 +62,31 @@ def _item(scene_id: str = "S2_TEST") -> StacItem:
 class _FakeStac:
     def __init__(self, items: list[StacItem]) -> None:
         self._items = items
+        self.searches = 0
 
     async def search_items(self, aoi, time_range, *, max_scene_cloud_pct=None):  # noqa: ANN001
+        self.searches += 1
         return self._items
+
+
+class _SharedFakeRedis:
+    def __init__(self, store: dict[str, str], *, fail: bool = False) -> None:
+        self._store = store
+        self._fail = fail
+
+    async def get(self, name: str) -> str | None:
+        if self._fail:
+            raise ConnectionError("redis down")
+        return self._store.get(name)
+
+    async def set(self, name: str, value: str, *, ex: int | None = None) -> None:
+        if self._fail:
+            raise ConnectionError("redis down")
+        self._store[name] = value
+
+
+def _search_cache(store: dict[str, str], *, fail: bool = False) -> RedisJsonCache:
+    return RedisJsonCache(_SharedFakeRedis(store, fail=fail), namespace="aoi:search")
 
 
 class _FakeSource:
@@ -91,8 +116,18 @@ class _FakeSource:
         return _mtd()
 
 
-def _adapter(source: _FakeSource) -> WindowedCogAdapter:
-    return WindowedCogAdapter(Settings(), stac_client=_FakeStac([_item()]), window_source=source)
+def _adapter(
+    source: _FakeSource,
+    stac_client: _FakeStac | None = None,
+    search_cache: RedisJsonCache | None = None,
+) -> WindowedCogAdapter:
+    client = stac_client or _FakeStac([_item()])
+    return WindowedCogAdapter(
+        Settings(),
+        stac_client=client,  # type: ignore[arg-type]
+        window_source=source,
+        search_cache=search_cache,
+    )
 
 
 async def test_search_caches_items_and_returns_scene_refs():
@@ -197,3 +232,191 @@ def test_rasterio_source_read_bytes_reads_s3_via_boto3(monkeypatch):
     assert captured["bucket"] == "eodata"
     assert captured["key"] == "Sentinel-2/MSI/L2A/scene.SAFE/MTD_MSIL2A.xml"
     assert captured["endpoint"] == "https://eodata.example"
+
+
+# --------------------------------------------------------------------------- band/metadata memo
+
+
+def _rio_settings() -> Settings:
+    return Settings(
+        _env_file=None,  # type: ignore[call-arg]
+        cdse_s3_endpoint="eodata.example",
+        cdse_s3_access_key="a",
+        cdse_s3_secret_key="b",
+        cdse_rate_limit_rps=None,  # no bucket -> no Redis in these unit tests
+    )
+
+
+_AOI_OTHER = AOI(
+    geometry={
+        "type": "Polygon",
+        "coordinates": [
+            [[31.0, -18.9], [31.1, -18.9], [31.1, -19.0], [31.0, -19.0], [31.0, -18.9]]
+        ],
+    }
+)
+
+
+class _CountingRasterioSource(RasterioWindowSource):
+    """A real RasterioWindowSource with the actual reads stubbed, so the in-process memo can be
+    exercised with no network and no GDAL."""
+
+    def __init__(self, *, delay: float = 0.0) -> None:
+        super().__init__(_rio_settings())
+        self.reads = 0
+        self.byte_reads = 0
+        self._delay = delay
+
+    def _read_window_once(self, href, *, aoi, resolution_m, resampling="bilinear"):  # noqa: ANN001
+        if self._delay:
+            time.sleep(self._delay)
+        self.reads += 1
+        return ReadWindow(array=np.zeros((4, 4)), transform=_TRANSFORM, crs=_CRS)
+
+    def _read_s3_bytes(self, href):  # noqa: ANN001
+        self.byte_reads += 1
+        return b"<xml/>"
+
+
+def test_band_memo_serves_repeat_reads_once() -> None:
+    src = _CountingRasterioSource()
+    w1 = src.read_window("s3://eodata/x/B04_10m.jp2", aoi=_AOI, resolution_m=10.0)
+    w2 = src.read_window("s3://eodata/x/B04_10m.jp2", aoi=_AOI, resolution_m=10.0)
+    assert src.reads == 1  # the second read is served from the memo
+    assert w1 is w2
+    assert src.cache_stats() == {"hits": 1, "misses": 1}
+
+
+def test_band_memo_keys_on_bbox_and_resolution() -> None:
+    src = _CountingRasterioSource()
+    href = "s3://eodata/x/B04_10m.jp2"
+    src.read_window(href, aoi=_AOI, resolution_m=10.0)
+    src.read_window(href, aoi=_AOI_OTHER, resolution_m=10.0)  # different bbox -> real read
+    src.read_window(href, aoi=_AOI, resolution_m=20.0)  # different resolution -> real read
+    assert src.reads == 3
+
+
+def test_metadata_xml_is_memoized() -> None:
+    src = _CountingRasterioSource()
+    assert src.read_bytes("s3://eodata/x/MTD_MSIL2A.xml") == b"<xml/>"
+    assert src.read_bytes("s3://eodata/x/MTD_MSIL2A.xml") == b"<xml/>"
+    assert src.byte_reads == 1
+    assert src.cache_stats() == {"hits": 1, "misses": 1}
+
+
+def test_band_memo_collapses_concurrent_identical_reads() -> None:
+    src = _CountingRasterioSource(delay=0.02)  # widen the in-flight window so threads overlap
+    n = 16
+    barrier = threading.Barrier(n)
+
+    def hit() -> None:
+        barrier.wait()
+        src.read_window("s3://eodata/x/B04_10m.jp2", aoi=_AOI, resolution_m=10.0)
+
+    threads = [threading.Thread(target=hit) for _ in range(n)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert src.reads == 1  # the in-flight lock collapsed all n to a single read
+    assert src.cache_stats() == {"hits": n - 1, "misses": 1}
+
+
+async def test_search_cache_hits_redis_and_bypasses_stac_query() -> None:
+    store: dict[str, str] = {}
+    stac = _FakeStac([_item()])
+    cache = _search_cache(store)
+    source = _FakeSource()
+
+    # First search: cache is empty, calls STAC, populates cache
+    adapter1 = _adapter(source, stac_client=stac, search_cache=cache)
+    scenes1 = await adapter1.search(_AOI, _RANGE)
+    assert len(scenes1) == 1
+    assert scenes1[0].scene_id == "S2_TEST"
+    assert stac.searches == 1
+
+    # Second search: on a new adapter instance, hits cache, bypasses STAC
+    stac2 = _FakeStac([_item()])
+    adapter2 = _adapter(source, stac_client=stac2, search_cache=cache)
+    scenes2 = await adapter2.search(_AOI, _RANGE)
+    assert len(scenes2) == 1
+    assert scenes2[0].scene_id == "S2_TEST"
+    assert stac2.searches == 0  # bypassed!
+
+    # Verify the items dictionary is repopulated so fetch works
+    assert "S2_TEST" in adapter2._items
+
+
+async def test_search_cache_separates_keys() -> None:
+    store: dict[str, str] = {}
+    stac = _FakeStac([_item()])
+    cache = _search_cache(store)
+    source = _FakeSource()
+
+    adapter = _adapter(source, stac_client=stac, search_cache=cache)
+
+    # Run a search to populate cache
+    await adapter.search(_AOI, _RANGE, max_scene_cloud_pct=70.0)
+    assert stac.searches == 1
+
+    # Search with different max_scene_cloud_pct -> different key, misses cache
+    await adapter.search(_AOI, _RANGE, max_scene_cloud_pct=50.0)
+    assert stac.searches == 2
+
+    # Search with different time range -> different key, misses cache
+    different_range = TimeRange(start=_RANGE.start + timedelta(days=1), end=_RANGE.end)
+    await adapter.search(_AOI, different_range, max_scene_cloud_pct=70.0)
+    assert stac.searches == 3
+
+
+async def test_search_cache_fails_open() -> None:
+    stac = _FakeStac([_item()])
+    # Redis client configured to fail on operations
+    cache = _search_cache({}, fail=True)
+    source = _FakeSource()
+
+    adapter = _adapter(source, stac_client=stac, search_cache=cache)
+
+    # Search succeeds by falling back to live query, no crash
+    scenes = await adapter.search(_AOI, _RANGE)
+    assert len(scenes) == 1
+    assert scenes[0].scene_id == "S2_TEST"
+    assert stac.searches == 1
+
+
+async def test_multi_index_collapses_shared_reads(monkeypatch) -> None:
+    from services.worker.tasks.analysis import _analyse_aoi_series_multi
+
+    # Inject a counting RasterioWindowSource
+    src = _CountingRasterioSource()
+    monkeypatch.setattr(src, "_read_s3_bytes", lambda href: _mtd())
+    adapter = _adapter(src)
+
+    # Pre-populate items in the adapter by running search
+    await adapter.search(_AOI, _RANGE)
+
+    # Run NDVI and SAVI (which both fetch B04, B08, and SCL) for the same scene date
+    out = await _analyse_aoi_series_multi(
+        _AOI.geometry,
+        ["ndvi", "savi"],
+        "dates",
+        ["2023-06-15"],
+        None,
+        adapter=adapter,
+        backfill_months=18,
+        now=datetime(2023, 6, 15, tzinfo=UTC),
+    )
+
+    # Assert correct structure
+    assert out["status"] == "ok"
+    assert "ndvi" in out["indices"]
+    assert "savi" in out["indices"]
+    assert out["indices"]["ndvi"]["passes"][0]["status"] == "ok"
+    assert out["indices"]["savi"]["passes"][0]["status"] == "ok"
+
+    # NDVI fetches metadata, B04, B08, SCL -> 4 misses.
+    # SAVI fetches metadata, B04, B08, SCL -> 4 hits.
+    # Total window reads made to the GDAL source is 3 (bands).
+    assert src.reads == 3
+    # Cache stats: hits = 4 (XML + B04, B08, SCL during SAVI), misses = 4 (during NDVI)
+    assert src.cache_stats() == {"hits": 4, "misses": 4}

@@ -158,11 +158,14 @@ export interface AOIAnalysisResult {
 export type AOISeriesMode = "dates" | "backfill";
 
 /** A multi-pass AOI preview request (POST /analyse/aoi/series). `dates` (ISO YYYY-MM-DD) drives
- *  the "dates" mode; `months` drives the "backfill" sweep. Mirrors AOISeriesRequest in
- *  services/api/workspace/analyse.py. Nothing is persisted - this is a preview, not a field. */
+ *  the "dates" mode; `months` drives the "backfill" sweep. Provide either a single `index` or a
+ *  non-empty `indices` list (the all-indices path, ADR 0011 Phase 2), never both. Mirrors
+ *  AOISeriesRequest in services/api/workspace/analyse.py. Nothing is persisted - a preview, not a
+ *  field. */
 export interface AOISeriesRequest {
   geometry: Geometry;
-  index: string;
+  index?: string;
+  indices?: string[];
   mode: AOISeriesMode;
   dates?: string[];
   months?: number;
@@ -191,6 +194,8 @@ export interface AOISeriesPass {
   confidence?: string;
   resolution_m?: number;
   pixels?: number;
+  before?: AOISeriesPass | null;
+  after?: AOISeriesPass | null;
 }
 
 export interface AOISeriesResult {
@@ -200,6 +205,16 @@ export interface AOISeriesResult {
   requested: number;
   resolved: number;
   passes: AOISeriesPass[];
+}
+
+/** Result of an all-indices series job (ADR 0011 Phase 2): one `AOISeriesResult` per index, keyed
+ *  by index name. The single-index job returns a flat `AOISeriesResult` instead; `AOIJob.result`
+ *  carries the common single shape, and the studio widens/discriminates when it polls a job it
+ *  started with `indices`. */
+export interface MultiIndexResult {
+  status: string;
+  mode: AOISeriesMode;
+  indices: Record<string, AOISeriesResult>;
 }
 
 /** Status of a multi-pass AOI preview job (GET /analyse/aoi/jobs/{id}). `state` walks
@@ -229,6 +244,17 @@ export interface AOIPushResult {
   dry_run: boolean;
   idempotency_key: string;
   detail: string | null;
+}
+
+/** Request to POST /analyse/farm/{id}/series: run the studio engine over the farm's union
+ *  geometry. Provide either a single `index` or a non-empty `indices` list (ADR 0011 Phase 2).
+ *  Mirrors FarmSeriesRequest in services/api/workspace/analyse.py. */
+export interface FarmSeriesRequest {
+  index?: string;
+  indices?: string[];
+  mode: AOISeriesMode;
+  dates?: string[];
+  months?: number;
 }
 
 export interface PublishStatus {
@@ -390,6 +416,13 @@ export const api = {
     send<AOIAnalysisResult>("POST", "/analyse/aoi", token, { geometry, index }),
   analyseAOISeries: (req: AOISeriesRequest, token: string) =>
     send<AOIJobEnqueued>("POST", "/analyse/aoi/series", token, req),
+  analyseFarmSeries: (canonicalFarmId: string, req: FarmSeriesRequest, token: string) =>
+    send<AOIJobEnqueued>(
+      "POST",
+      `/analyse/farm/${encodeURIComponent(canonicalFarmId)}/series`,
+      token,
+      req,
+    ),
   aoiJob: (jobId: string, token: string, signal?: AbortSignal) =>
     get<AOIJob>(`/analyse/aoi/jobs/${encodeURIComponent(jobId)}`, token, signal),
   pushAOIResults: (jobId: string, req: AOIPushRequest, token: string) =>

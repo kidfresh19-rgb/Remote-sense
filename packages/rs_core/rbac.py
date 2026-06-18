@@ -17,6 +17,9 @@ class Permission(StrEnum):
     ANNOTATE = "annotate"  # add/edit annotations + saved AOIs
     RUN_ANALYSIS = "run_analysis"  # trigger collection / analysis
     PUBLISH = "publish"  # push results to the gateway / publish interpretations
+    # Comparison groups (PRD 0002 Open Item 3 - ⚑ CONFIRM the role mappings below before merge).
+    CREATE_REGION_CLUSTER = "create_region_cluster"  # analyst: draw / single-feature region
+    UPLOAD_REGION_BOUNDARY = "upload_region_boundary"  # admin: bulk multi-feature boundary upload
 
 
 class Role(StrEnum):
@@ -27,11 +30,27 @@ class Role(StrEnum):
 
 
 # Role -> permissions, cumulative by responsibility; admin holds everything.
+# ⚑ CONFIRM (PRD 0002 Open Item 3): create_region_cluster -> analyst (draw / single-feature);
+# upload_region_boundary -> admin only (bulk uploads), granted solely by the all-permissions
+# ADMIN role below. Confirm these mappings before merge.
 ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
     Role.VIEWER: frozenset({Permission.VIEW}),
-    Role.ANALYST: frozenset({Permission.VIEW, Permission.ANNOTATE, Permission.RUN_ANALYSIS}),
+    Role.ANALYST: frozenset(
+        {
+            Permission.VIEW,
+            Permission.ANNOTATE,
+            Permission.RUN_ANALYSIS,
+            Permission.CREATE_REGION_CLUSTER,
+        }
+    ),
     Role.PUBLISHER: frozenset(
-        {Permission.VIEW, Permission.ANNOTATE, Permission.RUN_ANALYSIS, Permission.PUBLISH}
+        {
+            Permission.VIEW,
+            Permission.ANNOTATE,
+            Permission.RUN_ANALYSIS,
+            Permission.PUBLISH,
+            Permission.CREATE_REGION_CLUSTER,
+        }
     ),
     Role.ADMIN: frozenset(Permission),
 }

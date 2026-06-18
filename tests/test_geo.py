@@ -9,6 +9,7 @@ from rs_core.geo import (
     UTM_35S_EPSG,
     UTM_36S_EPSG,
     area_m2,
+    canonical_geometry_hash,
     geometries_equivalent,
     is_nested,
     nesting_fraction_outside,
@@ -168,3 +169,52 @@ def test_geometries_equivalent_detects_real_change() -> None:
     a = to_shape(_square(*_HARARE, 0.01))
     bigger = to_shape(_square(*_HARARE, 0.015))  # 50% larger boundary
     assert not geometries_equivalent(a, bigger)
+
+
+# -- canonical geometry hash (ADR 0011 cache keys) --------------------------------------------
+
+
+def _rotate_ring(ring: list, k: int) -> list:
+    """Rotate a closed ring's start vertex by k, keeping it closed. Same polygon, new encoding."""
+    open_ring = ring[:-1]
+    rotated = open_ring[k:] + open_ring[:k]
+    return rotated + [rotated[0]]
+
+
+def test_canonical_hash_is_stable_for_the_same_polygon() -> None:
+    assert canonical_geometry_hash(_square(*_HARARE, 0.01)) == canonical_geometry_hash(
+        _square(*_HARARE, 0.01)
+    )
+
+
+def test_canonical_hash_ignores_ring_winding() -> None:
+    base = _square(*_HARARE, 0.01)
+    reversed_ring = {"type": "Polygon", "coordinates": [list(reversed(base["coordinates"][0]))]}
+    assert canonical_geometry_hash(base) == canonical_geometry_hash(reversed_ring)
+
+
+def test_canonical_hash_ignores_start_vertex() -> None:
+    base = _square(*_HARARE, 0.01)
+    rotated = {"type": "Polygon", "coordinates": [_rotate_ring(base["coordinates"][0], 2)]}
+    assert canonical_geometry_hash(base) == canonical_geometry_hash(rotated)
+
+
+def test_canonical_hash_ignores_sub_6dp_jitter() -> None:
+    base = _square(*_HARARE, 0.01)
+    jittered = _square(_HARARE[0] + 4e-8, _HARARE[1] + 4e-8, 0.01)  # << 1e-6, rounds away
+    assert canonical_geometry_hash(base) == canonical_geometry_hash(jittered)
+
+
+def test_canonical_hash_accepts_tuple_coordinates() -> None:
+    base = _square(*_HARARE, 0.01)
+    as_tuples = {
+        "type": "Polygon",
+        "coordinates": [tuple(tuple(pt) for pt in base["coordinates"][0])],
+    }
+    assert canonical_geometry_hash(base) == canonical_geometry_hash(as_tuples)
+
+
+def test_canonical_hash_changes_for_a_redrawn_polygon() -> None:
+    base = _square(*_HARARE, 0.01)
+    bigger = _square(*_HARARE, 0.012)  # genuinely different (> 1e-6 everywhere)
+    assert canonical_geometry_hash(base) != canonical_geometry_hash(bigger)

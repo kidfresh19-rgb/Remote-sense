@@ -193,6 +193,20 @@ async def ingest_farm(session: AsyncSession, payload: FarmIn) -> FarmIngestRepor
     )
 
 
+def _enqueue_region_recompute(canonical_farm_id: str) -> None:
+    """Re-evaluate this farm's Natural Region / cluster assignments after its geometry may have
+    changed (backlog 0002), as a best-effort enqueue. POST /ingest/farm is EXTERNAL-FROZEN, so this
+    never touches the response: it fires after the report is built, and a broker hiccup is logged,
+    not raised. The recompute is idempotent and also runs at seed time and on boundary edits, so a
+    missed enqueue self-heals on the next trigger."""
+    try:
+        from services.worker.tasks import recompute_farm_region_assignments_task
+
+        recompute_farm_region_assignments_task.delay(canonical_farm_id)
+    except Exception as exc:  # broker unreachable, etc. - ingestion must still succeed
+        log.warning("ingest.region_recompute_enqueue_failed", error=str(exc))
+
+
 @router.post("/farm", response_model=FarmIngestReport, status_code=status.HTTP_200_OK)
 async def ingest_farm_endpoint(
     payload: FarmIn,
@@ -205,6 +219,9 @@ async def ingest_farm_endpoint(
     default arrival mode is DB polling (config `RS_ARRIVAL_SOURCE`); both paths share this
     same service, so swapping the trigger never touches ingestion logic."""
     try:
-        return await ingest_farm(session, payload)
+        report = await ingest_farm(session, payload)
     except IngestionError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    if report.action != "unchanged":
+        _enqueue_region_recompute(report.canonical_farm_id)
+    return report

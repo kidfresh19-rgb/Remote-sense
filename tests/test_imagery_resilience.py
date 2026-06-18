@@ -5,6 +5,8 @@ Lua-vs-Python parity against a real Redis lives in test_resilience_redis.py."""
 
 from __future__ import annotations
 
+import threading
+
 import httpx
 import pytest
 from rs_core.config import Settings
@@ -111,6 +113,37 @@ def test_breaker_success_resets_the_failure_count() -> None:
     breaker.record_success()
     breaker.record_failure()
     assert breaker.allow()  # 1 consecutive failure, threshold 2
+
+
+def _hammer_record_failure(breaker: CircuitBreaker, n: int) -> None:
+    """Fire `n` concurrent record_failure calls, released together to maximise contention."""
+    barrier = threading.Barrier(n)
+
+    def hit() -> None:
+        barrier.wait()
+        breaker.record_failure()
+
+    threads = [threading.Thread(target=hit) for _ in range(n)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+
+def test_breaker_counts_concurrent_failures_without_losing_increments() -> None:
+    # AOI Studio runs band reads in a thread pool (ADR 0011), so record_failure races. Without
+    # the lock, read-modify-write races would drop increments and the circuit would never open.
+    n = 200
+    breaker = CircuitBreaker(failure_threshold=n, reset_timeout_s=60.0, clock=_Clock())
+    _hammer_record_failure(breaker, n)
+    assert not breaker.allow()  # all n landed: the n-th tripped it open
+
+
+def test_breaker_does_not_overcount_concurrent_failures() -> None:
+    n = 200
+    breaker = CircuitBreaker(failure_threshold=n + 1, reset_timeout_s=60.0, clock=_Clock())
+    _hammer_record_failure(breaker, n)
+    assert breaker.allow()  # exactly n failures < threshold (n+1): still closed
 
 
 async def test_breaker_call_guards_and_records() -> None:

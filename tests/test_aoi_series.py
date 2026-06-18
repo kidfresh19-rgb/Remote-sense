@@ -5,14 +5,19 @@ mapping."""
 
 from __future__ import annotations
 
+import asyncio
+import time
 from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
+import structlog
 from fastapi import HTTPException
 from rs_core import Principal, Role
+from rs_core.cache import RedisJsonCache
 from rs_core.config import ImageryAdapter, Settings
 from rs_imagery import AOI, TimeRange, get_access_adapter
+from rs_imagery.adapters.mock import MockAdapter
 
 from services.api.workspace import (
     AOISeriesRequest,
@@ -23,6 +28,7 @@ from services.worker.planning import backfill_window
 from services.worker.tasks.analysis import (
     _INTERP_PAD_DAYS,
     MAX_AOI_SPAN_DEG,
+    ResultCache,
     _analyse_aoi_series,
 )
 
@@ -173,6 +179,272 @@ async def test_backfill_mode_clamps_months_to_configured_depth() -> None:
     )
     horizon_start, _ = backfill_window(now.date(), 12)
     assert all(p["pass_date"] >= horizon_start.isoformat() for p in out["passes"])
+
+
+# --------------------------------------------------------------------------- engine: concurrency
+
+
+class _ConcurrencyProbe(MockAdapter):
+    """A mock adapter whose fetch sleeps and tracks how many fetches overlap, so the tests can
+    assert passes run concurrently and never exceed the semaphore. Single event loop, so the
+    active counter is mutated only at await boundaries - no lock needed."""
+
+    def __init__(self, *, delay: float = 0.02, **kw: object) -> None:
+        super().__init__(**kw)  # type: ignore[arg-type]
+        self.delay = delay
+        self.active = 0
+        self.max_active = 0
+
+    async def fetch(self, *args: object, **kwargs: object):  # type: ignore[override]
+        self.active += 1
+        self.max_active = max(self.max_active, self.active)
+        try:
+            await asyncio.sleep(self.delay)
+            return await super().fetch(*args, **kwargs)  # type: ignore[arg-type]
+        finally:
+            self.active -= 1
+
+
+async def test_series_runs_passes_concurrently_bounded_by_the_semaphore() -> None:
+    adapter = _ConcurrencyProbe(delay=0.02, scenes_per_search=12)
+    out = await _analyse_aoi_series(
+        _GEOM,
+        "ndvi",
+        "backfill",
+        None,
+        6,
+        adapter=adapter,
+        backfill_months=18,
+        now=datetime(2025, 6, 15, tzinfo=UTC),
+        concurrency=4,
+    )
+    assert len(out["passes"]) >= 5  # enough passes to observe bounding
+    assert adapter.max_active > 1  # genuinely concurrent, not serial
+    assert adapter.max_active <= 4  # never exceeds the semaphore
+
+
+async def test_series_concurrency_beats_serial_walltime() -> None:
+    delay = 0.05
+    adapter = _ConcurrencyProbe(delay=delay, scenes_per_search=10)
+    start = time.monotonic()
+    out = await _analyse_aoi_series(
+        _GEOM,
+        "ndvi",
+        "backfill",
+        None,
+        6,
+        adapter=adapter,
+        backfill_months=18,
+        now=datetime(2025, 6, 15, tzinfo=UTC),
+        concurrency=8,
+    )
+    elapsed = time.monotonic() - start
+    n = len(out["passes"])
+    assert n >= 5
+    assert elapsed < n * delay  # strictly faster than running the passes serially
+
+
+async def test_series_progress_is_monotonic_and_order_preserved() -> None:
+    adapter = _ConcurrencyProbe(delay=0.01, scenes_per_search=8)
+    ticks: list[tuple[int, int]] = []
+    out = await _analyse_aoi_series(
+        _GEOM,
+        "ndvi",
+        "backfill",
+        None,
+        6,
+        adapter=adapter,
+        backfill_months=18,
+        now=datetime(2025, 6, 15, tzinfo=UTC),
+        concurrency=4,
+        on_progress=lambda d, t: ticks.append((d, t)),
+    )
+    n = len(out["passes"])
+    assert [d for d, _ in ticks] == list(range(1, n + 1))  # done climbs 1..n, once per pass
+    assert all(t == n for _, t in ticks)  # total is constant
+    got = [p["pass_date"] for p in out["passes"]]
+    assert got == sorted(got)  # oldest-first order kept despite out-of-order settling
+
+
+# --------------------------------------------------------------------------- engine: result cache
+
+_NOW = datetime(2025, 6, 15, tzinfo=UTC)
+_GEOM2: dict = {  # a different AOI -> different canonical geometry hash
+    "type": "Polygon",
+    "coordinates": [
+        [[31.5, -17.8], [31.51, -17.8], [31.51, -17.81], [31.5, -17.81], [31.5, -17.8]]
+    ],
+}
+
+
+class _SharedFakeRedis:
+    """In-memory async stand-in sharing one store across cache instances (two preview runs)."""
+
+    def __init__(self, store: dict[str, str], *, fail: bool = False) -> None:
+        self._store = store
+        self._fail = fail
+
+    async def get(self, name: str) -> str | None:
+        if self._fail:
+            raise ConnectionError("redis down")
+        return self._store.get(name)
+
+    async def set(self, name: str, value: str, *, ex: int | None = None) -> None:
+        if self._fail:
+            raise ConnectionError("redis down")
+        self._store[name] = value
+
+
+class _FetchCounter(MockAdapter):
+    """Counts fetch calls so a result-cache hit (which skips the fetch) is observable."""
+
+    def __init__(self, **kw: object) -> None:
+        super().__init__(**kw)  # type: ignore[arg-type]
+        self.fetches = 0
+
+    async def fetch(self, *args: object, **kwargs: object):  # type: ignore[override]
+        self.fetches += 1
+        return await super().fetch(*args, **kwargs)  # type: ignore[arg-type]
+
+
+def _result_cache(store: dict[str, str], *, fail: bool = False) -> ResultCache:
+    return ResultCache(
+        RedisJsonCache(_SharedFakeRedis(store, fail=fail), namespace="aoi:result"), ttl_s=999
+    )
+
+
+async def test_result_cache_serves_rerun_without_fetching() -> None:
+    store: dict[str, str] = {}
+    a1 = _FetchCounter()
+    out1 = await _analyse_aoi_series(
+        _GEOM,
+        "ndvi",
+        "backfill",
+        None,
+        6,
+        adapter=a1,
+        backfill_months=18,
+        now=_NOW,
+        result_cache=_result_cache(store),
+    )
+    assert a1.fetches > 0
+    a2 = _FetchCounter()
+    out2 = await _analyse_aoi_series(
+        _GEOM,
+        "ndvi",
+        "backfill",
+        None,
+        6,
+        adapter=a2,
+        backfill_months=18,
+        now=_NOW,
+        result_cache=_result_cache(store),
+    )
+    assert a2.fetches == 0  # every pass was served from the result cache
+    assert [p["pass_date"] for p in out2["passes"]] == [p["pass_date"] for p in out1["passes"]]
+    assert out2["resolved"] == out1["resolved"]
+
+
+async def test_result_cache_key_separates_indexes() -> None:
+    store: dict[str, str] = {}
+    a1 = _FetchCounter()
+    await _analyse_aoi_series(
+        _GEOM,
+        "ndvi",
+        "backfill",
+        None,
+        6,
+        adapter=a1,
+        backfill_months=18,
+        now=_NOW,
+        result_cache=_result_cache(store),
+    )
+    a2 = _FetchCounter()
+    await _analyse_aoi_series(
+        _GEOM,
+        "savi",
+        "backfill",
+        None,
+        6,
+        adapter=a2,
+        backfill_months=18,
+        now=_NOW,
+        result_cache=_result_cache(store),
+    )
+    assert a2.fetches > 0  # different index -> different key -> recomputed
+
+
+async def test_result_cache_key_separates_geometries() -> None:
+    store: dict[str, str] = {}
+    a1 = _FetchCounter()
+    await _analyse_aoi_series(
+        _GEOM,
+        "ndvi",
+        "backfill",
+        None,
+        6,
+        adapter=a1,
+        backfill_months=18,
+        now=_NOW,
+        result_cache=_result_cache(store),
+    )
+    a2 = _FetchCounter()
+    await _analyse_aoi_series(
+        _GEOM2,
+        "ndvi",
+        "backfill",
+        None,
+        6,
+        adapter=a2,
+        backfill_months=18,
+        now=_NOW,
+        result_cache=_result_cache(store),
+    )
+    assert a2.fetches > 0  # different AOI -> different geometry hash -> recomputed
+
+
+async def test_result_cache_fails_open_and_still_computes() -> None:
+    a = _FetchCounter()
+    out = await _analyse_aoi_series(
+        _GEOM,
+        "ndvi",
+        "backfill",
+        None,
+        6,
+        adapter=a,
+        backfill_months=18,
+        now=_NOW,
+        result_cache=_result_cache({}, fail=True),
+    )
+    assert a.fetches > 0  # cache get/set raise -> fail open -> normal compute
+    assert out["status"] == "ok"
+
+
+async def test_analyse_aoi_series_emits_telemetry() -> None:
+    adapter = _adapter()
+    with structlog.testing.capture_logs() as caps:
+        await _analyse_aoi_series(
+            _GEOM,
+            "ndvi",
+            "backfill",
+            None,
+            6,
+            adapter=adapter,
+            backfill_months=18,
+            now=_NOW,
+        )
+
+    events = [e for e in caps if e.get("event") == "aoi.series.complete"]
+    assert len(events) == 1
+    ev = events[0]
+    assert ev["index"] == "ndvi"
+    assert ev["mode"] == "backfill"
+    assert "requested" in ev
+    assert "resolved" in ev
+    assert "n_passes" in ev
+    assert "wall_clock_s" in ev
+    assert "result_cache_hits" in ev
+    assert "result_cache_misses" in ev
 
 
 # --------------------------------------------------------------------------- engine: guards
@@ -340,3 +612,145 @@ def test_job_status_error(monkeypatch) -> None:
 def test_job_status_queued_for_pending(monkeypatch) -> None:
     _patch_async_result(monkeypatch, state="PENDING")
     assert _job_status("j") == {"job_id": "j", "state": "queued"}
+
+
+# --------------------------------------------------------------------------- multi engine / api
+
+
+async def test_analyse_aoi_series_multi_dates() -> None:
+    from services.worker.tasks.analysis import _analyse_aoi_series_multi
+
+    adapter = _adapter()
+    d_min = date(2025, 1, 1)
+    d_on_grid = d_min + timedelta(days=3)
+    d_off_grid = d_min
+
+    out = await _analyse_aoi_series_multi(
+        _GEOM,
+        ["ndvi", "savi"],
+        "dates",
+        [d_off_grid.isoformat(), d_on_grid.isoformat()],
+        None,
+        adapter=adapter,
+    )
+    assert out["status"] == "ok"
+    assert out["mode"] == "dates"
+    assert set(out["indices"].keys()) == {"ndvi", "savi"}
+
+    # Parity check: NDVI in multi matches NDVI in single
+    single_ndvi = await _analyse_aoi_series(
+        _GEOM,
+        "ndvi",
+        "dates",
+        [d_off_grid.isoformat(), d_on_grid.isoformat()],
+        None,
+        adapter=adapter,
+    )
+    assert out["indices"]["ndvi"]["passes"] == single_ndvi["passes"]
+
+
+async def test_analyse_aoi_series_multi_backfill() -> None:
+    from services.worker.tasks.analysis import _analyse_aoi_series_multi
+
+    adapter = _adapter()
+    now = datetime(2025, 6, 15, tzinfo=UTC)
+    out = await _analyse_aoi_series_multi(
+        _GEOM,
+        ["ndvi", "savi"],
+        "backfill",
+        None,
+        6,
+        adapter=adapter,
+        backfill_months=18,
+        now=now,
+    )
+    assert out["status"] == "ok"
+    assert out["mode"] == "backfill"
+    assert set(out["indices"].keys()) == {"ndvi", "savi"}
+
+    # Parity check
+    single_ndvi = await _analyse_aoi_series(
+        _GEOM,
+        "ndvi",
+        "backfill",
+        None,
+        6,
+        adapter=adapter,
+        backfill_months=18,
+        now=now,
+    )
+    assert out["indices"]["ndvi"]["passes"] == single_ndvi["passes"]
+
+
+async def test_endpoint_enqueues_multi_dates_job(monkeypatch) -> None:
+    import services.worker.tasks as tasks
+
+    captured: dict = {}
+    monkeypatch.setattr(
+        tasks.analyse_aoi_series_multi_task,
+        "delay",
+        lambda *args: captured.update(args=args) or SimpleNamespace(id="job-multi-abc"),
+    )
+    req = AOISeriesRequest(
+        geometry=_GEOM,
+        indices=["ndvi", "savi"],
+        mode="dates",
+        dates=[date(2025, 1, 15), date(2025, 1, 20)],
+    )
+    out = await analyse_aoi_series_endpoint(req, _ANALYST)
+    assert out == {"job_id": "job-multi-abc", "state": "queued"}
+    assert captured["args"] == (
+        _GEOM,
+        ["ndvi", "savi"],
+        "dates",
+        ["2025-01-15", "2025-01-20"],
+        None,
+    )
+
+
+async def test_endpoint_enqueues_multi_backfill_job(monkeypatch) -> None:
+    import services.worker.tasks as tasks
+
+    captured: dict = {}
+    monkeypatch.setattr(
+        tasks.analyse_aoi_series_multi_task,
+        "delay",
+        lambda *args: captured.update(args=args) or SimpleNamespace(id="job-multi-bf"),
+    )
+    req = AOISeriesRequest(geometry=_GEOM, indices=["ndvi", "savi"], mode="backfill", months=6)
+    out = await analyse_aoi_series_endpoint(req, _ANALYST)
+    assert out["state"] == "queued"
+    assert captured["args"] == (_GEOM, ["ndvi", "savi"], "backfill", None, 6)
+
+
+async def test_endpoint_rejects_missing_both_index_and_indices() -> None:
+    import pydantic
+
+    with pytest.raises(pydantic.ValidationError, match="provide exactly one of"):
+        AOISeriesRequest(geometry=_GEOM, mode="backfill", months=6)
+
+
+async def test_endpoint_rejects_providing_both_index_and_indices() -> None:
+    import pydantic
+
+    with pytest.raises(pydantic.ValidationError, match="provide exactly one of"):
+        AOISeriesRequest(
+            geometry=_GEOM, index="ndvi", indices=["ndvi", "savi"], mode="backfill", months=6
+        )
+
+
+async def test_endpoint_rejects_empty_indices() -> None:
+    import pydantic
+
+    with pytest.raises(pydantic.ValidationError, match="must be non-empty"):
+        AOISeriesRequest(geometry=_GEOM, indices=[], mode="backfill", months=6)
+
+
+def test_job_status_done_multi(monkeypatch) -> None:
+    payload = {
+        "status": "ok",
+        "mode": "dates",
+        "indices": {"ndvi": {"status": "ok", "index": "ndvi", "passes": []}},
+    }
+    _patch_async_result(monkeypatch, state="SUCCESS", result=payload)
+    assert _job_status("j") == {"job_id": "j", "state": "done", "result": payload}

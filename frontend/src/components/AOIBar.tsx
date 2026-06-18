@@ -1,4 +1,4 @@
-import { ArrowsOut, MagnifyingGlass, PencilSimple, Upload, X } from "@phosphor-icons/react";
+import { ArrowsOut, MagnifyingGlass, PencilSimple, Plant, Upload, X } from "@phosphor-icons/react";
 import type { Geometry } from "geojson";
 import { useEffect, useRef, useState } from "react";
 
@@ -20,6 +20,8 @@ interface AOIBarProps {
   onCancelDraw: () => void;
   onOpenCoords: () => void;
   onOpenUpload: () => void;
+  /** When provided, shows a button that opens the farm/field picker (AOI Studio only). */
+  onOpenFarms?: () => void;
   onAOISet: (geometry: Geometry, label: string) => void;
   onFlyTo: (center: [number, number], zoom?: number) => void;
 }
@@ -30,6 +32,7 @@ export function AOIBar({
   onCancelDraw,
   onOpenCoords,
   onOpenUpload,
+  onOpenFarms,
   onAOISet,
   onFlyTo,
 }: AOIBarProps) {
@@ -196,6 +199,17 @@ export function AOIBar({
         >
           <Upload size={14} />
         </IconButton>
+
+        {/* Existing farm / field picker (AOI Studio) */}
+        {onOpenFarms ? (
+          <IconButton
+            label="Use an existing farm or field"
+            onClick={onOpenFarms}
+            className="size-7 shrink-0 border border-border bg-panel/80"
+          >
+            <Plant size={14} />
+          </IconButton>
+        ) : null}
       </div>
 
       {/* Draw hint */}

@@ -15,17 +15,20 @@ const variants: Record<Variant, string> = {
   ghost: "text-fg hover:bg-panel-2",
 };
 
+/** The exact class set the `Button` component renders, exposed so a non-button element (e.g. a
+ *  router `Link` used as an action) can match a button pixel-for-pixel without nesting a real
+ *  <button> inside an <a>. */
+export function buttonClasses(variant: Variant = "outline", className?: string): string {
+  return cn(interactive, focusable, variants[variant], "h-9 px-3", className);
+}
+
 interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: Variant;
 }
 
 export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
   ({ variant = "outline", className, ...props }, ref) => (
-    <button
-      ref={ref}
-      className={cn(interactive, focusable, variants[variant], "h-9 px-3", className)}
-      {...props}
-    />
+    <button ref={ref} className={buttonClasses(variant, className)} {...props} />
   ),
 );
 Button.displayName = "Button";

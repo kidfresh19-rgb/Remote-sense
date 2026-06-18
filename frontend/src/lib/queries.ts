@@ -9,6 +9,7 @@ import {
   type AOIPushRequest,
   type AOISeriesRequest,
   type Farm,
+  type FarmSeriesRequest,
   type ReviewInput,
 } from "./api";
 import type { IndexKey } from "./indices";
@@ -209,6 +210,59 @@ export function usePushAOIResults() {
   return useMutation({
     mutationFn: ({ jobId, req }: { jobId: string; req: AOIPushRequest }) =>
       api.pushAOIResults(jobId, req, token!),
+  });
+}
+
+export interface PushAllAOIResult {
+  pushedPasses: number;
+  indices: number;
+  dryRun: boolean;
+}
+
+/** Push a completed AOI Studio run to the gateway under a single farm. Since the all-indices run is
+ *  now one job carrying every index's passes (ADR 0011 Phase 2), `jobIds` collapses to a single
+ *  unique id and the server flattens its indices into one push; we dedupe defensively so a repeated
+ *  id can never double-send. `indexCount` is the number of indices the run covered, reported back
+ *  for the summary (the per-job response only knows pass counts). */
+export function usePushAllAOIResults() {
+  const { token } = useToken();
+  return useMutation({
+    mutationFn: async ({
+      jobIds,
+      indexCount,
+      canonicalFarmId,
+    }: {
+      jobIds: string[];
+      indexCount: number;
+      canonicalFarmId: string;
+    }): Promise<PushAllAOIResult> => {
+      const uniqueJobIds = [...new Set(jobIds)];
+      const results = await Promise.all(
+        uniqueJobIds.map((jobId) =>
+          api.pushAOIResults(jobId, { canonical_farm_id: canonicalFarmId }, token!),
+        ),
+      );
+      return {
+        pushedPasses: results.reduce((sum, r) => sum + r.pushed_passes, 0),
+        indices: indexCount,
+        dryRun: results.some((r) => r.dry_run),
+      };
+    },
+  });
+}
+
+/** Start a multi-pass AOI preview (AOI Studio) for an entire farm: the server unions all field
+ *  geometries and runs the same engine. Resolves to `{ job_id }`; feed into `useAOIJob`. */
+export function useAnalyseFarmSeries() {
+  const { token } = useToken();
+  return useMutation({
+    mutationFn: ({
+      canonicalFarmId,
+      req,
+    }: {
+      canonicalFarmId: string;
+      req: FarmSeriesRequest;
+    }) => api.analyseFarmSeries(canonicalFarmId, req, token!),
   });
 }
 

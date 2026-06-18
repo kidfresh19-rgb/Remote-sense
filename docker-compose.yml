@@ -73,6 +73,26 @@ services:
       postgres:
         condition: service_healthy
 
+  # One-shot Natural Region seed (PRD 0002 slice 1), after the schema is in place. Built with the
+  # geo extra (geopandas reads the boundary file) and runs to completion; idempotent, so a restart
+  # re-runs harmlessly. The seed file is committed reference geometry under data/natural_regions/,
+  # mounted read-only rather than baked into every image. App services depend on migrate, not seed,
+  # so seeding never blocks boot.
+  seed:
+    build:
+      context: .
+      args:
+        INSTALL_EXTRAS: "[geo]"
+    command: python -m rs_core.seed_regions
+    env_file: .env
+    volumes:
+      - ./data/natural_regions:/app/data/natural_regions:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
   nginx:
     image: nginx:alpine
     ports:

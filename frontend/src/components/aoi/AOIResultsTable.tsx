@@ -16,26 +16,33 @@ import {
 } from "recharts";
 
 import type { AOIJob, AOISeriesPass } from "@/lib/api";
-import { dateValue, formatDate, formatNumber, formatPercent } from "@/lib/format";
-import { colorForValue, gradientCss, indexMeta, type IndexKey } from "@/lib/indices";
+import { cn, dateValue, formatDate, formatNumber, formatPercent } from "@/lib/format";
+import { colorForValue, gradientCss, indexMeta, INDICES, type IndexKey } from "@/lib/indices";
 
 import { EmptyState } from "../states";
 import { Badge } from "../ui";
 
+export type SelectedIndex = IndexKey | "all";
+
 interface AOIResultsTableProps {
-  job: AOIJob | undefined;
-  /** True while the run request is in flight (before the job id and first poll land). */
+  jobs: Record<IndexKey, AOIJob | undefined>;
   pending: boolean;
-  index: IndexKey;
+  selectedIndex: SelectedIndex;
+  viewIndex: IndexKey;
+  onViewIndexChange: (idx: IndexKey) => void;
 }
 
 type ViewMode = "chart" | "table";
 
-export function AOIResultsTable({ job, pending, index }: AOIResultsTableProps) {
-  const meta = indexMeta(index);
-  const result = job?.state === "done" ? (job.result ?? null) : null;
-  const passes = result?.passes ?? [];
-  const hasRequested = passes.some((p) => p.requested_date);
+export function AOIResultsTable({
+  jobs,
+  pending,
+  selectedIndex,
+  viewIndex,
+  onViewIndexChange,
+}: AOIResultsTableProps) {
+  const meta = indexMeta(viewIndex);
+  const hasAnyJob = Object.values(jobs).some((j) => !!j);
   const [viewMode, setViewMode] = useState<ViewMode>("chart");
   const [expanded, setExpanded] = useState(false);
 
@@ -55,7 +62,7 @@ export function AOIResultsTable({ job, pending, index }: AOIResultsTableProps) {
     };
   }, [expanded]);
 
-  if (!job && !pending) {
+  if (!hasAnyJob && !pending) {
     return (
       <EmptyState
         title="No analysis yet"
@@ -64,148 +71,210 @@ export function AOIResultsTable({ job, pending, index }: AOIResultsTableProps) {
     );
   }
 
-  if (pending || job?.state === "queued" || job?.state === "running") {
-    return <RunningState job={job} />;
-  }
+  function renderJobContent() {
+    const job = jobs[viewIndex];
 
-  if (job?.state === "error") {
-    return (
-      <div className="p-4">
-        <p className="text-sm font-medium text-critical">Analysis failed</p>
-        <p className="mt-1 max-w-[60ch] text-xs leading-relaxed text-muted">
-          {job.error ?? "The imagery service could not complete this run. Try a smaller area or range."}
-        </p>
-      </div>
-    );
-  }
+    if (pending && !job) {
+      return <RunningState job={undefined} />;
+    }
 
-  if (!result || passes.length === 0) {
-    return (
-      <EmptyState
-        title="No passes found"
-        hint="No usable imagery matched this area and range. Try a wider date range or a different area."
-      />
-    );
-  }
+    if (job?.state === "queued" || job?.state === "running") {
+      return <RunningState job={job} />;
+    }
 
-  const content = (
-    <div className={`flex flex-col gap-3 p-3 ${
-      expanded ? "h-full overflow-y-auto" : ""
-    }`}>
-      {/* Header bar */}
-      <div className="flex items-center justify-between gap-2">
-        <p className="text-xs text-muted">
-          <span className="font-medium text-fg">{result.resolved}</span> of {result.requested}{" "}
-          {result.mode === "dates" ? "dates resolved" : "passes"} · {meta.label}
-        </p>
-        <div className="flex items-center gap-1.5">
-          {/* View mode toggle */}
-          <div className="inline-flex rounded-md border border-border bg-panel p-0.5">
+    if (job?.state === "error") {
+      return (
+        <div className="p-4">
+          <p className="text-sm font-medium text-critical">Analysis failed ({meta.label})</p>
+          <p className="mt-1 max-w-[60ch] text-xs leading-relaxed text-muted">
+            {job.error ?? "The imagery service could not complete this run. Try a smaller area or range."}
+          </p>
+        </div>
+      );
+    }
+
+    if (!job) {
+      return (
+        <div className="flex h-full items-center justify-center p-8 text-center text-muted">
+          <p className="text-sm">Ready to analyse {meta.label}</p>
+        </div>
+      );
+    }
+
+    const result = job.result ?? null;
+    const passes = result?.passes ?? [];
+    const hasRequested = passes.some((p) => p.requested_date);
+
+    if (!result || passes.length === 0) {
+      return (
+        <EmptyState
+          title={`No passes found for ${meta.label}`}
+          hint="No usable imagery matched this area and range. Try a wider date range or a different area."
+        />
+      );
+    }
+
+    const content = (
+      <div className={`flex flex-col gap-3 p-3 ${
+        expanded ? "h-full overflow-y-auto" : ""
+      }`}>
+        {/* Header bar */}
+        <div className="flex items-center justify-between gap-2">
+          <p className="text-xs text-muted">
+            <span className="font-medium text-fg">{result.resolved}</span> of {result.requested}{" "}
+            {result.mode === "dates" ? "dates resolved" : "passes"} · {meta.label}
+          </p>
+          <div className="flex items-center gap-1.5">
+            {/* View mode toggle */}
+            <div className="inline-flex rounded-md border border-border bg-panel p-0.5">
+              <button
+                onClick={() => setViewMode("chart")}
+                className={`rounded-[5px] px-2 py-1 text-xs font-medium transition-colors duration-150 ${
+                  viewMode === "chart"
+                    ? "bg-accent text-accent-fg"
+                    : "text-muted hover:text-fg"
+                }`}
+                title="Chart view"
+              >
+                <ChartLine size={13} weight="bold" />
+              </button>
+              <button
+                onClick={() => setViewMode("table")}
+                className={`rounded-[5px] px-2 py-1 text-xs font-medium transition-colors duration-150 ${
+                  viewMode === "table"
+                    ? "bg-accent text-accent-fg"
+                    : "text-muted hover:text-fg"
+                }`}
+                title="Table view"
+              >
+                <TableIcon size={13} weight="bold" />
+              </button>
+            </div>
             <button
-              onClick={() => setViewMode("chart")}
-              className={`rounded-[5px] px-2 py-1 text-xs font-medium transition-colors duration-150 ${
-                viewMode === "chart"
-                  ? "bg-accent text-accent-fg"
-                  : "text-muted hover:text-fg"
-              }`}
-              title="Chart view"
+              onClick={() => downloadCsv(passes, viewIndex, result.mode)}
+              className="inline-flex items-center gap-1.5 rounded-md border border-border bg-panel px-2.5 py-1 text-xs text-muted transition-colors hover:bg-panel-2 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
             >
-              <ChartLine size={13} weight="bold" />
+              <DownloadSimple size={13} /> CSV
             </button>
+            {/* Expand / Collapse toggle */}
             <button
-              onClick={() => setViewMode("table")}
-              className={`rounded-[5px] px-2 py-1 text-xs font-medium transition-colors duration-150 ${
-                viewMode === "table"
-                  ? "bg-accent text-accent-fg"
-                  : "text-muted hover:text-fg"
-              }`}
-              title="Table view"
+              onClick={() => setExpanded((v) => !v)}
+              className="inline-flex items-center gap-1.5 rounded-md border border-border bg-panel px-2.5 py-1 text-xs text-muted transition-colors hover:bg-panel-2 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+              title={expanded ? "Collapse (Esc)" : "Expand to full screen"}
             >
-              <TableIcon size={13} weight="bold" />
+              {expanded ? <ArrowsIn size={13} /> : <ArrowsOut size={13} />}
+              {expanded ? "Collapse" : "Expand"}
             </button>
           </div>
-          <button
-            onClick={() => downloadCsv(passes, index, result.mode)}
-            className="inline-flex items-center gap-1.5 rounded-md border border-border bg-panel px-2.5 py-1 text-xs text-muted transition-colors hover:bg-panel-2 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-          >
-            <DownloadSimple size={13} /> CSV
-          </button>
-          {/* Expand / Collapse toggle */}
-          <button
-            onClick={() => setExpanded((v) => !v)}
-            className="inline-flex items-center gap-1.5 rounded-md border border-border bg-panel px-2.5 py-1 text-xs text-muted transition-colors hover:bg-panel-2 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-            title={expanded ? "Collapse (Esc)" : "Expand to full screen"}
-          >
-            {expanded ? <ArrowsIn size={13} /> : <ArrowsOut size={13} />}
-            {expanded ? "Collapse" : "Expand"}
-          </button>
         </div>
-      </div>
 
-      {viewMode === "chart" ? (
-        <ChartView passes={passes} index={index} />
-      ) : (
-        <TableView passes={passes} index={index} hasRequested={hasRequested} />
-      )}
-
-      {/* Agronomic insights — always visible below chart or table */}
-      <IndexInsights passes={passes} index={index} />
-    </div>
-  );
-
-  // Fullscreen portal overlay
-  if (expanded) {
-    return (
-      <>
-        {/* Placeholder keeps the original layout from collapsing */}
-        <div className="flex items-center justify-center p-6 text-xs text-muted">
-          <span className="inline-flex items-center gap-1.5">
-            <ArrowsOut size={14} />
-            Results expanded — press <kbd className="rounded border border-border bg-panel-2 px-1 py-0.5 font-mono text-[10px]">Esc</kbd> or click Collapse
-          </span>
-        </div>
-        {createPortal(
-          <AnimatePresence>
-            <motion.div
-              key="aoi-fullscreen"
-              initial={{ opacity: 0, scale: 0.97 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.97 }}
-              transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
-              className="fixed inset-0 z-[9999] flex flex-col"
-            >
-              {/* Backdrop */}
-              <motion.div
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                transition={{ duration: 0.15 }}
-                className="absolute inset-0 modal-overlay"
-                onClick={() => setExpanded(false)}
-              />
-              {/* Panel */}
-              <div className="relative z-10 m-3 flex flex-1 flex-col overflow-hidden rounded-2xl border border-border bg-panel shadow-2xl"
-                style={{ boxShadow: "0 8px 60px 0 rgb(0 0 0 / 0.25)" }}
-              >
-                {/* Close corner button */}
-                <button
-                  onClick={() => setExpanded(false)}
-                  className="absolute right-3 top-3 z-20 inline-flex size-7 items-center justify-center rounded-md border border-border bg-panel text-muted transition-colors hover:bg-panel-2 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-                  title="Close (Esc)"
-                >
-                  <X size={14} weight="bold" />
-                </button>
-                {content}
-              </div>
-            </motion.div>
-          </AnimatePresence>,
-          document.body,
+        {viewMode === "chart" ? (
+          <ChartView passes={passes} index={viewIndex} />
+        ) : (
+          <TableView passes={passes} index={viewIndex} hasRequested={hasRequested} />
         )}
-      </>
+
+        {/* Agronomic insights — always visible below chart or table */}
+        <IndexInsights passes={passes} index={viewIndex} />
+      </div>
     );
+
+    // Fullscreen portal overlay
+    if (expanded) {
+      return (
+        <>
+          {/* Placeholder keeps the original layout from collapsing */}
+          <div className="flex items-center justify-center p-6 text-xs text-muted">
+            <span className="inline-flex items-center gap-1.5">
+              <ArrowsOut size={14} />
+              Results expanded — press <kbd className="rounded border border-border bg-panel-2 px-1 py-0.5 font-mono text-[10px]">Esc</kbd> or click Collapse
+            </span>
+          </div>
+          {createPortal(
+            <AnimatePresence>
+              <motion.div
+                key="aoi-fullscreen"
+                initial={{ opacity: 0, scale: 0.97 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.97 }}
+                transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
+                className="fixed inset-0 z-[9999] flex flex-col"
+              >
+                {/* Backdrop */}
+                <motion.div
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  transition={{ duration: 0.15 }}
+                  className="absolute inset-0 modal-overlay"
+                  onClick={() => setExpanded(false)}
+                />
+                {/* Panel */}
+                <div className="relative z-10 m-3 flex flex-1 flex-col overflow-hidden rounded-2xl border border-border bg-panel shadow-2xl"
+                  style={{ boxShadow: "0 8px 60px 0 rgb(0 0 0 / 0.25)" }}
+                >
+                  {/* Close corner button */}
+                  <button
+                    onClick={() => setExpanded(false)}
+                    className="absolute right-3 top-3 z-20 inline-flex size-7 items-center justify-center rounded-md border border-border bg-panel text-muted transition-colors hover:bg-panel-2 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                    title="Close (Esc)"
+                  >
+                    <X size={14} weight="bold" />
+                  </button>
+                  {content}
+                </div>
+              </motion.div>
+            </AnimatePresence>,
+            document.body,
+          )}
+        </>
+      );
+    }
+
+    return content;
   }
 
-  return content;
+  return (
+    <div className="flex flex-col h-full">
+      {selectedIndex === "all" ? (
+        <div className="flex border-b border-border bg-panel-2 px-3 py-1.5 gap-1.5 overflow-x-auto shrink-0">
+          {INDICES.map((idxMeta) => {
+            const job = jobs[idxMeta.key];
+            const active = idxMeta.key === viewIndex;
+            let statusIcon = null;
+
+            if (job?.state === "queued" || job?.state === "running") {
+              statusIcon = <Spinner size={12} className="animate-spin text-accent" />;
+            } else if (job?.state === "error") {
+              statusIcon = <span className="size-2 rounded-full bg-critical" title="Failed" />;
+            } else if (job?.state === "done") {
+              statusIcon = <span className="size-2 rounded-full bg-positive" title="Done" />;
+            }
+
+            return (
+              <button
+                key={idxMeta.key}
+                onClick={() => onViewIndexChange(idxMeta.key)}
+                className={cn(
+                  "flex items-center gap-1.5 rounded-md px-3 py-1 text-xs font-medium transition-colors border",
+                  active
+                    ? "border-accent bg-accent/15 text-accent"
+                    : "border-border bg-panel text-muted hover:text-fg"
+                )}
+              >
+                {idxMeta.label}
+                {statusIcon}
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
+
+      <div className="flex-1 min-h-0 overflow-y-auto">
+        {renderJobContent()}
+      </div>
+    </div>
+  );
 }
 
 /* ─── Chart View ──────────────────────────────────────────────────────────── */
@@ -310,6 +379,7 @@ function ChartView({ passes, index }: { passes: AOISeriesPass[]; index: IndexKey
           </span>
         </p>
         <HeatmapStrip points={points} index={index} />
+      </div>
       </div>
     </div>
   );
@@ -1127,6 +1197,7 @@ function Row({
   const interpolated = pass.status === "interpolated";
 
   if (!ok && !interpolated) {
+    const hasNearest = pass.before || pass.after;
     return (
       <tr className="border-b border-border/60 text-muted">
         {showRequested ? (
@@ -1135,9 +1206,33 @@ function Row({
           </td>
         ) : null}
         <td className="py-1.5 pr-3" colSpan={8}>
-          <Badge tone="neutral" className="text-[10px] uppercase">
-            no pass
-          </Badge>
+          <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:gap-2">
+            <Badge tone="neutral" className="w-fit text-[10px] uppercase">
+              no pass
+            </Badge>
+            {hasNearest && (
+              <span className="text-[11px] text-muted">
+                Nearest passes:{" "}
+                {pass.before ? (
+                  <>
+                    <span className="font-semibold text-fg">{formatNumber(pass.before.mean)}</span> on{" "}
+                    <span className="font-medium text-fg">{pass.before.pass_date ? formatDate(pass.before.pass_date) : "·"}</span>
+                  </>
+                ) : (
+                  "none"
+                )}
+                {" and "}
+                {pass.after ? (
+                  <>
+                    <span className="font-semibold text-fg">{formatNumber(pass.after.mean)}</span> on{" "}
+                    <span className="font-medium text-fg">{pass.after.pass_date ? formatDate(pass.after.pass_date) : "·"}</span>
+                  </>
+                ) : (
+                  "none"
+                )}
+              </span>
+            )}
+          </div>
         </td>
       </tr>
     );
@@ -1199,13 +1294,116 @@ function Row({
   );
 }
 
-function confidenceTone(confidence: string): "positive" | "caution" | "critical" | "neutral" {
+export function confidenceTone(confidence: string): "positive" | "caution" | "critical" | "neutral" {
   if (confidence === "high") return "positive";
   if (confidence === "medium") return "caution";
   if (confidence === "low") return "critical";
   return "neutral";
 }
 
+const CHART_W = 560;
+const CHART_H = 150;
+const PAD = { l: 34, r: 12, t: 12, b: 22 };
+
+/** A compact scatter+line of each usable pass's mean across time, on the index's display range, so
+ *  the analyst can read the trend at a glance. Exact passes are filled circles; interpolated
+ *  (averaged) passes are hollow circles so the analyst can distinguish synthesised data. Reused by
+ *  the report panel, so it is exported. */
+export function MeanSparkline({ passes, index }: { passes: AOISeriesPass[]; index: IndexKey }) {
+  const meta = indexMeta(index);
+  const points = useMemo(
+    () =>
+      passes
+        .filter(
+          (p) => (p.status === "ok" || p.status === "interpolated") && p.mean != null,
+        )
+        .map((p) => ({
+          x: dateValue(p.requested_date ?? p.pass_date ?? ""),
+          v: p.mean as number,
+          date: p.requested_date ?? p.pass_date ?? "",
+          interpolated: p.status === "interpolated",
+        }))
+        .filter((p) => p.date !== "")
+        .sort((a, b) => a.x - b.x),
+    [passes],
+  );
+
+  if (points.length === 0) return null;
+
+  const xs = points.map((p) => p.x);
+  const xMin = Math.min(...xs);
+  const xMax = Math.max(...xs);
+  const xSpan = xMax - xMin || 1;
+  const sx = (x: number) =>
+    points.length === 1
+      ? (PAD.l + (CHART_W - PAD.r)) / 2
+      : PAD.l + ((x - xMin) / xSpan) * (CHART_W - PAD.l - PAD.r);
+  const ySpan = meta.max - meta.min || 1;
+  const sy = (v: number) => {
+    const t = Math.min(1, Math.max(0, (v - meta.min) / ySpan));
+    return CHART_H - PAD.b - t * (CHART_H - PAD.t - PAD.b);
+  };
+
+  const path = points.map((p, i) => `${i === 0 ? "M" : "L"} ${sx(p.x)} ${sy(p.v)}`).join(" ");
+
+  return (
+    <svg
+      viewBox={`0 0 ${CHART_W} ${CHART_H}`}
+      className="h-auto w-full"
+      role="img"
+      aria-label={`${meta.label} mean over time, ${points.length} passes`}
+    >
+      {/* y bounds */}
+      {[meta.min, meta.max].map((v) => (
+        <g key={v}>
+          <line
+            x1={PAD.l}
+            x2={CHART_W - PAD.r}
+            y1={sy(v)}
+            y2={sy(v)}
+            stroke="var(--border)"
+            strokeWidth={1}
+          />
+          <text x={4} y={sy(v) + 3} fill="var(--muted)" fontSize={9}>
+            {v.toFixed(1)}
+          </text>
+        </g>
+      ))}
+      {/* trend line then points */}
+      {points.length > 1 ? (
+        <path d={path} fill="none" stroke="var(--muted)" strokeWidth={1.5} strokeOpacity={0.5} />
+      ) : null}
+      {points.map((p) =>
+        p.interpolated ? (
+          <circle
+            key={p.date}
+            cx={sx(p.x)}
+            cy={sy(p.v)}
+            r={3.5}
+            fill="none"
+            stroke={colorForValue(meta, p.v)}
+            strokeWidth={1.5}
+          >
+            <title>{`${formatDate(p.date)} (averaged): ${formatNumber(p.v)}`}</title>
+          </circle>
+        ) : (
+          <circle key={p.date} cx={sx(p.x)} cy={sy(p.v)} r={3.5} fill={colorForValue(meta, p.v)}>
+            <title>{`${formatDate(p.date)}: ${formatNumber(p.v)}`}</title>
+          </circle>
+        ),
+      )}
+      {/* first/last date labels */}
+      <text x={PAD.l} y={CHART_H - 6} fill="var(--muted)" fontSize={9}>
+        {formatDate(points[0].date)}
+      </text>
+      {points.length > 1 ? (
+        <text x={CHART_W - PAD.r} y={CHART_H - 6} fill="var(--muted)" fontSize={9} textAnchor="end">
+          {formatDate(points[points.length - 1].date)}
+        </text>
+      ) : null}
+    </svg>
+  );
+}
 function downloadCsv(passes: AOISeriesPass[], index: IndexKey, mode: string): void {
   const header = [
     "requested_date",

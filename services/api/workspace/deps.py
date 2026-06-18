@@ -19,5 +19,13 @@ ViewPrincipal = Annotated[Principal, Depends(require(Permission.VIEW))]
 AnnotatePrincipal = Annotated[Principal, Depends(require(Permission.ANNOTATE))]
 PublishPrincipal = Annotated[Principal, Depends(require(Permission.PUBLISH))]
 RunAnalysisPrincipal = Annotated[Principal, Depends(require(Permission.RUN_ANALYSIS))]
+# Comparison groups (PRD 0002 Open Item 3 - ⚑ CONFIRM): draw / single-feature is analyst-level,
+# bulk multi-feature upload is admin-level.
+CreateRegionClusterPrincipal = Annotated[
+    Principal, Depends(require(Permission.CREATE_REGION_CLUSTER))
+]
+UploadRegionBoundaryPrincipal = Annotated[
+    Principal, Depends(require(Permission.UPLOAD_REGION_BOUNDARY))
+]
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
 ReadSessionDep = Annotated[AsyncSession, Depends(get_read_session)]

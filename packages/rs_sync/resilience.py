@@ -8,6 +8,8 @@ times only delays a dead-letter the operator needs to see now."""
 
 from __future__ import annotations
 
+import re
+
 import httpx
 from tenacity import (
     AsyncRetrying,
@@ -52,17 +54,30 @@ def push_retrying(*, max_attempts: int, backoff: float) -> AsyncRetrying:
     )
 
 
-def _body_snippet(response: httpx.Response, *, limit: int = 200) -> str:
-    """A short, single-line snippet of a failed response body, so a real gateway rejection (an
-    AgriTrack JSON error, or an ngrok/Apache HTML error page) is visible in the dead-letter instead
-    of just a bare status code. Whitespace is collapsed and the text is truncated; a body that
-    cannot be read (e.g. a streamed response) yields an empty string."""
+def _body_snippet(response: httpx.Response, *, limit: int = 120) -> str:
+    """A short, single-line snippet of a failed response body, surfaced in the dead-letter and
+    the workspace push modal. When the gateway returns an HTML error page (CDN 503, nginx default,
+    ngrok tunnel error), we extract the page title or first heading rather than emitting raw markup
+    — collapsed HTML is unreadable in a UI modal. For JSON/plain-text bodies the raw collapsed text
+    is used. A body that cannot be read yields an empty string."""
     try:
         text = response.text
     except Exception:  # noqa: BLE001 - body is best-effort diagnostics, never fatal
         return ""
+
+    stripped = text.lstrip()
+    if stripped.lower().startswith(("<!doctype html", "<html")):
+        # Try to pull a human-readable title from the HTML.
+        title_m = re.search(r"<title[^>]*>([^<]+)</title>", text, re.IGNORECASE)
+        h1_m = re.search(r"<h1[^>]*>([^<]+)</h1>", text, re.IGNORECASE)
+        label = title_m or h1_m
+        if label:
+            readable = " ".join(label.group(1).split())
+            return f"HTML error page: {readable}"[:limit]
+        return "HTML error page (no title found)"
+
     collapsed = " ".join(text.split())
-    return collapsed[:limit] + "..." if len(collapsed) > limit else collapsed
+    return collapsed[:limit] + "…" if len(collapsed) > limit else collapsed
 
 
 def describe_push_error(exc: BaseException) -> str:
