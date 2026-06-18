@@ -39,10 +39,10 @@ from pathlib import Path
 VALID_ROLES = ("viewer", "analyst", "publisher", "admin")
 
 ROLE_PERMISSIONS = {
-    "viewer":    ["Read analyses, interpretations, history"],
-    "analyst":   ["+ Annotate, run analysis"],
+    "viewer": ["Read analyses, interpretations, history"],
+    "analyst": ["+ Annotate, run analysis"],
     "publisher": ["+ Push to gateway / publish interpretations"],
-    "admin":     ["Everything"],
+    "admin": ["Everything"],
 }
 
 # ──────────────────────────────────────────────────────────────────────
@@ -52,12 +52,8 @@ ROLE_PERMISSIONS = {
 # Force UTF-8 output on Windows to avoid cp1252 encoding errors
 if sys.platform == "win32":
     try:
-        sys.stdout = io.TextIOWrapper(
-            sys.stdout.buffer, encoding="utf-8", errors="replace"
-        )
-        sys.stderr = io.TextIOWrapper(
-            sys.stderr.buffer, encoding="utf-8", errors="replace"
-        )
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
     except Exception:
         pass
 
@@ -67,19 +63,39 @@ try:
 except Exception:
     _ANSI = False
 
+
 def _c(code: str, text: str) -> str:
     return f"\033[{code}m{text}\033[0m" if _ANSI else text
 
-def bold(t: str)   -> str: return _c("1", t)
-def green(t: str)  -> str: return _c("32", t)
-def yellow(t: str) -> str: return _c("33", t)
-def red(t: str)    -> str: return _c("31", t)
-def cyan(t: str)   -> str: return _c("36", t)
-def dim(t: str)    -> str: return _c("2", t)
+
+def bold(t: str) -> str:
+    return _c("1", t)
+
+
+def green(t: str) -> str:
+    return _c("32", t)
+
+
+def yellow(t: str) -> str:
+    return _c("33", t)
+
+
+def red(t: str) -> str:
+    return _c("31", t)
+
+
+def cyan(t: str) -> str:
+    return _c("36", t)
+
+
+def dim(t: str) -> str:
+    return _c("2", t)
+
 
 # ──────────────────────────────────────────────────────────────────────
 # Helpers
 # ──────────────────────────────────────────────────────────────────────
+
 
 def b64url(raw: bytes) -> str:
     """Base64url-encode without padding (JWT spec)."""
@@ -138,9 +154,7 @@ def mint_jwt(secret: str, sub: str, roles: list[str], days: int) -> tuple[str, i
     exp = int(time.time()) + days * 86400
     header = b64url(json.dumps({"alg": "HS256", "typ": "JWT"}).encode())
     claims = b64url(json.dumps({"sub": sub, "roles": roles, "exp": exp}).encode())
-    sig = b64url(
-        hmac.new(secret.encode(), f"{header}.{claims}".encode(), hashlib.sha256).digest()
-    )
+    sig = b64url(hmac.new(secret.encode(), f"{header}.{claims}".encode(), hashlib.sha256).digest())
     return f"{header}.{claims}.{sig}", exp
 
 
@@ -170,6 +184,7 @@ def format_expiry(unix_ts: int) -> str:
 # Main
 # ──────────────────────────────────────────────────────────────────────
 
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Bootstrap auth for Remote-Sense (JWT secret + dev token).",
@@ -184,28 +199,40 @@ Examples:
         """,
     )
     parser.add_argument(
-        "--sub", default="you",
+        "--sub",
+        default="you",
         help="JWT subject claim — identifies the token holder (default: 'you')",
     )
     parser.add_argument(
-        "--roles", nargs="+", default=["admin"], choices=VALID_ROLES,
+        "--roles",
+        nargs="+",
+        default=["admin"],
+        choices=VALID_ROLES,
         help="Roles to embed in the token (default: admin)",
     )
     parser.add_argument(
-        "--days", type=int, default=30,
+        "--days",
+        type=int,
+        default=30,
         help="Token validity in days (default: 30)",
     )
     parser.add_argument(
-        "--dry-run", action="store_true",
+        "--dry-run",
+        action="store_true",
         help="Show what would happen without writing any files",
     )
     parser.add_argument(
-        "--verify", action="store_true",
+        "--verify",
+        action="store_true",
         help="Verify the current auth setup and report status",
     )
     parser.add_argument(
-        "--force-new-secret", action="store_true",
-        help="Generate a new RS_JWT_SECRET even if one already exists (invalidates all existing tokens!)",
+        "--force-new-secret",
+        action="store_true",
+        help=(
+            "Generate a new RS_JWT_SECRET even if one already exists "
+            "(invalidates all existing tokens!)"
+        ),
     )
 
     args = parser.parse_args()
@@ -298,7 +325,7 @@ Examples:
 
     if args.dry_run:
         print(f"  {yellow('⚠')}  Dry run — no files were modified.")
-        print(f"     Re-run without --dry-run to apply changes.")
+        print("     Re-run without --dry-run to apply changes.")
         print()
 
     # Role permissions table
@@ -313,7 +340,7 @@ Examples:
     print(f"    Subject:  {args.sub}")
     print(f"    Roles:    {', '.join(args.roles)}")
     print(f"    Expires:  {format_expiry(exp_ts)}")
-    print(f"    Algorithm: HS256")
+    print("    Algorithm: HS256")
     print()
 
     # Next steps
@@ -322,7 +349,7 @@ Examples:
     print(bold("  ────────────────────────────────────────────────────────"))
     print()
     print(f"  1. {bold('Restart the frontend dev server')} so Vite picks up")
-    print(f"     the new VITE_DEV_TOKEN:")
+    print("     the new VITE_DEV_TOKEN:")
     print(f"       {dim('cd frontend && npm run dev')}")
     print()
     print(f"  2. {bold('Restart the API server')} if you changed the JWT secret:")
@@ -331,7 +358,7 @@ Examples:
     print(f"       {dim('python start.py')}")
     print()
     print(f"  3. For a {bold('collaborator')}, share the same RS_JWT_SECRET")
-    print(f"     and have them run:")
+    print("     and have them run:")
     print(f"       {dim('python auth-setup.py --sub their-name')}")
     print()
     print(f"  4. To {bold('verify')} the current setup at any time:")
@@ -408,7 +435,8 @@ def verify_setup(root_env: Path, frontend_env: Path) -> int:
 
                 if exp < now:
                     elapsed = (now - exp) // 86400
-                    print(f"      Expires:  {red(format_expiry(exp))} {red(f'(EXPIRED {elapsed}d ago!)')}")
+                    expired_str = f"(EXPIRED {elapsed}d ago!)"
+                    print(f"      Expires:  {red(format_expiry(exp))} {red(expired_str)}")
                     all_ok = False
                 else:
                     remaining = (exp - now) // 86400
@@ -431,8 +459,10 @@ def verify_setup(root_env: Path, frontend_env: Path) -> int:
                         if expected_sig == parts[2]:
                             print(f"      Signature: {green('✓ valid (matches RS_JWT_SECRET)')}")
                         else:
-                            print(f"      Signature: {red('✗ MISMATCH — token was signed with a different secret!')}")
-                            print(f"                 {red('The API will reject this token with 401.')}")
+                            msg1 = "✗ MISMATCH — token was signed with a different secret!"
+                            msg2 = "The API will reject this token with 401."
+                            print(f"      Signature: {red(msg1)}")
+                            print(f"                 {red(msg2)}")
                             all_ok = False
 
     print()
