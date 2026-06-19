@@ -52,12 +52,20 @@ are pushed at both `field` and `sub_plot` scope.
 
 ### 3. Index → metric mapping
 
-`ndvi_*`←NDVI, `evi_mean`←EVI2, **`ndwi_mean`←NDMI** (our B08/B11 moisture index; named `ndwi` on
-their side), `cloud_cover_pct`←`(1 - clear_fraction) * 100`. `health_score` and `classification`
+`ndvi_*`←NDVI, `evi_mean`←EVI2, `savi_mean`←SAVI, `ndre_mean`←NDRE, **`ndwi_mean`←NDMI** (our
+B08/B11 moisture index; named `ndwi` on their side), `cloud_cover_pct`←`(1 - clear_fraction) * 100`. `health_score` and `classification`
 (healthy|moderate|stressed|critical) derive from the `rs_interpret` index bands. The `interpretation`
 block carries `stress_level` (from the NDVI vigour band), `notes` (the agronomist's reviewed
 narrative), and `anomalies` (reserved for `rs_core/alerts.py`). All of this AgriTrack-specific
 shaping lives in the outbound adapter, not in the engine.
+
+> Amended 2026-06-19: `savi_mean`←SAVI and `ndre_mean`←NDRE were added to the metrics block. Both
+> indices were already computed, stored, and shown in the workspace, but they were silently dropped
+> at the outbound adapter because the wire schema had no field for them, so only NDVI/EVI2/NDMI
+> reached AgriTrack. AgriTrack confirmed the receiving fields. The change is additive (new optional
+> fields; no existing key renamed or removed), so the frozen-contract diff gate stays green and
+> re-pushes stay idempotent. Mean only, matching EVI2/NDMI; NDVI keeps its min/max as the
+> classification driver.
 
 ### 3a. The published narrative is gated on review (risk #6 extended to the wire)
 

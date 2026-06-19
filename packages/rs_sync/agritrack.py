@@ -32,12 +32,16 @@ _STRESS = {"healthy": "none", "moderate": "low", "stressed": "moderate", "critic
 
 
 class SatelliteMetrics(BaseModel):
-    """The flattened per-record metrics AgriTrack expects (ADR 0006)."""
+    """The flattened per-record metrics AgriTrack expects (ADR 0006). `savi_mean`/`ndre_mean` were
+    added 2026-06-19 (ADR 0006 §3 amendment): both indices were already computed and stored, but
+    had no wire field here, so they were dropped at this adapter and never reached AgriTrack."""
 
     ndvi_mean: float | None = None
     ndvi_min: float | None = None
     ndvi_max: float | None = None
     evi_mean: float | None = None
+    savi_mean: float | None = None
+    ndre_mean: float | None = None
     ndwi_mean: float | None = None
     cloud_cover_pct: float | None = None
     health_score: float | None = None
@@ -115,12 +119,16 @@ def _build_metrics(rows: list[IndexResult]) -> SatelliteMetrics:
     by_index = {r.index_name.lower(): r for r in rows}
     ndvi = by_index.get("ndvi")
     evi2 = by_index.get("evi2")
+    savi = by_index.get("savi")
+    ndre = by_index.get("ndre")
     ndmi = by_index.get("ndmi")
     metrics = SatelliteMetrics(
         ndvi_mean=ndvi.mean if ndvi else None,
         ndvi_min=ndvi.min if ndvi else None,
         ndvi_max=ndvi.max if ndvi else None,
         evi_mean=evi2.mean if evi2 else None,
+        savi_mean=savi.mean if savi else None,
+        ndre_mean=ndre.mean if ndre else None,
         ndwi_mean=ndmi.mean if ndmi else None,
         cloud_cover_pct=round((1.0 - rows[0].clear_fraction) * 100.0, 1),
     )

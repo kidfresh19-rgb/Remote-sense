@@ -60,6 +60,8 @@ def test_to_satellite_results_aggregates_field_and_subplot():
     results = [
         _ir("4", "ndvi", 0.62, mn=0.30, mx=0.80, clear=0.95),
         _ir("4", "evi2", 0.55),
+        _ir("4", "savi", 0.58),
+        _ir("4", "ndre", 0.33),
         _ir("4", "ndmi", 0.40),
         _ir("4.1", "ndvi", 0.25),
     ]
@@ -77,6 +79,8 @@ def test_to_satellite_results_aggregates_field_and_subplot():
     assert field.metrics.ndvi_max == 0.80
     assert field.metrics.evi_mean == 0.55
     assert field.metrics.ndwi_mean == 0.40  # NDMI -> ndwi_mean (ADR 0006)
+    assert field.metrics.savi_mean == 0.58  # SAVI -> savi_mean (ADR 0006 §3, amended 2026-06-19)
+    assert field.metrics.ndre_mean == 0.33  # NDRE -> ndre_mean (ADR 0006 §3, amended 2026-06-19)
     assert field.metrics.cloud_cover_pct == 5.0  # (1 - 0.95) * 100
     assert field.metrics.classification == "healthy"  # ndvi 0.62 -> vigorous
     assert field.metrics.health_score == 0.62
@@ -97,6 +101,28 @@ def test_to_satellite_results_aggregates_field_and_subplot():
     assert subplot.subPlotId == 1
     assert subplot.extId == "2:sub:1:2026-05-28"
     assert subplot.metrics.classification == "stressed"  # ndvi 0.25 -> sparse
+
+
+def test_savi_and_ndre_cross_the_wire():
+    """SAVI and NDRE now map onto the metrics block (ADR 0006 §3, amended 2026-06-19). They were
+    previously dropped at this adapter because the schema had no field for them. Shared
+    `_build_metrics` means both flat field records and grouped sub-plots carry them."""
+    results = [
+        _ir("4", "savi", 0.58),
+        _ir("4", "ndre", 0.33),
+        _ir("4.1", "savi", 0.20),
+    ]
+    recs = to_satellite_results(build_payload("2", results))
+
+    field = next(r for r in recs if r.scope == "field")
+    assert field.metrics is not None
+    assert field.metrics.savi_mean == 0.58
+    assert field.metrics.ndre_mean == 0.33
+
+    sub = next(r for r in recs if r.scope == "sub_plot")
+    assert sub.subPlots is not None
+    assert sub.subPlots[0].metrics.savi_mean == 0.20
+    assert sub.subPlots[0].metrics.ndre_mean is None  # an absent index stays None
 
 
 @pytest.mark.parametrize(
@@ -138,7 +164,15 @@ async def test_push_posts_one_record_per_field_date_with_api_key():
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     port = AgriTrackGatewayPort("https://agri.example/", "atk_key", client=client)
-    payload = build_payload("2", [_ir("4", "ndvi", 0.62), _ir("4", "ndmi", 0.40)])
+    payload = build_payload(
+        "2",
+        [
+            _ir("4", "ndvi", 0.62),
+            _ir("4", "savi", 0.58),
+            _ir("4", "ndre", 0.33),
+            _ir("4", "ndmi", 0.40),
+        ],
+    )
     result = await port.push(payload)
     await client.aclose()
 
@@ -153,6 +187,8 @@ async def test_push_posts_one_record_per_field_date_with_api_key():
     assert body["scope"] == "field"
     assert body["metrics"]["ndvi_mean"] == 0.62
     assert body["metrics"]["ndwi_mean"] == 0.40
+    assert body["metrics"]["savi_mean"] == 0.58  # reaches the wire after exclude_none
+    assert body["metrics"]["ndre_mean"] == 0.33
     assert "subPlots" not in body
 
 

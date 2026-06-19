@@ -1360,7 +1360,7 @@
         "type": "object"
       },
       "SatelliteMetrics": {
-        "description": "The flattened per-record metrics AgriTrack expects (ADR 0006).",
+        "description": "The flattened per-record metrics AgriTrack expects (ADR 0006). `savi_mean`/`ndre_mean` were\nadded 2026-06-19 (ADR 0006 §3 amendment): both indices were already computed and stored, but\nhad no wire field here, so they were dropped at this adapter and never reached AgriTrack.",
         "properties": {
           "classification": {
             "anyOf": [
@@ -1406,6 +1406,17 @@
             ],
             "title": "Health Score"
           },
+          "ndre_mean": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ndre Mean"
+          },
           "ndvi_max": {
             "anyOf": [
               {
@@ -1449,6 +1460,17 @@
               }
             ],
             "title": "Ndwi Mean"
+          },
+          "savi_mean": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Savi Mean"
           }
         },
         "title": "SatelliteMetrics",
