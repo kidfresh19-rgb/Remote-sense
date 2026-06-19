@@ -326,15 +326,14 @@ async def push_aoi_results_endpoint(
         is_interpolated = p.get("status") == "interpolated"
 
         if is_interpolated:
-            # Interpolated passes are averaged from two source scenes.  Use the earlier
-            # source date as the canonical pass_date so the gateway record is anchored to a
-            # real observation window.
+            # Interpolated passes are averaged from two source scenes. Use the custom requested date
+            # as the canonical pass_date so the gateway record is saved under the custom date given.
             before: dict[str, Any] = p.get("before") or {}
             after: dict[str, Any] = p.get("after") or {}
             pass_date_str = (
-                p.get("before_pass_date")
+                p.get("requested_date")
+                or p.get("before_pass_date")
                 or before.get("pass_date")
-                or p.get("requested_date")
                 or p.get("pass_date")
             )
             before_sid = before.get("provider_scene_id") or before.get("scene_id", "")
