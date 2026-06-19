@@ -36,7 +36,10 @@ const MOIST = [
 ];
 
 // Display ranges + ramps are kept in lockstep with rs_analysis/colormaps.py so the legend matches
-// the rendered tiles. ⚑ CONFIRM: v1 proposed 2026-06-03, pending agronomist sign-off.
+// the rendered tiles. Provenance (v1): literature-derived (proposed 2026-06-03), provisional
+// engineering approval only (owner/engineer, 2026-06-19) - NOT an agronomist sign-off. Agronomist
+// review is still outstanding (tracked in
+// docs/backlog/0015-agronomy-thresholds-v1-agronomist-signoff.md). Not agronomist-confirmed.
 export const INDICES: IndexMeta[] = [
   {
     key: "ndvi",

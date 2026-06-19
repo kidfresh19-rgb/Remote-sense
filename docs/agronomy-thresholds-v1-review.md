@@ -1,9 +1,12 @@
 # Agronomy thresholds v1 — review and sign-off (PLAN §10 step 4)
 
-> Status: **draft, pending agronomist sign-off.** Prepared 2026-06-04 by consolidating the v1
-> defaults proposed 2026-06-03. These are the numbers the interpretation layer is grounded in; the
-> Claude model classifies nothing itself, it only explains the bands defined here (risk #6), and no
-> interpretation is ever auto-published. This document is for an agronomist to approve or adjust.
+> Status: **§4 SCL + §5 confidence ratified 2026-06-18 (commit 2f63404); §1/§2/§3 carry provisional
+> engineering approval 2026-06-19; agronomist sign-off still outstanding (tracked in
+> docs/backlog/0015-agronomy-thresholds-v1-agronomist-signoff.md).** Prepared 2026-06-04 by
+> consolidating the v1 defaults proposed 2026-06-03. These are the numbers the interpretation layer
+> is grounded in; the Claude model classifies nothing itself, it only explains the bands defined
+> here (risk #6), and no interpretation is ever auto-published. This document is for an agronomist to
+> approve or adjust.
 
 ## Why this needs a human
 
@@ -82,6 +85,10 @@ enter the stats. Below 0.5 the interpretation prompt is told to flag the pass as
 
 ## Open questions for the agronomist (the decisions to make)
 
+> Update 2026-06-18/19: Q1 and Q6 are resolved - ratified 2026-06-18 (commit 2f63404). Q2-Q5 (the
+> thresholds.py questions) and the §3 display ranges remain open and are tracked in
+> docs/backlog/0015-agronomy-thresholds-v1-agronomist-signoff.md.
+
 1. **WATER (SCL 6) in the clear set?** Kept in v1 so the clear fraction is a generic "usable land
    surface". For a crop-only vigour read a water pixel is not a crop observation. Exclude for crop
    AOIs (a crop-aware mask), or leave in the base set?
@@ -99,18 +106,31 @@ enter the stats. Below 0.5 the interpretation prompt is told to flag the pass as
 
 ## Sign-off
 
-On approval (or after edits), the reviewer should:
+This sign-off has two distinct fields. Provisional engineering approval unblocks the layer for v1;
+it does NOT satisfy the agronomist requirement, which stays open until a named agronomist reviews.
 
-- [ ] Confirm or amend each table in §1-§5.
-- [ ] Resolve the six open questions above.
-- [ ] Record reviewer name + date here and in the code.
-- [ ] Remove the `# ⚑ CONFIRM (agronomy review)` markers in `thresholds.py`, `colormaps.py`,
-      `scl.py`, and `engine.py`.
-- [ ] If any band edge changes, bump the affected `formula_version` / `prompt_version` so prior
-      stored reads keep their identity and are re-drafted under the new version (never silently
-      overwritten).
+**engineering_review:** Mishael Gwede, 2026-06-19, capacity owner/engineer. Provisional approval of
+the literature-derived v1 defaults (§1/§2 bands, §3 display ranges), verified unchanged from the
+2026-06-03 proposal, so no `formula_version` / `prompt_version` bump was needed. The `⚑ CONFIRM`
+markers in `thresholds.py`, `colormaps.py`, and `indices.ts` were replaced with provenance notes
+that state these are not agronomist-confirmed. NOT an agronomist sign-off. (§4 `scl.py` and §5
+`engine.py` markers were already cleared on 2026-06-18, commit 2f63404.)
 
-Reviewer: ______________________  Date: __________
+**agronomist_signoff:** PENDING — not yet performed. Open questions Q2-Q5 and the §3 display ranges
+are tracked in `docs/backlog/0015-agronomy-thresholds-v1-agronomist-signoff.md`.
+
+On an actual agronomist review, the reviewer should:
+
+- [ ] Confirm or amend §1/§2 bands and §3 display ranges; resolve Q2-Q5.
+- [ ] Record the agronomist name + date in the `agronomist_signoff` field above and in the code
+      provenance notes ("agronomist-confirmed <name>, <date>").
+- [ ] If any band edge changes, bump `prompt_version` so prior stored reads keep their identity and
+      are re-drafted under the new version (never silently overwritten). Display-range changes are
+      display-only and need no version bump.
+- [ ] Close backlog 0015.
+
+engineering_review: Mishael Gwede  Date: 2026-06-19  (provisional, owner/engineer)
+agronomist_signoff: ______________________  Date: __________
 
 ## Sources
 

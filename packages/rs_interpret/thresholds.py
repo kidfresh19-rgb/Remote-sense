@@ -2,14 +2,18 @@
 the grounding the interpretation layer is constrained to - the model classifies nothing itself, it
 only explains the bands computed here (risk #6).
 
-# ⚑ CONFIRM (agronomy review): v1 proposed 2026-06-03, pending agronomist sign-off. The base bands
-are generic Zimbabwean-cropland defaults; CROP_BANDS adds per-crop overrides for maize, tobacco,
-sorghum and cotton. Sources: per-index typical-range literature (maize peak NDVI ~0.75-0.85;
-NDRE 0.1-0.6 nitrogen/chlorophyll band; NDMI EOS water-stress table; SAVI L=0.5 range compression),
-crop canopy-architecture differences, and Zimbabwe agro-ecology (FAO natural regions, Nov-Apr
-rainfed season). Bands are season-agnostic thresholds read against a single pass; growth-stage
-context is carried in the notes and supplied to the model via the prompt, not encoded as separate
-stage tables (that is the next calibration step). Owned by the agronomy-scientist."""
+Provenance (v1): these bands are literature-derived (proposed 2026-06-03) and carry provisional
+engineering approval only - Mishael Gwede, owner/engineer, 2026-06-19. This is NOT an agronomist
+sign-off; agronomist review is still outstanding (open questions Q2-Q5 tracked in
+docs/backlog/0015-agronomy-thresholds-v1-agronomist-signoff.md). Do not read these defaults as
+agronomist-confirmed. The base bands are generic Zimbabwean-cropland defaults; CROP_BANDS adds
+per-crop overrides for maize, tobacco, sorghum and cotton. Sources: per-index typical-range
+literature (maize peak NDVI ~0.75-0.85; NDRE 0.1-0.6 nitrogen/chlorophyll band; NDMI EOS
+water-stress table; SAVI L=0.5 range compression), crop canopy-architecture differences, and
+Zimbabwe agro-ecology (FAO natural regions, Nov-Apr rainfed season). Bands are season-agnostic
+thresholds read against a single pass; growth-stage context is carried in the notes and supplied
+to the model via the prompt, not encoded as separate stage tables (that is the next calibration
+step). Owned by the agronomy-scientist."""
 
 from __future__ import annotations
 
@@ -63,7 +67,7 @@ _BASE_BANDS: dict[str, tuple[Band, ...]] = {
 # Each crop's vigour tuple is shared across NDVI/EVI2/SAVI (matching _BASE_BANDS). The numeric edges
 # are NDVI-calibrated; for EVI2 (saturation-damped) and especially SAVI (L=0.5 range compression)
 # they are approximate, so a SAVI value near a boundary should be read as indicative. Refining
-# separate SAVI/EVI2 edges per crop is the next calibration step. # ⚑ CONFIRM.
+# separate SAVI/EVI2 edges per crop is the next calibration step (Q3, tracked: backlog 0015).
 
 # Maize (C4 staple, NR I-III): closes a dense canopy fast and peaks high (NDVI ~0.8-0.85 at
 # tasseling/silking), so the canopy reaches "vigorous" sooner and a healthy crop sits in the top two

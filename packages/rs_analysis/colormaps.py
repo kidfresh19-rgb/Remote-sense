@@ -21,10 +21,13 @@ class ColorMap:
     vmax: float
 
 
-# ⚑ CONFIRM (agronomy review): v1 proposed 2026-06-03, pending agronomist sign-off. A display colour
-# stretch only, NOT the agronomic classification bands (those live in rs_interpret/thresholds.py).
-# Ranges are tuned to the values that actually occur over Zimbabwean cropland so the ramp spends its
-# contrast on the cropping window, not the mathematical extremes; the workspace legend
+# Provenance (v1): these display ranges are literature-derived (proposed 2026-06-03) and carry
+# provisional engineering approval only - Mishael Gwede, owner/engineer, 2026-06-19. This is NOT an
+# agronomist sign-off; agronomist review is still outstanding (tracked in
+# docs/backlog/0015-agronomy-thresholds-v1-agronomist-signoff.md). A display colour stretch only,
+# NOT the agronomic classification bands (those live in rs_interpret/thresholds.py). Ranges are
+# tuned to the values that actually occur over Zimbabwean cropland so the ramp spends its contrast
+# on the cropping window, not the mathematical extremes; the workspace legend
 # (frontend/src/lib/indices.ts) mirrors these and must stay in sync. Colormap names follow the
 # matplotlib / rio-tiler convention the tiler uses. Sources: per-index typical-range literature
 # (EOS/Sentinel-Hub crop guidance; SAVI L=0.5 range compression; NDRE 0.1-0.6 crop band) reconciled
