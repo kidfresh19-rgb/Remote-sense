@@ -40,5 +40,7 @@ Three open items to resolve before merge, each embedded in its gating slice file
   0 to 10 / 10 to 50 / 50+ ha must not ship as-is). Gates the peer-cohort slice.
 - [ ] **Neighbourhood params**: confirm default K (about 20) or radius (about 10 km), both
   configurable. Gates the neighbourhood slice.
-- [ ] **RBAC perms**: confirm role mappings for `upload_region_boundary`, `create_cohort` /
-  `manage_cohort`, `view_group`. Gates the group-view, upload, and cohort slices.
+- [x] **RBAC perms** (resolved 2026-06-19): role mappings confirmed and implemented in
+  `packages/rs_core/rbac.py` - `upload_region_boundary` admin-only; `create_region_cluster`,
+  `create_cohort`, `manage_cohort` analyst; `view_group` at viewer level. Engineering sign-off
+  (owner/engineer); no agronomy dependency.

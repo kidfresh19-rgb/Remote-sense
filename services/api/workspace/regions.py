@@ -4,7 +4,7 @@ geometry, served by the internal BFF and never pushed to the gateway (invariant 
 draw endpoint accepts a GeoJSON polygon (the frontend compiles a radius circle to a polygon first);
 the upload endpoint reads the raw file body via geopandas (no multipart dependency added). RBAC:
 drawing / single-feature is analyst-level (create_region_cluster), bulk upload is admin-level
-(upload_region_boundary) - ⚑ CONFIRM (Open Item 3)."""
+(upload_region_boundary) - PRD 0002 Open Item 3, RBAC mappings confirmed 2026-06-19."""
 
 from __future__ import annotations
 

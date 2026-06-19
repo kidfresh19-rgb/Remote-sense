@@ -40,8 +40,10 @@ here before the slice starts.
 
 ## Resolve before merge
 
-- **Open Item 3 (RBAC).** Confirm the `view_group` role mapping before merge (proposed: any
-  authenticated user with farm access). Separate gate from the design checkpoint; both apply.
+- **Open Item 3 (RBAC) - RESOLVED 2026-06-19.** `view_group` granted at viewer level (any
+  authenticated farm-access role), confirmed and implemented in `packages/rs_core/rbac.py`
+  (engineering sign-off, owner/engineer; no agronomy dependency). The design checkpoint below is a
+  separate gate and still applies.
 
 ## Tests (seams)
 

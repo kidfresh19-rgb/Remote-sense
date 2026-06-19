@@ -354,12 +354,16 @@ These are explicitly tracked so they do not dissolve between phases. Each become
 2. **Neighbourhood parameters (gates Slice 7, neighbourhood).** Default K is about 20 farms, or about
    a 10 km radius within the Natural Region. Both must be runtime-configurable, not hard-coded. The
    PRD specifies them as config with these defaults; the final choice is confirmed before merge.
-3. **RBAC extensions (gates Slices 3, 5, 6).** New permissions extend the existing view/annotate model
-   in `rs_core` RBAC, with proposed role mappings confirmed before merge:
-   - `upload_region_boundary` (proposed: admin only) for bulk multi-feature uploads.
-   - `create_region_cluster` (proposed: analyst) for analyst-drawn and single-feature regions.
-   - `create_cohort` / `manage_cohort` (proposed: analyst).
-   - `view_group` (proposed: any authenticated user with farm access).
+3. **RBAC extensions (gates Slices 3, 5, 6). RESOLVED 2026-06-19.** New permissions extend the
+   existing view/annotate model in `rs_core` RBAC. Mappings confirmed as proposed and implemented in
+   `packages/rs_core/rbac.py`:
+   - `upload_region_boundary` (admin only) for bulk multi-feature uploads.
+   - `create_region_cluster` (analyst) for analyst-drawn and single-feature regions.
+   - `create_cohort` / `manage_cohort` (analyst).
+   - `view_group` (any authenticated user with farm access; granted at viewer level).
+   - engineering_review: Mishael Gwede, 2026-06-19 (owner/engineer). An access-control decision
+     owned outright on engineering authority.
+   - agronomist_signoff: n/a (no agronomy dependency; the field is kept distinct and unset).
 
 4. **Dominant-Natural-Region split threshold (gates the cross-zone handling in D5 / D2).** A region
    boundary may span Natural Regions; the analysis layer benchmarks within the dominant Natural Region

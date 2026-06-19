@@ -4,7 +4,8 @@
   upload `POST /regions/upload` (raw body, no multipart dependency added) in the workspace BFF;
   source-tagged seeded|uploaded|drawn boundaries with area-weighted NR composition + dominant_nr;
   RBAC create_region_cluster (analyst) / upload_region_boundary (admin). Green ruff/mypy/pytest.
-  **Before merge:** confirm Open Item 3 (RBAC mappings) + Open Item 4 (dominant-NR 0.85 threshold).
+  **Before merge:** Open Item 3 (RBAC mappings) confirmed 2026-06-19; Open Item 4 (dominant-NR 0.85
+  threshold) still open.
 - Type: AFK
 - Parent: PRD 0002 (`docs/prd/0002-farm-comparison-groups.md`), slice 5
 - Blocked by: 0002
@@ -62,8 +63,9 @@ Creating a drawn or single-feature region is gated by a new `create_region_clust
 
 ## Resolve before merge
 
-- **Open Item 3 (RBAC).** Confirm the `upload_region_boundary` (proposed: admin) and the new
-  `create_region_cluster` (proposed: analyst) role mappings before merge.
+- **Open Item 3 (RBAC) - RESOLVED 2026-06-19.** `upload_region_boundary` mapped admin-only and
+  `create_region_cluster` mapped to analyst, confirmed and implemented in `packages/rs_core/rbac.py`
+  (engineering sign-off, owner/engineer; no agronomy dependency).
 - **Open Item 4 (dominant-NR split threshold).** Confirm the default share (proposed: `dominant_nr
   >= 0.85` treats a boundary as effectively single-Natural-Region) before merge; agronomy-scientist
   review.

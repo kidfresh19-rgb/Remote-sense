@@ -19,8 +19,9 @@ ViewPrincipal = Annotated[Principal, Depends(require(Permission.VIEW))]
 AnnotatePrincipal = Annotated[Principal, Depends(require(Permission.ANNOTATE))]
 PublishPrincipal = Annotated[Principal, Depends(require(Permission.PUBLISH))]
 RunAnalysisPrincipal = Annotated[Principal, Depends(require(Permission.RUN_ANALYSIS))]
-# Comparison groups (PRD 0002 Open Item 3 - ⚑ CONFIRM): draw / single-feature is analyst-level,
-# bulk multi-feature upload is admin-level.
+# Comparison groups (PRD 0002 Open Item 3, RBAC mappings confirmed 2026-06-19): draw /
+# single-feature is analyst-level, bulk multi-feature upload is admin-level. The view_group,
+# create_cohort and manage_cohort principals are added when their slices (3, 6) wire endpoints.
 CreateRegionClusterPrincipal = Annotated[
     Principal, Depends(require(Permission.CREATE_REGION_CLUSTER))
 ]

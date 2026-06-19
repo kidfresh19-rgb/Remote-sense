@@ -17,9 +17,14 @@ class Permission(StrEnum):
     ANNOTATE = "annotate"  # add/edit annotations + saved AOIs
     RUN_ANALYSIS = "run_analysis"  # trigger collection / analysis
     PUBLISH = "publish"  # push results to the gateway / publish interpretations
-    # Comparison groups (PRD 0002 Open Item 3 - ⚑ CONFIRM the role mappings below before merge).
+    # Comparison groups (PRD 0002 Open Item 3). Role mappings confirmed 2026-06-19 (engineering
+    # sign-off, Mishael Gwede, owner/engineer) - an access-control decision with no agronomy
+    # dependency; agronomist sign-off not applicable. See PRD 0002 Open Item 3.
+    VIEW_GROUP = "view_group"  # read a comparison group / group-context (any farm-access role)
     CREATE_REGION_CLUSTER = "create_region_cluster"  # analyst: draw / single-feature region
     UPLOAD_REGION_BOUNDARY = "upload_region_boundary"  # admin: bulk multi-feature boundary upload
+    CREATE_COHORT = "create_cohort"  # analyst: define a peer cohort
+    MANAGE_COHORT = "manage_cohort"  # analyst: edit / delete a peer cohort
 
 
 class Role(StrEnum):
@@ -29,27 +34,35 @@ class Role(StrEnum):
     ADMIN = "admin"
 
 
-# Role -> permissions, cumulative by responsibility; admin holds everything.
-# ⚑ CONFIRM (PRD 0002 Open Item 3): create_region_cluster -> analyst (draw / single-feature);
-# upload_region_boundary -> admin only (bulk uploads), granted solely by the all-permissions
-# ADMIN role below. Confirm these mappings before merge.
+# Role -> permissions, cumulative by responsibility; admin holds everything. Comparison-group
+# permissions (PRD 0002 Open Item 3) confirmed as proposed: view_group at viewer level (any
+# authenticated farm-access role); create_region_cluster, create_cohort and manage_cohort at
+# analyst level; upload_region_boundary admin-only (granted solely via the all-permissions ADMIN
+# role). engineering_review: Mishael Gwede, 2026-06-19 (owner/engineer). agronomist_signoff: n/a
+# (access-control decision, no agronomy dependency).
 ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
-    Role.VIEWER: frozenset({Permission.VIEW}),
+    Role.VIEWER: frozenset({Permission.VIEW, Permission.VIEW_GROUP}),
     Role.ANALYST: frozenset(
         {
             Permission.VIEW,
+            Permission.VIEW_GROUP,
             Permission.ANNOTATE,
             Permission.RUN_ANALYSIS,
             Permission.CREATE_REGION_CLUSTER,
+            Permission.CREATE_COHORT,
+            Permission.MANAGE_COHORT,
         }
     ),
     Role.PUBLISHER: frozenset(
         {
             Permission.VIEW,
+            Permission.VIEW_GROUP,
             Permission.ANNOTATE,
             Permission.RUN_ANALYSIS,
             Permission.PUBLISH,
             Permission.CREATE_REGION_CLUSTER,
+            Permission.CREATE_COHORT,
+            Permission.MANAGE_COHORT,
         }
     ),
     Role.ADMIN: frozenset(Permission),

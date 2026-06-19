@@ -39,8 +39,9 @@ engine; movement-aware filtering can come post-merge. The cohort lifecycle is ga
   thresholds before launch. The placeholder `0 to 10 / 10 to 50 / 50+ ha` does NOT fit Zimbabwe
   typology (communal smallholdings often under 2 to 3 ha; A1 about 5 to 6 ha arable; A2 commercial 20
   to 2000+ ha) and must not ship as-is. Carry the placeholder, flag for review, resolve before merge.
-- **Open Item 3 (RBAC).** Confirm the `create_cohort` / `manage_cohort` role mapping before merge
-  (proposed: analyst).
+- **Open Item 3 (RBAC) - RESOLVED 2026-06-19.** `create_cohort` / `manage_cohort` mapped to analyst,
+  confirmed and implemented in `packages/rs_core/rbac.py` (engineering sign-off, owner/engineer; no
+  agronomy dependency). Endpoint principals are wired when this slice builds the cohort endpoints.
 
 ## Tests (seams)
 
