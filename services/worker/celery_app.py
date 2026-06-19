@@ -6,6 +6,7 @@ from __future__ import annotations
 from celery import Celery
 from celery.schedules import crontab
 from celery.signals import worker_process_init
+from kombu import Queue
 from rs_core import (
     configure_logging,
     configure_telemetry,
@@ -32,6 +33,29 @@ celery.conf.update(
     # --autoscale flag (docker-compose), sized per host via RS_WORKER_AUTOSCALE.
     worker_prefetch_multiplier=1,
 )
+
+# Interactive/batch queue isolation. A user-facing analysis (AOI Studio previews, the ad-hoc AOI
+# button, a "collect these dates" request) must never queue behind the bulk backfill. The two share
+# nothing now: interactive work routes to a dedicated `interactive` queue served by its own worker
+# (docker-compose `worker-interactive`), while the forward-fill / backfill sweep keeps the default
+# `celery` queue. Broker priority cannot substitute for this: kombu's Redis transport BRPOPs the
+# base queue first, so a task already deep in `celery` outranks any later message regardless of
+# priority - a separate queue is the only backlog-independent lane. The default-queue name is kept
+# as `celery` so the existing in-flight backlog and every unrouted task are undisturbed.
+celery.conf.task_default_queue = "celery"
+celery.conf.task_queues = (
+    Queue("celery"),
+    Queue("interactive"),
+)
+celery.conf.task_routes = {
+    # Every ad-hoc AOI analysis (analysis.analyse_aoi*, analysis.analyse_farm_series*) is a
+    # latency-sensitive preview, never persisted - all of them belong on the reserved lane.
+    "analysis.*": {"queue": "interactive"},
+    # The targeted "collect specific dates" planner is user-initiated; it (and the per-scene
+    # collect_pass it fans out, enqueued with queue="interactive" in tasks/collection.py) runs on
+    # the interactive lane so a user's request is not stuck behind the daily sweep.
+    "collection.collect_dates_field": {"queue": "interactive"},
+}
 
 # Forward-fill runs on Sentinel-2 cadence (~5 days); the scheduler checks daily and enqueues only
 # the fields actually due, plus any flagged for backfill (services.worker.tasks.scan_and_enqueue).

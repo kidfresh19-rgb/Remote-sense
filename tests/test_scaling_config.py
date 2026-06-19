@@ -60,6 +60,44 @@ def test_worker_reserves_one_task_per_process() -> None:
     assert celery.conf.task_acks_late is True
 
 
+# -- Interactive/batch queue isolation: user-facing analyses must not queue behind the bulk
+# backfill on a shared FIFO queue. They route to a dedicated `interactive` queue served by its own
+# worker, so a deep `celery` backlog can never starve a latency-sensitive request. -------------
+
+
+def _route_queue(task_name: str) -> str:
+    from services.worker.celery_app import celery
+
+    queue = celery.amqp.router.route({}, task_name)["queue"]
+    return queue.name if hasattr(queue, "name") else str(queue)
+
+
+def test_interactive_analyses_route_to_the_interactive_queue() -> None:
+    # AOI Studio previews, the ad-hoc AOI button, and user-requested date collection are all
+    # latency-sensitive and must land on the reserved lane.
+    for task in (
+        "analysis.analyse_aoi",
+        "analysis.analyse_aoi_series",
+        "analysis.analyse_aoi_series_multi",
+        "analysis.analyse_farm_series",
+        "analysis.analyse_farm_series_multi",
+        "collection.collect_dates_field",
+    ):
+        assert _route_queue(task) == "interactive", task
+
+
+def test_bulk_backfill_stays_on_the_default_queue() -> None:
+    # The forward-fill / backfill sweep is throughput work; it keeps the default `celery` queue so
+    # it can never share a lane with interactive requests.
+    for task in (
+        "collection.collect_pass",
+        "collection.backfill_field",
+        "collection.forward_fill_field",
+        "collection.scan_and_enqueue",
+    ):
+        assert _route_queue(task) == "celery", task
+
+
 # -- AOI Studio pass-level concurrency (ADR 0011): min(2 * rps, 16), default when off ----------
 
 

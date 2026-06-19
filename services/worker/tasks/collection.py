@@ -502,7 +502,10 @@ async def _plan_collect_dates(field_id: str, dates: list[str]) -> dict[str, obje
 
     resolved, skipped, to_enqueue = _snap_dates(requested, scenes, already)
     for scene_id, pass_date in to_enqueue.items():
-        collect_pass_task.delay(field_id, scene_id, pass_date)
+        # User-initiated collection: run on the interactive lane (queue isolation, celery_app.py)
+        # so a requested date is collected promptly instead of queuing behind the bulk backfill,
+        # whose collect_pass fan-out (_fan_out_backfill) stays on the default queue.
+        collect_pass_task.apply_async(args=[field_id, scene_id, pass_date], queue="interactive")
     return {
         "field_id": field_id,
         "requested": len(requested),

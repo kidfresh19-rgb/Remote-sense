@@ -128,7 +128,28 @@ services:
     # per host via RS_WORKER_AUTOSCALE in .env). Horizontal scale-out is
     # `docker compose up -d --scale worker=N`: enqueue-time dedup/locking (R-1) keeps concurrent
     # workers from double-processing a scene, and migrations stay in the one-shot migrate service.
-    command: celery -A services.worker.celery_app.celery worker -l info --autoscale=${RS_WORKER_AUTOSCALE:-4,1}
+    # Consumes the bulk `celery` queue and, as a fallback, `interactive` - so a user-facing analysis
+    # is never orphaned if worker-interactive is down (it will still wait behind the backfill there,
+    # which is why the dedicated lane below exists).
+    command: celery -A services.worker.celery_app.celery worker -l info -Q celery,interactive --autoscale=${RS_WORKER_AUTOSCALE:-4,1}
+    env_file: .env
+    depends_on:
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  # Dedicated interactive lane (queue isolation, services/worker/celery_app.py task_routes). Serves
+  # ONLY the `interactive` queue - AOI Studio previews, the ad-hoc AOI button, and user-requested
+  # date collection - so a deep backfill backlog on the default queue can never starve a
+  # latency-sensitive request. Small pool: these are responsiveness jobs, not throughput. Same
+  # image/extras as `worker` (rasterio + boto3 for the CDSE windowed reads and COG emit).
+  worker-interactive:
+    build:
+      context: .
+      args:
+        INSTALL_EXTRAS: "[geo,storage]"
+    command: celery -A services.worker.celery_app.celery worker -l info -Q interactive --concurrency=${RS_INTERACTIVE_CONCURRENCY:-2}
     env_file: .env
     depends_on:
       redis:
