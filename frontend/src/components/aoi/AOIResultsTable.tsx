@@ -1,4 +1,4 @@
-import { DownloadSimple, Spinner, ChartLine, Table as TableIcon, ArrowUp, ArrowDown, ArrowsOut, ArrowsIn, X } from "@phosphor-icons/react";
+import { DownloadSimple, Spinner, ChartLine, Table as TableIcon, ArrowUp, ArrowDown, ArrowsOut, ArrowsIn, X, ChartPieSlice } from "@phosphor-icons/react";
 import { useMemo, useState, useCallback, useEffect } from "react";
 import { createPortal } from "react-dom";
 import { motion, AnimatePresence } from "motion/react";
@@ -21,6 +21,7 @@ import { colorForValue, gradientCss, indexMeta, INDICES, type IndexKey } from "@
 
 import { EmptyState } from "../states";
 import { Badge } from "../ui";
+import { FieldOverview } from "./FieldOverview";
 
 export type SelectedIndex = IndexKey | "all";
 
@@ -45,6 +46,17 @@ export function AOIResultsTable({
   const hasAnyJob = Object.values(jobs).some((j) => !!j);
   const [viewMode, setViewMode] = useState<ViewMode>("chart");
   const [expanded, setExpanded] = useState(false);
+  const [overviewActive, setOverviewActive] = useState(false);
+
+  // Auto-enter overview when "all" is selected and at least one job has data.
+  useEffect(() => {
+    if (selectedIndex === "all" && hasAnyJob) {
+      setOverviewActive(true);
+    }
+    if (selectedIndex !== "all") {
+      setOverviewActive(false);
+    }
+  }, [selectedIndex, hasAnyJob]);
 
   // Close on Escape
   useEffect(() => {
@@ -238,9 +250,25 @@ export function AOIResultsTable({
     <div className="flex flex-col h-full">
       {selectedIndex === "all" ? (
         <div className="flex border-b border-border bg-panel-2 px-3 py-1.5 gap-1.5 overflow-x-auto shrink-0">
+          {/* Overview tab — first position */}
+          <button
+            onClick={() => setOverviewActive(true)}
+            className={cn(
+              "flex items-center gap-1.5 rounded-md px-3 py-1 text-xs font-medium transition-colors border",
+              overviewActive
+                ? "border-accent bg-accent/15 text-accent"
+                : "border-border bg-panel text-muted hover:text-fg"
+            )}
+          >
+            <ChartPieSlice size={12} weight={overviewActive ? "fill" : "regular"} />
+            Overview
+          </button>
+
+          <span className="self-stretch w-px bg-border/60 mx-0.5 shrink-0" />
+
           {INDICES.map((idxMeta) => {
             const job = jobs[idxMeta.key];
-            const active = idxMeta.key === viewIndex;
+            const active = !overviewActive && idxMeta.key === viewIndex;
             let statusIcon = null;
 
             if (job?.state === "queued" || job?.state === "running") {
@@ -254,7 +282,10 @@ export function AOIResultsTable({
             return (
               <button
                 key={idxMeta.key}
-                onClick={() => onViewIndexChange(idxMeta.key)}
+                onClick={() => {
+                  onViewIndexChange(idxMeta.key);
+                  setOverviewActive(false);
+                }}
                 className={cn(
                   "flex items-center gap-1.5 rounded-md px-3 py-1 text-xs font-medium transition-colors border",
                   active
@@ -271,7 +302,11 @@ export function AOIResultsTable({
       ) : null}
 
       <div className="flex-1 min-h-0 overflow-y-auto">
-        {renderJobContent()}
+        {overviewActive ? (
+          <FieldOverview jobs={jobs} />
+        ) : (
+          renderJobContent()
+        )}
       </div>
     </div>
   );
@@ -379,7 +414,6 @@ function ChartView({ passes, index }: { passes: AOISeriesPass[]; index: IndexKey
           </span>
         </p>
         <HeatmapStrip points={points} index={index} />
-      </div>
       </div>
     </div>
   );

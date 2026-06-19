@@ -21,7 +21,10 @@
     "noUncheckedSideEffectImports": true,
 
     "baseUrl": ".",
-    "paths": { "@/*": ["src/*"] }
+    "paths": {
+      "@/*": ["src/*"],
+      "recharts": ["node_modules/recharts/types/index.d.ts"]
+    }
   },
   "include": ["src"],
   "references": [{ "path": "./tsconfig.node.json" }]
