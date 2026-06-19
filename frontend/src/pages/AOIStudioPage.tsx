@@ -540,7 +540,7 @@ function Studio() {
           okPassCount={okPassCount}
           pushableIndexJobs={pushableIndexJobs}
           totalOkPasses={totalOkPasses}
-          selectedFarmId={selectedFarmId}
+          selectedFarmId={farmTarget ? farmTarget.canonicalFarmId : selectedFarmId}
           onSelectedFarmIdChange={(id) => {
             setSelectedFarmId(id);
             push.reset();
@@ -550,7 +550,11 @@ function Studio() {
           push={push}
           pushAll={pushAll}
           viewedJobId={jobId}
-          onClose={() => setShowSend(false)}
+          onClose={() => {
+            setShowSend(false);
+            push.reset();
+            pushAll.reset();
+          }}
         />
       ) : null}
     </main>

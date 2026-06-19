@@ -123,130 +123,150 @@ export function GatewaySendModal({
         </div>
 
         {/* Body */}
-        <div className="flex flex-col gap-3 px-4 py-4">
-          {/* Whole-farm mode */}
-          {farmPush ? (
-            <div className="flex flex-col gap-2">
-              <p className="text-xs text-muted">
-                Push all resolved farm passes to the gateway. The farm is already known from the
-                analysis target.
+        <div className="flex flex-col gap-4 px-4 py-4 overflow-y-auto max-h-[70vh]">
+          {/* Farm Push / Stored DB History Section */}
+          {farmPush && (
+            <div className="flex flex-col gap-2 rounded-lg border border-border bg-bg/40 p-3">
+              <span className="text-[11px] font-bold uppercase tracking-wider text-muted">Publish Farm History</span>
+              <p className="text-[11px] text-muted leading-relaxed">
+                Push all stored, reviewed farm passes and narratives in the database to the gateway.
               </p>
-              <FarmPushButton push={farmPush} className="w-full gap-1.5" />
+              <FarmPushButton push={farmPush} className="w-full gap-1.5 mt-1" />
               {farmPush.error && (
                 <p className="line-clamp-3 text-xs text-critical" title={farmPush.error}>
                   {farmPush.error}
                 </p>
               )}
             </div>
-          ) : nothingPushable ? (
-            /* Nothing sendable yet */
-            <p className="text-xs text-muted">
-              No passes are ready to send yet. Run an analysis and wait for at least one
-              index to finish.
-            </p>
-          ) : (
-            /* Custom-AOI mode */
-            <>
+          )}
+
+          {/* Job-based Custom Date Analysis Push Section */}
+          <div className={"flex flex-col gap-2 " + (farmPush ? "rounded-lg border border-border bg-bg/40 p-3" : "")}>
+            {farmPush ? (
+              <span className="text-[11px] font-bold uppercase tracking-wider text-muted">Push Farm-Level Average</span>
+            ) : (
+              <span className="text-[11px] font-bold uppercase tracking-wider text-muted">Push Custom Date Run</span>
+            )}
+            
+            {nothingPushable ? (
               <p className="text-xs text-muted">
-                Attach these preview results to a farm on the gateway. Both exact and averaged
-                (AVG) passes are sent.
+                No custom date passes are ready to send yet. Run an analysis first and wait for at least one index to finish.
               </p>
+            ) : (
+              <>
+                <p className="text-xs text-muted leading-relaxed">
+                  {farmPush 
+                    ? "Attach the current custom date run averages to the target farm. Note: This updates the farm-level average metrics, not individual fields."
+                    : "Attach the current active custom date run results to the target farm on the gateway. Both exact and averaged (AVG) passes are sent."}
+                </p>
 
-              <select
-                value={selectedFarmId}
-                onChange={(e) => {
-                  onSelectedFarmIdChange(e.target.value);
-                  push.reset();
-                  pushAll.reset();
-                }}
-                className="w-full rounded-md border border-border bg-bg px-2.5 py-1.5 text-xs text-fg focus:outline-none focus:ring-2 focus:ring-accent"
-                aria-label="Farm to attach results to"
-              >
-                <option value="">Select a farm…</option>
-                {farms.map((f) => (
-                  <option key={f.canonical_farm_id} value={f.canonical_farm_id}>
-                    {f.name ?? f.canonical_farm_id}
-                  </option>
-                ))}
-              </select>
+                {selectedFarmId && (
+                  <p className="rounded border border-caution/20 bg-caution/10 p-2 text-[11px] text-caution leading-normal">
+                    ⚠️ Pushing another analysis for the same farm/field and date will replace the previously published value.
+                  </p>
+                )}
 
-              {!selectedFarmId && (
-                <p className="text-[11px] text-muted">Select a farm to enable the send actions.</p>
-              )}
-
-              <div className="flex flex-col gap-2">
-                {onlyPushable ? (
-                  <Button
-                    variant="primary"
-                    onClick={() => pushOne(onlyPushable.jobId)}
-                    disabled={pushOneDisabled}
-                    className="w-full gap-1.5"
-                  >
-                    <CloudArrowUp size={14} />
-                    {push.isPending
-                      ? "Pushing…"
-                      : `Push ${labelFor(onlyPushable.key)} · ${onlyPushable.okCount} ${onlyPushable.okCount === 1 ? "pass" : "passes"}`}
-                  </Button>
-                ) : (
+                {/* Only render farm selector for custom AOI mode. For whole-farm, selectedFarmId is pre-bound. */}
+                {!farmPush ? (
                   <>
+                    <select
+                      value={selectedFarmId}
+                      onChange={(e) => {
+                        onSelectedFarmIdChange(e.target.value);
+                        push.reset();
+                        pushAll.reset();
+                      }}
+                      className="w-full rounded-md border border-border bg-bg px-2.5 py-1.5 text-xs text-fg focus:outline-none focus:ring-2 focus:ring-accent"
+                      aria-label="Farm to attach results to"
+                    >
+                      <option value="">Select a farm…</option>
+                      {farms.map((f) => (
+                        <option key={f.canonical_farm_id} value={f.canonical_farm_id}>
+                          {f.name ?? f.canonical_farm_id}
+                        </option>
+                      ))}
+                    </select>
+
+                    {!selectedFarmId && (
+                      <p className="text-[11px] text-muted">Select a farm to enable the send actions.</p>
+                    )}
+                  </>
+                ) : null}
+
+                <div className="flex flex-col gap-2 mt-1">
+                  {onlyPushable ? (
                     <Button
                       variant="primary"
-                      onClick={handlePushAll}
-                      disabled={!canPushAll}
+                      onClick={() => pushOne(onlyPushable.jobId)}
+                      disabled={pushOneDisabled}
                       className="w-full gap-1.5"
                     >
                       <CloudArrowUp size={14} />
-                      {pushAll.isPending
-                        ? "Pushing all…"
-                        : `Push all ${pushableIndexJobs.length} indices · ${totalOkPasses} ${totalOkPasses === 1 ? "pass" : "passes"}`}
+                      {push.isPending
+                        ? "Pushing…"
+                        : `Push ${labelFor(onlyPushable.key)} · ${onlyPushable.okCount} ${onlyPushable.okCount === 1 ? "pass" : "passes"}`}
                     </Button>
-
-                    {okPassCount > 0 && viewedJobId && (
+                  ) : (
+                    <>
                       <Button
-                        variant="outline"
-                        onClick={() => pushOne(viewedJobId)}
-                        disabled={pushOneDisabled}
+                        variant="primary"
+                        onClick={handlePushAll}
+                        disabled={!canPushAll}
                         className="w-full gap-1.5"
                       >
-                        <ArrowSquareOut size={14} />
-                        {push.isPending
-                          ? "Pushing…"
-                          : `Push only ${indexLabel} · ${okPassCount} ${okPassCount === 1 ? "pass" : "passes"}`}
+                        <CloudArrowUp size={14} />
+                        {pushAll.isPending
+                          ? "Pushing all…"
+                          : `Push all ${pushableIndexJobs.length} indices · ${totalOkPasses} ${totalOkPasses === 1 ? "pass" : "passes"}`}
                       </Button>
-                    )}
-                  </>
+
+                      {okPassCount > 0 && viewedJobId && (
+                        <Button
+                          variant="outline"
+                          onClick={() => pushOne(viewedJobId)}
+                          disabled={pushOneDisabled}
+                          className="w-full gap-1.5"
+                        >
+                          <ArrowSquareOut size={14} />
+                          {push.isPending
+                            ? "Pushing…"
+                            : `Push only ${indexLabel} · ${okPassCount} ${okPassCount === 1 ? "pass" : "passes"}`}
+                        </Button>
+                      )}
+                    </>
+                  )}
+                </div>
+
+                {/* Single-index feedback */}
+                {push.isSuccess && (
+                  <p className="text-xs text-positive">
+                    {push.data.dry_run
+                      ? `Recorded ${push.data.pushed_passes} passes (dry-run)`
+                      : `Sent ${push.data.pushed_passes} passes`}
+                  </p>
                 )}
-              </div>
+                {push.isError && (
+                  <p className="text-xs text-critical">
+                    {push.error instanceof Error ? push.error.message : "Push failed"}
+                  </p>
+                )}
 
-              {/* Single-index feedback */}
-              {push.isSuccess && (
-                <p className="text-xs text-positive">
-                  {push.data.dry_run
-                    ? `Recorded ${push.data.pushed_passes} passes (dry-run)`
-                    : `Sent ${push.data.pushed_passes} passes`}
-                </p>
-              )}
-              {push.isError && (
-                <p className="text-xs text-critical">
-                  {push.error instanceof Error ? push.error.message : "Push failed"}
-                </p>
-              )}
-
-              {/* All-indices feedback */}
-              {pushAll.isSuccess && (
-                <p className="text-xs text-positive">
-                  {pushAll.data.dryRun
-                    ? `Recorded ${pushAll.data.pushedPasses} passes across ${pushAll.data.indices} indices (dry-run)`
-                    : `Sent ${pushAll.data.pushedPasses} passes across ${pushAll.data.indices} indices`}
-                </p>
-              )}
-              {pushAll.isError && (
-                <p className="text-xs text-critical">
-                  {pushAll.error instanceof Error ? pushAll.error.message : "Push failed"}
-                </p>
-              )}
-            </>
-          )}
+                {/* All-indices feedback */}
+                {pushAll.isSuccess && (
+                  <p className="text-xs text-positive">
+                    {pushAll.data.dryRun
+                      ? `Recorded ${pushAll.data.pushedPasses} passes across ${pushAll.data.indices} indices (dry-run)`
+                      : `Sent ${pushAll.data.pushedPasses} passes across ${pushAll.data.indices} indices`}
+                  </p>
+                )}
+                {pushAll.isError && (
+                  <p className="text-xs text-critical">
+                    {pushAll.error instanceof Error ? pushAll.error.message : "Push failed"}
+                  </p>
+                )}
+              </>
+            )}
+          </div>
         </div>
 
         {/* Footer */}
