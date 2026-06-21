@@ -67,6 +67,8 @@ from rs_core.repositories import (
 from rs_core.storage import (
     CogStore,
     S3CogStore,
+    aoi_preview_key,
+    aoi_tmp_cog_key,
     cog_key,
     cog_store_from_settings,
     gdal_s3_env,
@@ -144,6 +146,8 @@ __all__ = [
     "permissions_for",
     "CogStore",
     "S3CogStore",
+    "aoi_preview_key",
+    "aoi_tmp_cog_key",
     "cog_key",
     "cog_store_from_settings",
     "gdal_s3_env",

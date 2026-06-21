@@ -4,8 +4,10 @@ No broker, no DB."""
 
 from __future__ import annotations
 
+import uuid
 from datetime import UTC, datetime
 
+import numpy as np
 import pytest
 from rs_core.config import ImageryAdapter, Settings
 from rs_imagery import AOI, TimeRange, get_access_adapter
@@ -107,6 +109,60 @@ async def test_collect_field_emits_index_rasters_when_requested() -> None:
     assert rasters["fcc"].array.ndim == 3 and rasters["fcc"].array.shape[0] == 3
     assert rasters["ndvi"].crs  # carries the grid CRS for the COG
     assert len(rasters["ndre"].transform) == 6
+
+
+class _FakeCogStore:
+    """In-memory stand-in for the COG store (put/exists/delete contract from CogStore protocol)."""
+
+    def __init__(self) -> None:
+        self.store: dict[str, bytes] = {}
+
+    def put(self, key: str, data: bytes, *, content_type: str = "image/tiff") -> None:
+        self.store[key] = data
+
+    def exists(self, key: str) -> bool:
+        return key in self.store
+
+    def delete(self, key: str) -> None:
+        self.store.pop(key, None)
+
+
+async def test_collect_field_rgb_raster_is_float32() -> None:
+    """rgb_raster() is used in the pipeline: the emitted array is float32, not float64."""
+    results = await collect_field(
+        adapter=_adapter(), aoi=_AOI, time_range=_RANGE, indices=["ndvi"], emit_rasters=True
+    )
+    assert results
+    rgb = results[0].rasters["rgb"]
+    assert rgb.array.dtype == np.float32
+    assert rgb.array.ndim == 3
+    assert rgb.array.shape[0] == 3
+
+
+async def test_collect_field_rgb_cog_key_written_to_store() -> None:
+    """rgb.tif appears in the COG store under cog/v{gv}/{field_id}/{scene_id}/rgb.tif."""
+    pytest.importorskip("rasterio")
+    from rs_analysis import write_cog
+    from rs_core.storage import cog_key as _cog_key
+
+    results = await collect_field(
+        adapter=_adapter(), aoi=_AOI, time_range=_RANGE, indices=["ndvi"], emit_rasters=True
+    )
+    assert results
+
+    field_id = uuid.UUID("00000000-0000-0000-0000-000000000001")
+    gv = 1
+    store = _FakeCogStore()
+
+    for r in results:
+        if "rgb" in r.rasters:
+            raster = r.rasters["rgb"]
+            key = _cog_key(field_id=field_id, scene_id=r.scene_id, index="rgb", geometry_version=gv)
+            store.put(key, write_cog(raster.array, transform=raster.transform, crs=raster.crs))
+
+    rgb_keys = [k for k in store.store if k.endswith("/rgb.tif")]
+    assert rgb_keys, "rgb.tif must be present in the COG store for every collected scene"
+    assert all(k.startswith(f"cog/v{gv}/") for k in rgb_keys)
 
 
 class _FakeRedis:

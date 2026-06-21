@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 import numpy as np
-from rs_analysis import AnalysisOutput, analyze_index, get_index, index_raster
+from rs_analysis import AnalysisOutput, analyze_index, get_index, index_raster, rgb_raster
 from rs_imagery import AOI, AccessPort, TimeRange
 
 from services.worker.locks import DEFAULT_LOCK_TTL_SECONDS, LockClient, enqueue_lock
@@ -132,7 +132,7 @@ async def collect_field(
                 # A fetch that returned bands always carries its grid; narrow the Optionals.
                 assert transform_10m is not None and crs_10m is not None
                 rasters["rgb"] = IndexRaster(
-                    array=np.stack([red, green, blue], axis=0),
+                    array=rgb_raster({"B04": red, "B03": green, "B02": blue}),
                     transform=transform_10m,
                     crs=crs_10m,
                 )

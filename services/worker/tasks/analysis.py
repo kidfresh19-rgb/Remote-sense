@@ -24,12 +24,15 @@ from datetime import UTC, date, datetime, timedelta
 from functools import partial
 from typing import Any
 
+import numpy as np
+
 from rs_analysis import analyze_index, get_index
-from rs_core import get_settings
+from rs_core import CogStore, cog_store_from_settings, get_settings
 from rs_core.cache import RedisJsonCache, redis_json_cache_from_settings
 from rs_core.config import Settings, aoi_pass_concurrency
 from rs_core.geo import canonical_geometry_hash
 from rs_core.logging import get_logger
+from rs_core.storage import aoi_tmp_cog_key
 from rs_imagery import AOI, AccessPort, SceneRef, TimeRange, get_access_adapter
 
 from services.worker.celery_app import celery
@@ -165,6 +168,33 @@ def _guard_aoi_size(geometry: dict[str, Any]) -> None:
         )
 
 
+def _render_rgb_jpeg(
+    bands: dict[str, np.ndarray],
+    transform: Any,
+    crs: Any,
+) -> bytes:
+    """Render a natural-colour JPEG (512 px) from B04/B03/B02 reflectance bands via an in-memory
+    COG. The per-channel stretch matches the tiler's RGB composite range. Requires the `geo` extra
+    (rasterio + rio_tiler); raises RuntimeError when absent."""
+    from rs_analysis.cog import rgb_raster, write_cog
+
+    try:
+        import rasterio
+        from rasterio.io import MemoryFile
+        from rio_tiler.io import Reader
+    except ImportError as exc:
+        raise RuntimeError("raster stack not available in this context") from exc
+
+    _RGB_RANGES = ((0.0, 0.3), (0.0, 0.3), (0.0, 0.3))
+    rgb = rgb_raster(bands)
+    cog_bytes = write_cog(rgb, transform=transform, crs=crs)
+    with rasterio.Env(), MemoryFile(cog_bytes) as memfile:
+        with Reader(memfile.name) as cog:
+            image = cog.preview(max_size=512)
+    image.rescale(in_range=_RGB_RANGES)
+    return image.render(img_format="JPEG", quality=85)
+
+
 async def _analyse_scene(
     adapter: AccessPort,
     scene: SceneRef,
@@ -172,12 +202,19 @@ async def _analyse_scene(
     index_name: str,
     *,
     result_cache: ResultCache | None = None,
+    cog_store: CogStore | None = None,
+    job_id: str | None = None,
 ) -> dict[str, Any]:
     """One index over one scene for an arbitrary AOI, as a JSON-safe pass-result dict. Fetches at
     the index's native resolution and lets `analyze_index` apply reflectance + SCL masking
     (invariants 2-4); nothing is persisted. Full provenance is included so 'ok' passes can be
     converted to IndexResult for gateway push without a second fetch. With a `result_cache`, a hit
-    returns the stored pass without fetching (ADR 0011) - the key is immutable scene math."""
+    returns the stored pass without fetching (ADR 0011) - the key is immutable scene math.
+
+    When `cog_store` and `job_id` are provided (single-index AOI/farm series tasks), an index COG
+    is emitted to `aoi_tmp/{job_id}/{pass_date}/{index}.tif` after the stats are assembled. Cache
+    hits skip both the fetch and the COG (the arrays are gone). Failure is isolated: a put error
+    logs a warning but never fails the pass."""
     if result_cache is not None:
         cached = await result_cache.get(aoi, index_name, scene.scene_id)
         if cached is not None:
@@ -221,6 +258,24 @@ async def _analyse_scene(
     }
     if result_cache is not None:
         await result_cache.put(aoi, index_name, scene.scene_id, result)
+
+    # Emit temp COG for AOI Studio downloads (failure-isolated; arrays in memory now).
+    if cog_store is not None and job_id is not None:
+        try:
+            from rs_analysis.cog import index_raster as _ir, write_cog as _wc
+
+            pass_date_str = scene.sensing_datetime.date().isoformat()
+            key = aoi_tmp_cog_key(job_id, pass_date_str, index_name)
+            arr = _ir(fetched.data.bands, index_name)
+            t, c = fetched.data.transform, fetched.data.crs
+
+            def _put() -> None:
+                cog_store.put(key, _wc(arr, transform=t, crs=c))
+
+            await asyncio.to_thread(_put)
+        except Exception:
+            log.warning("aoi.tmp_cog.failed", job_id=job_id, index=index_name, exc_info=True)
+
     return result
 
 
@@ -231,12 +286,17 @@ async def _clearest_scene_result(
     index_name: str,
     *,
     result_cache: ResultCache | None = None,
+    cog_store: CogStore | None = None,
+    job_id: str | None = None,
 ) -> dict[str, Any]:
     """The clearest pass among `scenes` (more than one can land on the same day). Computes each and
     keeps the highest clear-pixel fraction."""
     best: dict[str, Any] | None = None
     for scene in scenes:
-        result = await _analyse_scene(adapter, scene, aoi, index_name, result_cache=result_cache)
+        result = await _analyse_scene(
+            adapter, scene, aoi, index_name,
+            result_cache=result_cache, cog_store=cog_store, job_id=job_id,
+        )
         if best is None or result["clear_fraction"] > best["clear_fraction"]:
             best = result
     assert best is not None  # callers only pass a non-empty list
@@ -381,19 +441,24 @@ async def _resolve_requested_day(
     day: date,
     *,
     result_cache: ResultCache | None = None,
+    cog_store: CogStore | None = None,
+    job_id: str | None = None,
 ) -> dict[str, Any]:
     """One requested calendar date -> its pass dict: the clearest same-day scene, else the
     average of the two nearest bracketing passes, else no_pass. Extracted so it can be dispatched
-    concurrently per date (ADR 0011)."""
+    concurrently per date (ADR 0011). COG emission is only for exact same-day passes (not
+    interpolated), matching the `aoi_tmp` key scheme which uses the actual sensing date."""
     same_day = by_day.get(day)
     if same_day:
         result = await _clearest_scene_result(
-            adapter, same_day, aoi, index_name, result_cache=result_cache
+            adapter, same_day, aoi, index_name,
+            result_cache=result_cache, cog_store=cog_store, job_id=job_id,
         )
         result["requested_date"] = day.isoformat()
         return result
     before_date, after_date = _bracket_passes(day, by_day)
     if before_date is not None and after_date is not None:
+        # Interpolated passes: no COG emission (no single scene to store)
         return await _interpolate_result(
             adapter,
             by_day[before_date],
@@ -419,6 +484,8 @@ async def _analyse_aoi_series(
     concurrency: int | None = None,
     result_cache: ResultCache | None = None,
     on_progress: Callable[[int, int], None] | None = None,
+    cog_store: CogStore | None = None,
+    job_id: str | None = None,
 ) -> dict[str, Any]:
     """Multi-pass preview over a custom AOI (AOI Studio). `mode="dates"` resolves each requested
     calendar date to its same-day scene; when none exists the two nearest bracketing passes are
@@ -472,6 +539,8 @@ async def _analyse_aoi_series(
                     index_name,
                     day,
                     result_cache=result_cache,
+                    cog_store=cog_store,
+                    job_id=job_id,
                 )
                 for day in requested
             ],
@@ -494,7 +563,10 @@ async def _analyse_aoi_series(
 
         passes = await _gather_passes(
             [
-                partial(_analyse_scene, adapter, scene, aoi, index_name, result_cache=result_cache)
+                partial(
+                    _analyse_scene, adapter, scene, aoi, index_name,
+                    result_cache=result_cache, cog_store=cog_store, job_id=job_id,
+                )
                 for scene in chosen
             ],
             concurrency=concurrency,
@@ -697,6 +769,51 @@ def analyse_aoi_task(geometry: dict[str, object], index_name: str) -> dict[str, 
     return asyncio.run(_runner())
 
 
+@celery.task(name="analysis.render_natural_color")
+def render_natural_color_task(
+    scene_id: str,
+    geometry: dict[str, Any],
+    pass_date: str,
+    cache_key: str,
+) -> str:
+    """Render a natural-colour JPEG (512 px, B04/B03/B02) for one custom AOI scene and cache it in
+    MinIO at `cache_key` (7-day lifecycle). Returns a base64-encoded JPEG string (JSON-safe for the
+    Redis result backend). The scene is re-discovered by searching ±1 day around `pass_date` and
+    matching by `scene_id`. Cache write is failure-isolated: a put error logs a warning and does
+    not fail the task."""
+    import base64
+
+    settings = get_settings()
+
+    async def _run() -> bytes:
+        adapter = get_access_adapter(settings)
+        aoi = AOI(geometry=geometry, crs="EPSG:4326")
+        target = date.fromisoformat(pass_date)
+        search_range = TimeRange(
+            start=_start_of_day(target) - timedelta(days=1),
+            end=_start_of_day(target) + timedelta(days=2),
+        )
+        scenes = await adapter.search(aoi, search_range, max_scene_cloud_pct=100.0)
+        scene = next((s for s in scenes if s.scene_id == scene_id), None)
+        if scene is None:
+            raise ValueError(f"scene {scene_id!r} not found around {pass_date!r}")
+        fetched = await adapter.fetch(
+            scene, aoi, bands=sorted(["B02", "B03", "B04"]), resolution_m=10.0
+        )
+        return _render_rgb_jpeg(fetched.data.bands, fetched.data.transform, fetched.data.crs)
+
+    jpeg_bytes = asyncio.run(_run())
+
+    try:
+        store = cog_store_from_settings(settings)
+        if store is not None:
+            store.put(cache_key, jpeg_bytes, content_type="image/jpeg")
+    except Exception:
+        log.warning("natural_color.cache_put.failed", scene_id=scene_id, exc_info=True)
+
+    return base64.b64encode(jpeg_bytes).decode()
+
+
 def _run_aoi_series(
     settings: Settings,
     concurrency: int,
@@ -738,13 +855,17 @@ def analyse_aoi_series_task(
 ) -> dict[str, Any]:
     """AOI Studio's multi-pass preview (batch of dates, or a months-back backfill sweep over a
     custom AOI). Enqueued and polled by job id - it can run for minutes - and publishes a
-    `{done, total}` progress meter as each pass settles. Never persists (invariant 6)."""
+    `{done, total}` progress meter as each pass settles. Never persists (invariant 6).
+    Emits a temp index COG per pass to `aoi_tmp/{job_id}/{pass_date}/{index}.tif` (24-h TTL)
+    so analysts can download the spatial raster for each pass."""
 
     def on_progress(done: int, total: int) -> None:
         self.update_state(state="PROGRESS", meta={"done": done, "total": total})
 
     settings = get_settings()
     concurrency = aoi_pass_concurrency(settings)
+    cog_store = cog_store_from_settings(settings)
+    job_id: str = self.request.id
     return _run_aoi_series(
         settings,
         concurrency,
@@ -758,6 +879,8 @@ def analyse_aoi_series_task(
             concurrency=concurrency,
             result_cache=rc,
             on_progress=on_progress,
+            cog_store=cog_store,
+            job_id=job_id,
         ),
     )
 
@@ -833,6 +956,8 @@ async def _analyse_farm_series(
     concurrency: int | None = None,
     result_cache: ResultCache | None = None,
     on_progress: Callable[[int, int], None] | None = None,
+    cog_store: CogStore | None = None,
+    job_id: str | None = None,
 ) -> dict[str, Any]:
     """Multi-pass preview for an entire farm: resolves the union of all field geometries and
     delegates to `_analyse_aoi_series`. `fields` is a list of ``{"field_id": str, "geometry":
@@ -855,6 +980,8 @@ async def _analyse_farm_series(
         concurrency=concurrency,
         result_cache=result_cache,
         on_progress=on_progress,
+        cog_store=cog_store,
+        job_id=job_id,
     )
 
 
@@ -974,11 +1101,14 @@ def analyse_farm_series_task(
     """Farm-level AOI Studio series: fetches the farm's field geometries from the DB, unions them
     into a single AOI on the worker, and runs the same multi-pass engine as
     `analyse_aoi_series_task`. Polled by job id; publishes a `{done, total}` progress meter per
-    pass. Never persists (invariant 6)."""
+    pass. Never persists (invariant 6). Emits a temp index COG per pass (24-h TTL) so farm-level
+    passes are also downloadable from the AOI Studio results console."""
 
     def on_progress(done: int, total: int) -> None:
         self.update_state(state="PROGRESS", meta={"done": done, "total": total})
 
+    cog_store = cog_store_from_settings(get_settings())
+    job_id: str = self.request.id
     return _run_farm_series(
         canonical_farm_id,
         lambda fields, adapter, rc, concurrency: _analyse_farm_series(
@@ -991,6 +1121,8 @@ def analyse_farm_series_task(
             concurrency=concurrency,
             result_cache=rc,
             on_progress=on_progress,
+            cog_store=cog_store,
+            job_id=job_id,
         ),
     )
 

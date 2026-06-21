@@ -8,10 +8,12 @@ import uuid
 from datetime import UTC, date, datetime
 from typing import Annotated, Any
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, HTTPException, Query, Response, status
 from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import RedirectResponse
 from geoalchemy2.shape import to_shape
 from pydantic import BaseModel
+from rs_core import get_settings
 from rs_core.models import Analysis, Farm, Field
 from shapely.geometry import mapping
 from sqlalchemy import select
@@ -358,6 +360,48 @@ async def field_audit_endpoint(
     field_id: uuid.UUID, principal: ViewPrincipal, session: ReadSessionDep
 ) -> list[AuditRecordOut]:
     return await field_audit(session, field_id)
+
+
+@router.get("/fields/{field_id}/scenes/{scene_id}/download")
+async def field_scene_download_endpoint(
+    field_id: uuid.UUID,
+    scene_id: str,
+    principal: ViewPrincipal,
+    session: ReadSessionDep,
+    index: str = "rgb",
+    geometry_version: Annotated[int | None, Query()] = None,
+) -> Response:
+    """Redirect to a presigned MinIO URL for an index COG download (302). Binary data never passes
+    through the API process. 404 when no COG exists for this pass and index. `geometry_version`
+    defaults to the field's current version when omitted."""
+    from rs_core.storage import S3CogStore
+    from rs_core.storage import cog_key as _cog_key
+
+    if geometry_version is None:
+        gv = (
+            await session.execute(select(Field.geometry_version).where(Field.id == field_id))
+        ).scalar_one_or_none()
+        if gv is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "field not found")
+        geometry_version = gv
+
+    settings = get_settings()
+    try:
+        store = S3CogStore(settings)
+    except ImportError as exc:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "object storage not available"
+        ) from exc
+
+    key = _cog_key(
+        field_id=str(field_id), scene_id=scene_id, index=index, geometry_version=geometry_version
+    )
+    if not await run_in_threadpool(store.exists, key):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "COG not available for this pass and index")
+
+    filename = f"{index}_{scene_id}_gv{geometry_version}.tif"
+    url = await run_in_threadpool(store.presigned_url, key, filename=filename)
+    return RedirectResponse(url, status_code=status.HTTP_302_FOUND)
 
 
 @router.post("/fields/{field_id}/collect", status_code=status.HTTP_202_ACCEPTED)

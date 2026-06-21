@@ -15,6 +15,18 @@ def cog_key(*, field_id: object, scene_id: str, index: str, geometry_version: in
     return f"cog/v{geometry_version}/{field_id}/{scene_id}/{index}.tif"
 
 
+def aoi_tmp_cog_key(job_id: str, pass_date: str, index: str) -> str:
+    """Temporary index COG emitted during an AOI Studio job. A 24-hour lifecycle rule on
+    `aoi_tmp/` expires these automatically; the pipeline never persists them (invariant 7)."""
+    return f"aoi_tmp/{job_id}/{pass_date}/{index}.tif"
+
+
+def aoi_preview_key(scene_id: str, geometry_hash: str) -> str:
+    """Cached natural-colour JPEG for a custom AOI scene. A 7-day lifecycle rule on
+    `aoi_preview/` expires these automatically."""
+    return f"aoi_preview/{scene_id}/{geometry_hash}.jpg"
+
+
 def vsis3_uri(bucket: str, key: str) -> str:
     """The GDAL `/vsis3/` path the tiler opens for a stored COG (read path, configured by
     `gdal_s3_env`)."""
@@ -63,8 +75,8 @@ class S3CogStore:
         )
         self._bucket = settings.minio_bucket
 
-    def put(self, key: str, data: bytes) -> None:
-        self._client.put_object(Bucket=self._bucket, Key=key, Body=data, ContentType="image/tiff")
+    def put(self, key: str, data: bytes, *, content_type: str = "image/tiff") -> None:
+        self._client.put_object(Bucket=self._bucket, Key=key, Body=data, ContentType=content_type)
 
     def exists(self, key: str) -> bool:
         try:
@@ -77,6 +89,27 @@ class S3CogStore:
         # S3/MinIO semantics: deleting an absent key succeeds, which is what makes the
         # retention job idempotent across partial runs.
         self._client.delete_object(Bucket=self._bucket, Key=key)
+
+    def get_bytes(self, key: str) -> bytes:
+        """Download an object for proxying to the browser (small COGs and JPEG previews only)."""
+        response = self._client.get_object(Bucket=self._bucket, Key=key)
+        return response["Body"].read()  # type: ignore[return-value]
+
+    def presigned_url(
+        self,
+        key: str,
+        *,
+        filename: str | None = None,
+        expires: int = 900,
+    ) -> str:
+        """A pre-signed GET URL valid for `expires` seconds (15 min default). Pass `filename`
+        to set a Content-Disposition: attachment header so the browser saves the file."""
+        params: dict[str, str] = {"Bucket": self._bucket, "Key": key}
+        if filename:
+            params["ResponseContentDisposition"] = f'attachment; filename="{filename}"'
+        return self._client.generate_presigned_url(  # type: ignore[return-value]
+            "get_object", Params=params, ExpiresIn=expires
+        )
 
 
 def cog_store_from_settings(settings: Settings) -> CogStore | None:

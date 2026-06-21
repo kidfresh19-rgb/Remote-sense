@@ -16,6 +16,7 @@ from services.worker.tasks.analysis import (
     analyse_aoi_task,
     analyse_farm_series_multi_task,
     analyse_farm_series_task,
+    render_natural_color_task,
 )
 from services.worker.tasks.collection import (
     CORE_INDICES,
@@ -59,6 +60,7 @@ __all__ = [
     "prune_cogs_task",
     "publish_farm_task",
     "recompute_farm_region_assignments_task",
+    "render_natural_color_task",
     "run_collection",
     "scan_and_enqueue",
 ]

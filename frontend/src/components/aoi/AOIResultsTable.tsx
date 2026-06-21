@@ -1,7 +1,12 @@
 import { DownloadSimple, Spinner, ChartLine, Table as TableIcon, ArrowUp, ArrowDown, ArrowsOut, ArrowsIn, X, ChartPieSlice } from "@phosphor-icons/react";
 import { useMemo, useState, useCallback, useEffect } from "react";
 import { createPortal } from "react-dom";
+import type { Geometry } from "geojson";
 import { motion, AnimatePresence } from "motion/react";
+
+import { useToken } from "@/auth/TokenProvider";
+import { config } from "@/lib/config";
+import { useNaturalColorThumbnail, type NaturalColorReq } from "@/lib/useNaturalColorThumbnail";
 import {
   AreaChart,
   Area,
@@ -31,6 +36,8 @@ interface AOIResultsTableProps {
   selectedIndex: SelectedIndex;
   viewIndex: IndexKey;
   onViewIndexChange: (idx: IndexKey) => void;
+  geometry?: Geometry | null;
+  jobId?: string | null;
 }
 
 type ViewMode = "chart" | "table";
@@ -41,7 +48,10 @@ export function AOIResultsTable({
   selectedIndex,
   viewIndex,
   onViewIndexChange,
+  geometry,
+  jobId,
 }: AOIResultsTableProps) {
+  const { token } = useToken();
   const meta = indexMeta(viewIndex);
   const hasAnyJob = Object.values(jobs).some((j) => !!j);
   const [viewMode, setViewMode] = useState<ViewMode>("chart");
@@ -181,9 +191,20 @@ export function AOIResultsTable({
         </div>
 
         {viewMode === "chart" ? (
-          <ChartView passes={passes} index={viewIndex} />
+          <>
+            <ChartView passes={passes} index={viewIndex} />
+            {geometry ? (
+              <NaturalColorFilmstrip passes={passes} geometry={geometry} token={token} />
+            ) : null}
+          </>
         ) : (
-          <TableView passes={passes} index={viewIndex} hasRequested={hasRequested} />
+          <TableView
+            passes={passes}
+            index={viewIndex}
+            hasRequested={hasRequested}
+            jobId={jobId}
+            token={token}
+          />
         )}
 
         {/* Agronomic insights — always visible below chart or table */}
@@ -308,6 +329,92 @@ export function AOIResultsTable({
           renderJobContent()
         )}
       </div>
+    </div>
+  );
+}
+
+/* ─── Natural Colour Filmstrip ────────────────────────────────────────────── */
+
+function NaturalColorFilmstrip({
+  passes,
+  geometry,
+  token,
+}: {
+  passes: AOISeriesPass[];
+  geometry: Geometry;
+  token: string | null;
+}) {
+  const okPasses = passes.filter((p) => p.status === "ok" && p.pass_date && p.scene_id);
+  if (okPasses.length === 0) return null;
+  return (
+    <div className="rounded-lg border border-border bg-panel p-3">
+      <p className="mb-2 text-[10px] font-medium uppercase tracking-wider text-muted">
+        Natural colour
+        <span className="ml-1.5 font-normal normal-case text-muted/70">
+          true-colour pass preview
+        </span>
+      </p>
+      <div className="flex gap-2 overflow-x-auto pb-1">
+        {okPasses.map((pass) => (
+          <FilmstripCell
+            key={`${pass.scene_id}-${pass.pass_date}`}
+            pass={pass}
+            geometry={geometry}
+            token={token}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function FilmstripCell({
+  pass,
+  geometry,
+  token,
+}: {
+  pass: AOISeriesPass;
+  geometry: Geometry;
+  token: string | null;
+}) {
+  const req = useMemo<NaturalColorReq | null>(
+    () =>
+      pass.scene_id && pass.pass_date
+        ? { scene_id: pass.scene_id, geometry, pass_date: pass.pass_date }
+        : null,
+    // geometry reference is stable for the life of the AOI Studio run
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [pass.scene_id, pass.pass_date],
+  );
+  const { ref, src, loading } = useNaturalColorThumbnail(req, token);
+  const [imgLoaded, setImgLoaded] = useState(false);
+
+  return (
+    <div className="flex shrink-0 flex-col items-center gap-1">
+      <div
+        ref={ref as (el: HTMLDivElement | null) => void}
+        className="relative size-[80px] overflow-hidden rounded-md border border-border bg-panel-2"
+      >
+        {loading && !src ? (
+          <div className="absolute inset-0 flex items-center justify-center">
+            <Spinner size={14} className="animate-spin text-muted/60" />
+          </div>
+        ) : !src ? (
+          <div className="absolute inset-0 animate-pulse bg-border/20" />
+        ) : null}
+        {src ? (
+          <img
+            src={src}
+            alt={pass.pass_date ?? ""}
+            className={cn(
+              "size-full object-cover transition-opacity duration-200",
+              imgLoaded ? "opacity-100" : "opacity-0",
+            )}
+            onLoad={() => setImgLoaded(true)}
+          />
+        ) : null}
+      </div>
+      <p className="text-[10px] text-muted">{pass.pass_date ? formatDate(pass.pass_date) : "·"}</p>
     </div>
   );
 }
@@ -1153,11 +1260,16 @@ function TableView({
   passes,
   index,
   hasRequested,
+  jobId,
+  token,
 }: {
   passes: AOISeriesPass[];
   index: IndexKey;
   hasRequested: boolean;
+  jobId?: string | null;
+  token?: string | null;
 }) {
+  const showDl = !!(jobId && token);
   return (
     <div className="overflow-x-auto">
       <table className="w-full border-collapse text-xs">
@@ -1172,6 +1284,7 @@ function TableView({
             <th className="py-1.5 pr-3 text-right font-medium">P90</th>
             <th className="py-1.5 pr-3 text-right font-medium">Clear</th>
             <th className="py-1.5 font-medium">Conf.</th>
+            {showDl ? <th className="py-1.5 font-medium" /> : null}
           </tr>
         </thead>
         <tbody>
@@ -1181,6 +1294,8 @@ function TableView({
               pass={p}
               index={index}
               showRequested={hasRequested}
+              jobId={jobId}
+              token={token}
             />
           ))}
         </tbody>
@@ -1221,11 +1336,39 @@ function Row({
   pass,
   index,
   showRequested,
+  jobId,
+  token,
 }: {
   pass: AOISeriesPass;
   index: IndexKey;
   showRequested: boolean;
+  jobId?: string | null;
+  token?: string | null;
 }) {
+  const [downloading, setDownloading] = useState(false);
+
+  const downloadPass = async () => {
+    const passDate = pass.pass_date;
+    if (!jobId || !token || !passDate) return;
+    setDownloading(true);
+    try {
+      const url =
+        `${config.apiBaseUrl}/analyse/aoi/jobs/${encodeURIComponent(jobId)}/passes/${encodeURIComponent(passDate)}/download` +
+        `?index=${encodeURIComponent(index)}`;
+      const resp = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+      if (!resp.ok) return; // 404 = COG not emitted (cache hit or interpolated)
+      const blob = await resp.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = blobUrl;
+      a.download = `${index}_${passDate}.tif`;
+      a.click();
+      URL.revokeObjectURL(blobUrl);
+    } finally {
+      setDownloading(false);
+    }
+  };
+
   const meta = indexMeta(index);
   const ok = pass.status === "ok";
   const interpolated = pass.status === "interpolated";
@@ -1239,7 +1382,7 @@ function Row({
             {pass.requested_date ? formatDate(pass.requested_date) : "·"}
           </td>
         ) : null}
-        <td className="py-1.5 pr-3" colSpan={8}>
+        <td className="py-1.5 pr-3" colSpan={jobId && token ? 8 : 8}>
           <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:gap-2">
             <Badge tone="neutral" className="w-fit text-[10px] uppercase">
               no pass
@@ -1268,6 +1411,7 @@ function Row({
             )}
           </div>
         </td>
+        {jobId && token ? <td /> : null}
       </tr>
     );
   }
@@ -1324,6 +1468,26 @@ function Row({
           "·"
         )}
       </td>
+      {jobId && token ? (
+        <td className="py-1.5 pl-1">
+          {ok ? (
+            <button
+              onClick={downloadPass}
+              disabled={downloading}
+              className="inline-flex size-6 items-center justify-center rounded border border-border bg-panel text-muted transition-colors hover:bg-panel-2 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-40 active:scale-95"
+              title={`Download ${index.toUpperCase()} GeoTIFF for this pass`}
+            >
+              {downloading ? (
+                <Spinner size={11} className="animate-spin" />
+              ) : (
+                <DownloadSimple size={11} />
+              )}
+            </button>
+          ) : (
+            <span />
+          )}
+        </td>
+      ) : null}
     </tr>
   );
 }

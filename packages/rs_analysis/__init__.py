@@ -7,7 +7,7 @@ See PLAN.md §5 for the locked specification and CLAUDE.md §1 for the invariant
 (reflectance-first, per-AOI masking, resolution honesty)."""
 
 from rs_analysis.bands import BAND_RESOLUTION_M, coarsest_resolution_m
-from rs_analysis.cog import index_raster, write_cog
+from rs_analysis.cog import index_raster, rgb_raster, write_cog
 from rs_analysis.colormaps import COLORMAPS, ColorMap, get_colormap
 from rs_analysis.engine import (
     AnalysisOutput,
@@ -33,6 +33,7 @@ __all__ = [
     "BAND_RESOLUTION_M",
     "coarsest_resolution_m",
     "index_raster",
+    "rgb_raster",
     "write_cog",
     "COLORMAPS",
     "ColorMap",

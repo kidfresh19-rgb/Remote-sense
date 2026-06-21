@@ -11,8 +11,9 @@ from __future__ import annotations
 from datetime import UTC, date, datetime
 from typing import Any, Literal
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Response, status
 from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, model_validator
 from rs_core import Settings, get_settings
 from rs_core.logging import get_logger
@@ -84,6 +85,12 @@ class AOIAnalysisRequest(BaseModel):
     index: str
 
 
+class NaturalColorRequest(BaseModel):
+    scene_id: str
+    geometry: dict[str, Any]
+    pass_date: str
+
+
 class AOIPushRequest(BaseModel):
     """Push passes of a completed AOI Studio job to the gateway, tagged to a farm.
     Both exact same-day passes (status='ok') and averaged/interpolated passes
@@ -144,6 +151,55 @@ async def analyse_aoi_endpoint(
         ) from exc
     except Exception as exc:  # the worker task raised (e.g. no imagery / fetch error)
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"AOI analysis failed: {exc}") from exc
+
+
+@router.post("/analyse/aoi/natural-color")
+async def aoi_natural_color_endpoint(
+    payload: NaturalColorRequest,
+    principal: RunAnalysisPrincipal,
+) -> Response:
+    """Render a natural-colour JPEG (512px) for one custom AOI scene. On cache hit the stored
+    JPEG is proxied from MinIO. On cache miss the render runs on the worker (CDSE B02/B03/B04
+    fetch + in-memory COG) and the result is cached with a 7-day MinIO lifecycle rule. Requires
+    `run_analysis`."""
+    import base64
+
+    from celery.exceptions import TimeoutError as CeleryTimeoutError
+    from rs_core.geo import canonical_geometry_hash
+    from rs_core.storage import S3CogStore, aoi_preview_key
+
+    from services.worker.tasks import render_natural_color_task
+
+    settings = get_settings()
+    geom_hash = canonical_geometry_hash(payload.geometry)
+    key = aoi_preview_key(payload.scene_id, geom_hash)
+
+    # Cache hit: proxy the stored JPEG from MinIO
+    try:
+        store = S3CogStore(settings)
+        if await run_in_threadpool(store.exists, key):
+            jpeg_bytes = await run_in_threadpool(store.get_bytes, key)
+            return Response(content=jpeg_bytes, media_type="image/jpeg")
+    except Exception:
+        store = None  # fall through to rendering
+
+    # Cache miss: render on the worker and stream the result
+    task = render_natural_color_task.delay(
+        payload.scene_id, payload.geometry, payload.pass_date, key
+    )
+    try:
+        b64_result: str = await run_in_threadpool(task.get, timeout=90)
+        jpeg_bytes = base64.b64decode(b64_result)
+        return Response(content=jpeg_bytes, media_type="image/jpeg")
+    except CeleryTimeoutError as exc:
+        raise HTTPException(
+            status.HTTP_504_GATEWAY_TIMEOUT,
+            "Natural-colour render timed out. Try again.",
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status.HTTP_502_BAD_GATEWAY, f"Natural-colour render failed: {exc}"
+        ) from exc
 
 
 @router.post("/analyse/aoi/series", status_code=status.HTTP_202_ACCEPTED)
@@ -230,6 +286,38 @@ async def analyse_farm_series_endpoint(
         )
 
     return {"job_id": async_result.id, "state": "queued"}
+
+
+@router.get("/analyse/aoi/jobs/{job_id}/passes/{pass_date}/download")
+async def aoi_job_pass_download_endpoint(
+    job_id: str,
+    pass_date: str,
+    principal: RunAnalysisPrincipal,
+    index: str = "ndvi",
+) -> Response:
+    """Proxy an index GeoTIFF download for one AOI Studio job pass. Returns 404 when the temp COG
+    was not emitted (cache hit at analysis time, interpolated pass, or 24-hour TTL expired).
+    Requires `run_analysis`."""
+    from rs_core.storage import S3CogStore, aoi_tmp_cog_key
+
+    settings = get_settings()
+    try:
+        store = S3CogStore(settings)
+    except ImportError as exc:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "object storage not available"
+        ) from exc
+
+    key = aoi_tmp_cog_key(job_id, pass_date, index)
+    if not await run_in_threadpool(store.exists, key):
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            "COG not available or expired for this pass",
+        )
+
+    filename = f"{index}_{pass_date}.tif"
+    url = await run_in_threadpool(store.presigned_url, key, filename=filename)
+    return RedirectResponse(url, status_code=status.HTTP_302_FOUND)
 
 
 def _job_status(job_id: str) -> dict[str, Any]:

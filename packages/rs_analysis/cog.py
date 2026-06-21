@@ -44,6 +44,26 @@ def index_raster(
     return out
 
 
+def rgb_raster(
+    bands: dict[str, np.ndarray],
+    *,
+    aoi_mask: np.ndarray | None = None,
+) -> np.ndarray:
+    """Build a (3, H, W) float32 RGB array for a 3-band COG (band order: Red=B04, Green=B03,
+    Blue=B02). Pixels outside `aoi_mask` are set to NaN. No value clipping: the tiler's per-channel
+    rescale controls the visual stretch at display time."""
+    missing = sorted(b for b in ("B02", "B03", "B04") if b not in bands)
+    if missing:
+        raise ValueError(f"rgb_raster requires B02, B03, and B04; missing: {missing}")
+    r = np.asarray(bands["B04"], dtype="float32")
+    g = np.asarray(bands["B03"], dtype="float32")
+    b = np.asarray(bands["B02"], dtype="float32")
+    rgb = np.stack([r, g, b], axis=0)
+    if aoi_mask is not None:
+        rgb[:, ~aoi_mask] = NODATA
+    return rgb
+
+
 def write_cog(
     array: np.ndarray,
     *,

@@ -69,3 +69,69 @@ def test_tile_missing_cog_is_404(monkeypatch) -> None:
     monkeypatch.setattr(tiler_main, "render_tile", _missing)
     with TestClient(app) as client:
         assert client.get("/tiles/ndvi/1/FIELD-1/SCENE-1/0/0/0.png").status_code == 404
+
+
+def test_static_unknown_view_is_422() -> None:
+    with TestClient(app) as client:
+        assert client.get("/static/bogus/1/FIELD-1/SCENE-1.jpg").status_code == 422
+
+
+def test_static_cache_control_header(monkeypatch) -> None:
+    import services.tiler.main as tiler_main
+
+    monkeypatch.setattr(tiler_main, "render_preview", lambda *a, **kw: b"\xff\xd8\xff")
+    with TestClient(app) as client:
+        resp = client.get("/static/rgb/1/FIELD-1/SCENE-1.jpg")
+    assert resp.headers.get("cache-control") == "public, max-age=86400"
+
+
+def test_export_unknown_view_is_422() -> None:
+    with TestClient(app) as client:
+        assert client.get("/export/bogus/1/FIELD-1/SCENE-1.tif").status_code == 422
+
+
+def test_export_missing_storage_is_503(monkeypatch) -> None:
+    import services.tiler.main as tiler_main
+
+    monkeypatch.setattr(tiler_main, "S3CogStore", _raise_import_error)
+    with TestClient(app) as client:
+        assert client.get("/export/rgb/1/FIELD-1/SCENE-1.tif").status_code == 503
+
+
+def test_export_missing_cog_is_404(monkeypatch) -> None:
+    import services.tiler.main as tiler_main
+
+    monkeypatch.setattr(tiler_main, "S3CogStore", lambda _: _FakeStore(exists=False))
+    with TestClient(app) as client:
+        assert client.get("/export/rgb/1/FIELD-1/SCENE-1.tif").status_code == 404
+
+
+def test_export_returns_cog_bytes(monkeypatch) -> None:
+    import services.tiler.main as tiler_main
+
+    raw = b"GEOTIFF_BYTES"
+    monkeypatch.setattr(tiler_main, "S3CogStore", lambda _: _FakeStore(exists=True, data=raw))
+    with TestClient(app) as client:
+        resp = client.get("/export/rgb/1/FIELD-1/SCENE-1.tif")
+    assert resp.status_code == 200
+    assert resp.content == raw
+    assert "attachment" in resp.headers["content-disposition"]
+    assert resp.headers["content-type"] == "image/tiff"
+
+
+# --- helpers for export tests ---
+
+def _raise_import_error(*args: object, **kwargs: object) -> None:
+    raise ImportError("boto3 not available")
+
+
+class _FakeStore:
+    def __init__(self, *, exists: bool, data: bytes = b"") -> None:
+        self._exists = exists
+        self._data = data
+
+    def exists(self, key: str) -> bool:
+        return self._exists
+
+    def get_bytes(self, key: str) -> bytes:
+        return self._data
