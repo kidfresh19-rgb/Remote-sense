@@ -207,6 +207,37 @@ def _enqueue_region_recompute(canonical_farm_id: str) -> None:
         log.warning("ingest.region_recompute_enqueue_failed", error=str(exc))
 
 
+# Field-ingest actions that flag a field for (re)backfill in persistence (needs_backfill=True): a
+# brand-new field, a no-field farm's derived field, or a geometry change that opens a new version.
+# An "unchanged" field already has its history (or an in-flight run) and must not be re-enqueued.
+_BACKFILL_TRIGGER_ACTIONS = frozenset({"created", "derived_from_farm", "updated_geometry"})
+
+# POST /ingest/farm commits in the get_session dependency *after* this endpoint returns, so the
+# enqueue races the field row's commit. A short countdown lets the commit land before a worker loads
+# the field; if it still loses the race the periodic scan re-enqueues it (self-healing), so this
+# only trades a few seconds of start latency for reliability.
+_INGEST_BACKFILL_COUNTDOWN_S = 10
+
+
+def _enqueue_field_backfills(report: FarmIngestReport) -> None:
+    """Start collection now for every field this ingest created or re-geometried, instead of letting
+    it wait for the next periodic scan (perf: backfill start-latency - the dominant delay before a
+    freshly onboarded field has any analysis). POST /ingest/farm is EXTERNAL-FROZEN, so this never
+    touches the response: it fires after the report is built, and a broker hiccup is logged, not
+    raised. `backfill_field` is idempotent and enqueue-deduped (R-1), and the periodic scan stays
+    the safety net, so a missed or duplicate enqueue self-heals on the next trigger."""
+    targets = [f.field_id for f in report.fields if f.action in _BACKFILL_TRIGGER_ACTIONS]
+    if not targets:
+        return
+    try:
+        from services.worker.tasks import backfill_field
+
+        for field_id in targets:
+            backfill_field.apply_async(args=[field_id], countdown=_INGEST_BACKFILL_COUNTDOWN_S)
+    except Exception as exc:  # broker unreachable, etc. - ingestion must still succeed
+        log.warning("ingest.backfill_enqueue_failed", error=str(exc))
+
+
 @router.post("/farm", response_model=FarmIngestReport, status_code=status.HTTP_200_OK)
 async def ingest_farm_endpoint(
     payload: FarmIn,
@@ -224,4 +255,5 @@ async def ingest_farm_endpoint(
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     if report.action != "unchanged":
         _enqueue_region_recompute(report.canonical_farm_id)
+        _enqueue_field_backfills(report)
     return report

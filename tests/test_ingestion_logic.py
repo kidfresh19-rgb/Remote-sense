@@ -11,13 +11,14 @@ from geoalchemy2.shape import from_shape
 from pydantic import ValidationError
 from rs_core.geo import to_shape
 from rs_core.models import Farm, Field
-from rs_core.schemas import FarmIn, FieldIn
+from rs_core.schemas import FarmIn, FarmIngestReport, FieldIn, FieldIngestReport
 from sqlalchemy.exc import IntegrityError
 
 from services.api.ingestion import (
     IngestionError,
     _as_multipolygon,
     _check_nesting,
+    _enqueue_field_backfills,
     _match_existing,
     _resolve_farm_boundary,
     _validate_fields,
@@ -314,3 +315,69 @@ async def test_get_or_create_field_unkeyed_creates_directly() -> None:
     assert field is built
     assert built in session.added
     assert session.nested_calls == 0  # no savepoint: an unkeyed field has nothing to dedupe on
+
+
+# --- Start-latency: a fresh or re-geometried field starts backfilling on ingest, not at the next
+# periodic scan. These verify the pure enqueue decision with no broker (apply_async is faked). ---
+
+
+def _field_report(field_id: str, action: str) -> FieldIngestReport:
+    return FieldIngestReport(
+        canonical_field_id=field_id, field_id=field_id, action=action, geometry_version=1
+    )
+
+
+def _farm_report(action: str, fields: list[FieldIngestReport]) -> FarmIngestReport:
+    return FarmIngestReport(
+        canonical_farm_id="F",
+        farm_id="farm-1",
+        action=action,
+        working_crs="EPSG:32736",
+        fields=fields,
+    )
+
+
+def test_enqueue_field_backfills_targets_only_created_and_changed(monkeypatch) -> None:
+    import services.worker.tasks as tasks
+
+    calls: list[tuple[tuple, object]] = []
+    monkeypatch.setattr(
+        tasks.backfill_field,
+        "apply_async",
+        lambda args, countdown=None: calls.append((tuple(args), countdown)),
+    )
+    report = _farm_report(
+        "updated",
+        [
+            _field_report("a", "created"),
+            _field_report("b", "unchanged"),
+            _field_report("c", "updated_geometry"),
+            _field_report("d", "derived_from_farm"),
+        ],
+    )
+    _enqueue_field_backfills(report)
+    # Every created / derived / re-geometried field is enqueued; the unchanged one is left alone.
+    assert sorted(c[0][0] for c in calls) == ["a", "c", "d"]
+    assert {c[1] for c in calls} == {10}  # all carry the commit-race countdown
+
+
+def test_enqueue_field_backfills_noop_when_all_unchanged(monkeypatch) -> None:
+    import services.worker.tasks as tasks
+
+    monkeypatch.setattr(
+        tasks.backfill_field,
+        "apply_async",
+        lambda args, countdown=None: pytest.fail("must not enqueue when nothing changed"),
+    )
+    _enqueue_field_backfills(_farm_report("unchanged", [_field_report("a", "unchanged")]))
+
+
+def test_enqueue_field_backfills_swallows_broker_errors(monkeypatch) -> None:
+    import services.worker.tasks as tasks
+
+    def _boom(args, countdown=None):
+        raise RuntimeError("broker unreachable")
+
+    monkeypatch.setattr(tasks.backfill_field, "apply_async", _boom)
+    # A broker hiccup must never fail ingestion (POST /ingest/farm is EXTERNAL-FROZEN).
+    _enqueue_field_backfills(_farm_report("created", [_field_report("a", "created")]))
