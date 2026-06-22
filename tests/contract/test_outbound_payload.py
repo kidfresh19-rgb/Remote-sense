@@ -99,6 +99,7 @@ def test_satellite_result_fields() -> None:
         "extId",
         "metrics",
         "interpretation",
+        "outputs",
         "subPlots",
     }
 

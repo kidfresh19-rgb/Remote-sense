@@ -85,7 +85,9 @@ def test_to_satellite_results_aggregates_field_and_subplot():
     assert field.metrics.classification == "healthy"  # ndvi 0.62 -> vigorous
     assert field.metrics.health_score == 0.62
     assert field.interpretation is not None and field.interpretation.stress_level == "none"
-    assert field.extId == "2:4:2026-05-28"
+    assert field.extId == "sat-2-4-2026-05-28"
+    assert field.outputs == {}
+    assert field.metrics.anomalies == []
     assert field.subPlots is None
 
     # Sub-plots for field 4 are grouped into one record with a subPlots array.
@@ -95,11 +97,12 @@ def test_to_satellite_results_aggregates_field_and_subplot():
     assert sub_group.extId is None
     assert sub_group.metrics is None
     assert sub_group.interpretation is None
+    assert sub_group.outputs is None
     assert sub_group.subPlots is not None
     assert len(sub_group.subPlots) == 1
     subplot = sub_group.subPlots[0]
     assert subplot.subPlotId == 1
-    assert subplot.extId == "2:sub:1:2026-05-28"
+    assert subplot.extId == "sat-2-4-1-2026-05-28"
     assert subplot.metrics.classification == "stressed"  # ndvi 0.25 -> sparse
 
 
@@ -189,6 +192,7 @@ async def test_push_posts_one_record_per_field_date_with_api_key():
     assert body["metrics"]["ndwi_mean"] == 0.40
     assert body["metrics"]["savi_mean"] == 0.58  # reaches the wire after exclude_none
     assert body["metrics"]["ndre_mean"] == 0.33
+    assert body["outputs"] == {}
     assert "subPlots" not in body
 
 
@@ -222,12 +226,14 @@ def test_published_narrative_attached_as_notes():
     )
     assert recs[0].interpretation is not None
     assert recs[0].interpretation.stress_level == "none"  # still derived from NDVI
-    assert recs[0].interpretation.notes == "Maize canopy is vigorous."
+    assert recs[0].interpretation.summary == "Maize canopy is vigorous."
+    assert recs[0].interpretation.notes == "Maize canopy is vigorous."  # backward-compat alias
 
 
 def test_no_narrative_leaves_notes_none():
     recs = to_satellite_results(build_payload("2", [_ir("4", "ndvi", 0.62)]))
     assert recs[0].interpretation is not None
+    assert recs[0].interpretation.summary is None
     assert recs[0].interpretation.notes is None
 
 
@@ -238,6 +244,7 @@ def test_narrative_without_ndvi_still_carries_a_block():
     )
     assert recs[0].interpretation is not None
     assert recs[0].interpretation.stress_level is None
+    assert recs[0].interpretation.summary == "Soil prep observed."
     assert recs[0].interpretation.notes == "Soil prep observed."
 
 
@@ -248,8 +255,9 @@ def test_narrative_matched_per_field_and_date():
     )
     # field record carries the narrative
     field_rec = next(r for r in recs if r.scope == "field")
-    assert field_rec.extId == "2:4:2026-05-28"
+    assert field_rec.extId == "sat-2-4-2026-05-28"
     assert field_rec.interpretation is not None
+    assert field_rec.interpretation.summary == "Field-level read only."
     assert field_rec.interpretation.notes == "Field-level read only."
     # sub-plot grouped records have no interpretation block (gateway spec 2026-06-18)
     sub_rec = next(r for r in recs if r.scope == "sub_plot")
@@ -299,7 +307,9 @@ async def test_push_includes_notes_in_body():
     await port.push(payload)
     await client.aclose()
 
+    assert captured[0]["interpretation"]["summary"] == "Vigorous maize canopy."
     assert captured[0]["interpretation"]["notes"] == "Vigorous maize canopy."
+    assert captured[0]["outputs"] == {}
 
 
 async def test_push_concurrent_posts_records_with_semaphore():
@@ -372,25 +382,29 @@ async def test_push_posts_sub_plot_grouped_body():
     assert "metrics" not in body
     assert "extId" not in body
     assert "interpretation" not in body
+    assert "outputs" not in body  # outputs is None for grouped records, excluded via exclude_none
     # all four sub-plots in one array, sorted by subPlotId
     assert len(body["subPlots"]) == 4
     sp1 = body["subPlots"][0]
     assert sp1["subPlotId"] == 1
-    assert sp1["extId"] == "1:sub:1:2026-05-28"
+    assert sp1["extId"] == "sat-1-4-1-2026-05-28"
     assert sp1["metrics"]["ndvi_mean"] == 0.31
     assert sp1["metrics"]["ndvi_min"] == 0.22
     assert sp1["metrics"]["ndvi_max"] == 0.50
     assert sp1["metrics"]["classification"] == "stressed"
     sp2 = body["subPlots"][1]
     assert sp2["subPlotId"] == 2
+    assert sp2["extId"] == "sat-1-4-2-2026-05-28"
     assert sp2["metrics"]["ndvi_mean"] == 0.45
     assert sp2["metrics"]["classification"] == "moderate"
     sp3 = body["subPlots"][2]
     assert sp3["subPlotId"] == 3
+    assert sp3["extId"] == "sat-1-4-3-2026-05-28"
     assert sp3["metrics"]["ndvi_mean"] == 0.28
     assert sp3["metrics"]["classification"] == "stressed"
     sp4 = body["subPlots"][3]
     assert sp4["subPlotId"] == 4
+    assert sp4["extId"] == "sat-1-4-4-2026-05-28"
     assert sp4["metrics"]["ndvi_mean"] == 0.52
     assert sp4["metrics"]["classification"] == "moderate"
 

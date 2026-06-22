@@ -112,6 +112,44 @@
       "AgriTrackSyncIn": {
         "description": "One AgriTrack sync push: a farmer and their farms.",
         "properties": {
+          "boundaries": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Boundaries"
+          },
+          "farm": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Farm"
+          },
+          "farmId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Farmid"
+          },
           "farmer": {
             "anyOf": [
               {
@@ -122,11 +160,41 @@
               }
             ]
           },
+          "farmerId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Farmerid"
+          },
           "farms": {
             "items": {
               "$ref": "#/components/schemas/_FarmSyncIn"
             },
             "title": "Farms",
+            "type": "array"
+          },
+          "fields": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/_FlatFieldIn"
+            },
+            "title": "Fields",
+            "type": "array"
+          },
+          "subPlots": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/_FlatSubPlotIn"
+            },
+            "title": "Subplots",
             "type": "array"
           }
         },
@@ -1323,7 +1391,7 @@
         "type": "object"
       },
       "SatelliteInterpretation": {
-        "description": "The optional interpretation block: none|low|moderate|high stress, free-text anomalies, and\n`notes` - the agronomist's reviewed, published narrative (ADR 0006). `notes` is present only\nwhen the read was published; an unreviewed draft never reaches the wire (risk #6).",
+        "description": "The optional interpretation block (gateway spec §9). `summary` is the canonical primary\nnarrative; `notes` is kept as a backward-compat alias for existing AgriTrack consumers.\n`anomalies` is preserved here (also present in `SatelliteMetrics` per §11) for backward\ncompat. `zones` carries optional stress-zone breakdowns.",
         "properties": {
           "anomalies": {
             "default": [],
@@ -1354,14 +1422,42 @@
               }
             ],
             "title": "Stress Level"
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Summary"
+          },
+          "zones": {
+            "default": [],
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Zones",
+            "type": "array"
           }
         },
         "title": "SatelliteInterpretation",
         "type": "object"
       },
       "SatelliteMetrics": {
-        "description": "The flattened per-record metrics AgriTrack expects (ADR 0006). `savi_mean`/`ndre_mean` were\nadded 2026-06-19 (ADR 0006 §3 amendment): both indices were already computed and stored, but\nhad no wire field here, so they were dropped at this adapter and never reached AgriTrack.",
+        "description": "The flattened per-record metrics AgriTrack expects (ADR 0006). `savi_mean`/`ndre_mean` were\nadded 2026-06-19 (ADR 0006 §3 amendment): both indices were already computed and stored, but\nhad no wire field here, so they were dropped at this adapter and never reached AgriTrack.\n`anomalies` moved here from `SatelliteInterpretation` per gateway spec §11 (2026-06-21).",
         "properties": {
+          "anomalies": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Anomalies",
+            "type": "array"
+          },
           "classification": {
             "anyOf": [
               {
@@ -1528,6 +1624,18 @@
                 "type": "null"
               }
             ]
+          },
+          "outputs": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outputs"
           },
           "scope": {
             "title": "Scope",
@@ -1978,6 +2086,139 @@
           "field_id"
         ],
         "title": "_FieldSyncIn",
+        "type": "object"
+      },
+      "_FlatFieldIn": {
+        "description": "Gateway §6.2 canonical flat-format field (camelCase keys).",
+        "properties": {
+          "area_ha": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Area Ha"
+          },
+          "boundary": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Boundary"
+          },
+          "crop": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Crop"
+          },
+          "fieldId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              }
+            ],
+            "title": "Fieldid"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          }
+        },
+        "required": [
+          "fieldId"
+        ],
+        "title": "_FlatFieldIn",
+        "type": "object"
+      },
+      "_FlatSubPlotIn": {
+        "description": "Gateway §6.2 canonical flat-format sub-plot; fieldId links it to its parent field.",
+        "properties": {
+          "boundary": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Boundary"
+          },
+          "crop": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Crop"
+          },
+          "fieldId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              }
+            ],
+            "title": "Fieldid"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "subPlotId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "integer"
+              }
+            ],
+            "title": "Subplotid"
+          }
+        },
+        "required": [
+          "subPlotId",
+          "fieldId"
+        ],
+        "title": "_FlatSubPlotIn",
         "type": "object"
       },
       "_SubPlotIn": {

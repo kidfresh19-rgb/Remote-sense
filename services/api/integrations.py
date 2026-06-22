@@ -9,10 +9,11 @@ integers. Authenticated with the shared AgriTrack API key (the same key we prese
 from __future__ import annotations
 
 import hmac
+from collections import defaultdict
 from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, status
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 from rs_core.config import Settings, get_settings
 from rs_core.db import get_read_session, get_session
 from rs_core.logging import get_logger
@@ -67,20 +68,76 @@ class _FarmerSyncIn(BaseModel):
     email: str | None = None
 
 
+class _FlatFieldIn(BaseModel):
+    """Gateway §6.2 canonical flat-format field (camelCase keys)."""
+
+    model_config = ConfigDict(extra="ignore")
+    fieldId: str | int
+    name: str | None = None
+    crop: str | None = None
+    area_ha: float | None = None
+    boundary: dict[str, Any] | None = None
+
+
+class _FlatSubPlotIn(BaseModel):
+    """Gateway §6.2 canonical flat-format sub-plot; fieldId links it to its parent field."""
+
+    model_config = ConfigDict(extra="ignore")
+    subPlotId: str | int
+    fieldId: str | int
+    name: str | None = None
+    crop: str | None = None
+    boundary: dict[str, Any] | None = None
+
+
 class AgriTrackSyncIn(BaseModel):
     """One AgriTrack sync push: a farmer and their farms."""
 
+    # Supports two formats permanently:
+    # - Legacy nested:   farmer + farms[fields[sub_plots]]
+    # - Canonical flat:  farmerId + farmId + farm + boundaries + fields + subPlots  (§6.2)
+    # Dispatch in to_farm_ins is keyed on whether farmId is present.
+    #
+    # `farms` stays required so the frozen OpenAPI schema is unchanged; the mode="before"
+    # validator synthesizes farms=[] when the flat format sends farmId instead (additive).
     model_config = ConfigDict(extra="ignore")
+    # Legacy nested format
     farmer: _FarmerSyncIn | None = None
     farms: list[_FarmSyncIn]
+    # Canonical flat format (gateway §6.2, camelCase additive fields)
+    farmerId: str | int | None = None
+    farmId: str | int | None = None
+    farm: dict[str, Any] | None = None
+    boundaries: dict[str, Any] | None = None
+    fields: list[_FlatFieldIn] = []
+    subPlots: list[_FlatSubPlotIn] = []
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_flat_format(cls, data: object) -> object:
+        """When the caller uses the flat format (farmId present, farms absent), synthesize an
+        empty farms list so the required-field constraint is satisfied without altering the
+        frozen OpenAPI schema. to_farm_ins dispatches on farmId to handle the flat path."""
+        if isinstance(data, dict) and "farmId" in data and "farms" not in data:
+            data = dict(data)
+            data["farms"] = []
+        return data
 
 
 def to_farm_ins(sync: AgriTrackSyncIn) -> list[FarmIn]:
-    """Map an AgriTrack sync payload onto the vendor-neutral ingestion schema. Each field becomes a
-    `FieldIn`; each sub-plot becomes another `FieldIn` whose canonical id encodes its parent field
-    (`"{field_id}.{plot_id}"`), so both are analysed and results can be reported at field and
-    sub-plot scope (ADR 0006). AgriTrack sends GeoJSON in EPSG:4326 (the FieldIn/FarmIn
-    default)."""
+    """Map an AgriTrack sync payload to vendor-neutral FarmIn list. Dispatches on format: the
+    canonical flat format (§6.2, `farmId` present) calls `_flat_to_farm_ins`; the legacy nested
+    format calls `_nested_to_farm_ins`. Both flatten sub-plots into `FieldIn` entries with dotted
+    canonical ids (`"{field_id}.{sub_plot_id}"`), so field and sub-plot scope are both analysed
+    and results can be reported at both levels (ADR 0006)."""
+    if sync.farmId is not None:
+        return _flat_to_farm_ins(sync)
+    return _nested_to_farm_ins(sync)
+
+
+def _nested_to_farm_ins(sync: AgriTrackSyncIn) -> list[FarmIn]:
+    """Handle the legacy nested format (farmer + farms[fields[sub_plots]]). AgriTrack sends
+    GeoJSON in EPSG:4326 (the FieldIn/FarmIn default)."""
     farmer_id = (
         str(sync.farmer.agritrack_id)
         if sync.farmer and sync.farmer.agritrack_id is not None
@@ -126,6 +183,56 @@ def to_farm_ins(sync: AgriTrackSyncIn) -> list[FarmIn]:
             )
         )
     return farms
+
+
+def _flat_to_farm_ins(sync: AgriTrackSyncIn) -> list[FarmIn]:
+    """Handle the canonical flat format (§6.2): a single farm sent as `farmId` + top-level
+    `fields` + top-level `subPlots`. Sub-plots carry a `fieldId` back-reference that links each
+    sub-plot to its parent field without nesting."""
+    farmer_id = str(sync.farmerId) if sync.farmerId is not None else None
+    farm_id_str = str(sync.farmId)
+    farm_meta = sync.farm or {}
+    farm_boundary = (sync.boundaries or {}).get("farm")
+
+    # Index sub-plots by their parent fieldId for O(1) lookup per field.
+    sub_plots_by_field: defaultdict[str, list[_FlatSubPlotIn]] = defaultdict(list)
+    for sp in sync.subPlots:
+        sub_plots_by_field[str(sp.fieldId)].append(sp)
+
+    fields: list[FieldIn] = []
+    for f in sync.fields:
+        field_key = str(f.fieldId)
+        if f.boundary is not None:
+            fields.append(
+                FieldIn(
+                    canonical_field_id=field_key,
+                    name=f.name,
+                    crop=f.crop,
+                    geometry=f.boundary,
+                )
+            )
+        for sp in sub_plots_by_field[field_key]:
+            if sp.boundary is not None:
+                subplot_key = f"{field_key}.{sp.subPlotId}"
+                fields.append(
+                    FieldIn(
+                        canonical_field_id=subplot_key,
+                        name=sp.name,
+                        crop=sp.crop,
+                        geometry=sp.boundary,
+                    )
+                )
+
+    return [
+        FarmIn(
+            canonical_farm_id=farm_id_str,
+            agritrack_farmer_id=farmer_id,
+            name=farm_meta.get("name"),
+            region=farm_meta.get("location"),
+            boundary=farm_boundary,
+            fields=fields,
+        )
+    ]
 
 
 async def require_agritrack_key(

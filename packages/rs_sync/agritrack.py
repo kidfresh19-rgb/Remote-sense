@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 from collections import defaultdict
 from datetime import date
+from typing import Any
 
 import httpx
 from pydantic import BaseModel
@@ -34,7 +35,8 @@ _STRESS = {"healthy": "none", "moderate": "low", "stressed": "moderate", "critic
 class SatelliteMetrics(BaseModel):
     """The flattened per-record metrics AgriTrack expects (ADR 0006). `savi_mean`/`ndre_mean` were
     added 2026-06-19 (ADR 0006 §3 amendment): both indices were already computed and stored, but
-    had no wire field here, so they were dropped at this adapter and never reached AgriTrack."""
+    had no wire field here, so they were dropped at this adapter and never reached AgriTrack.
+    `anomalies` moved here from `SatelliteInterpretation` per gateway spec §11 (2026-06-21)."""
 
     ndvi_mean: float | None = None
     ndvi_min: float | None = None
@@ -46,16 +48,20 @@ class SatelliteMetrics(BaseModel):
     cloud_cover_pct: float | None = None
     health_score: float | None = None
     classification: str | None = None
+    anomalies: list[str] = []
 
 
 class SatelliteInterpretation(BaseModel):
-    """The optional interpretation block: none|low|moderate|high stress, free-text anomalies, and
-    `notes` - the agronomist's reviewed, published narrative (ADR 0006). `notes` is present only
-    when the read was published; an unreviewed draft never reaches the wire (risk #6)."""
+    """The optional interpretation block (gateway spec §9). `summary` is the canonical primary
+    narrative; `notes` is kept as a backward-compat alias for existing AgriTrack consumers.
+    `anomalies` is preserved here (also present in `SatelliteMetrics` per §11) for backward
+    compat. `zones` carries optional stress-zone breakdowns."""
 
     stress_level: str | None = None
     anomalies: list[str] = []
+    summary: str | None = None
     notes: str | None = None
+    zones: list[dict[str, Any]] = []
 
 
 class SubPlotEntry(BaseModel):
@@ -84,6 +90,7 @@ class SatelliteResult(BaseModel):
     extId: str | None = None
     metrics: SatelliteMetrics | None = None
     interpretation: SatelliteInterpretation | None = None
+    outputs: dict[str, Any] | None = None
     # sub_plot grouping (gateway spec 2026-06-18)
     subPlots: list[SubPlotEntry] | None = None
 
@@ -148,24 +155,34 @@ def _build_record(
 ) -> SatelliteResult:
     """Build a flat farm- or field-scope record. NDMI fills `ndwi_mean` (ADR 0006);
     `classification`/`health_score` come from the NDVI vigour band; `cloud_cover_pct` is the
-    AOI's non-clear fraction. `narrative` is the published agronomist read, attached as
-    `interpretation.notes` (only published reads are passed in, risk #6)."""
+    AOI's non-clear fraction. `narrative` is the published agronomist read, attached as both
+    `summary` (gateway §9 primary) and `notes` (backward-compat alias); only published reads are
+    passed in (risk #6). `outputs: {}` is always present per the shared result schema (§9)."""
     metrics = _build_metrics(rows)
     stress_level: str | None = None
     if metrics.classification is not None:
         stress_level = _STRESS.get(metrics.classification)
-    # Build the block (always return a valid dictionary, never null, to satisfy the API contract)
-    interpretation = SatelliteInterpretation(stress_level=stress_level, notes=narrative)
+    interpretation = SatelliteInterpretation(
+        stress_level=stress_level,
+        summary=narrative,
+        notes=narrative,
+    )
     field_id, sub_plot_id, scope = _decode_field(canonical_field_id)
+    # extId format: sat-{farmId}-{fieldId}-{date} for fields, sat-{farmId}-farm-{date} for farm
+    if field_id is not None:
+        ext_id = f"sat-{farm_id}-{field_id}-{pass_date.isoformat()}"
+    else:
+        ext_id = f"sat-{farm_id}-farm-{pass_date.isoformat()}"
     return SatelliteResult(
         farmId=farm_id,
         fieldId=field_id,
         subPlotId=sub_plot_id,
         scope=scope,
         analysisDate=pass_date.isoformat(),
-        extId=f"{farm_id}:{canonical_field_id or 'farm'}:{pass_date.isoformat()}",
+        extId=ext_id,
         metrics=metrics,
         interpretation=interpretation,
+        outputs={},
     )
 
 
@@ -181,7 +198,8 @@ def _build_sub_plot_group(
     entries = [
         SubPlotEntry(
             subPlotId=sub_plot_id,
-            extId=f"{farm_id}:sub:{sub_plot_id}:{pass_date.isoformat()}",
+            # sat-{farmId}-{fieldId}-{subPlotId}-{date} per gateway §9 example
+            extId=f"sat-{farm_id}-{field_id}-{sub_plot_id}-{pass_date.isoformat()}",
             metrics=_build_metrics(rows),
         )
         for sub_plot_id, rows in sorted(sub_plots_by_id.items())

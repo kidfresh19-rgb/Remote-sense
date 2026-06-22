@@ -140,7 +140,7 @@ async def test_mobile_data_pull_returns_contract_records(maker_):
     assert rec_field.metrics.evi_mean == 0.55
     assert rec_field.metrics.ndwi_mean == 0.40  # NDMI -> ndwi_mean
     assert rec_field.metrics.classification == "healthy"
-    assert rec_field.extId == "2:4:2026-05-17"
+    assert rec_field.extId == "sat-2-4-2026-05-17"
 
 
 async def test_mobile_data_pull_empty_for_unknown_farm(maker_):
