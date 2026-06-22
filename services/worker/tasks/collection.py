@@ -126,17 +126,17 @@ async def run_collection(
     analyses = 0
     for result in results:
         # Scene metadata first: the analysis rows FK onto it (first-write-wins, immutable).
-        meta = await adapter.metadata(result.scene_id)
+        # scene_metadata was gathered concurrently with the band fetches in collect_field.
         await upsert_scene_metadata(
             session,
             scene_id=result.scene_id,
             provider=result.provider,
-            quantification_value=meta.quantification_value,
-            boa_add_offset=meta.boa_add_offset,
-            crs=meta.crs,
+            quantification_value=result.scene_metadata.quantification_value,
+            boa_add_offset=result.scene_metadata.boa_add_offset,
+            crs=result.scene_metadata.crs,
             sensing_datetime=result.sensing_datetime,
-            processing_baseline=meta.processing_baseline,
-            scene_cloud_pct=meta.scene_cloud_pct,
+            processing_baseline=result.scene_metadata.processing_baseline,
+            scene_cloud_pct=result.scene_metadata.scene_cloud_pct,
         )
         pass_date = result.sensing_datetime.date()
         for output in result.outputs:

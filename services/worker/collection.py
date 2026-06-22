@@ -10,13 +10,14 @@ persisted (S-1)."""
 
 from __future__ import annotations
 
+import asyncio
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
 
 import numpy as np
 from rs_analysis import AnalysisOutput, analyze_index, get_index, index_raster, rgb_raster
-from rs_imagery import AOI, AccessPort, TimeRange
+from rs_imagery import AOI, AccessPort, SceneMetadata, TimeRange
 
 from services.worker.locks import DEFAULT_LOCK_TTL_SECONDS, LockClient, enqueue_lock
 from services.worker.planning import plan_scenes
@@ -42,6 +43,7 @@ class ScenePassResult:
     processing_mode: str
     sensing_datetime: datetime
     outputs: list[AnalysisOutput]
+    scene_metadata: SceneMetadata
     rasters: dict[str, IndexRaster] = field(default_factory=dict)
 
 
@@ -77,29 +79,50 @@ async def collect_field(
     results: list[ScenePassResult] = []
     for scene_id in to_process:
         scene = by_id[scene_id]
+        provider = scene.provider
+
+        # Pre-compute band lists for each resolution group (pure — no I/O).
+        resolution_keys = list(resolution_groups.keys())
+        band_lists: list[list[str]] = []
+        for res_m in resolution_keys:
+            names_for_res = resolution_groups[res_m]
+            bands = sorted({band for name in names_for_res for band in get_index(name).bands})
+            if emit_rasters and res_m == 10:
+                # Visual-composite bands: true color (B04/B03/B02) plus NIR for false color.
+                bands = sorted(set(bands) | {"B08", "B04", "B03", "B02"})
+            band_lists.append(bands)
+
+        # All CDSE I/O for this scene runs concurrently: one fetch per resolution group plus
+        # the metadata XML read. The RasterioWindowSource is a per-adapter lazy singleton with
+        # a _ReadMemo that collapses concurrent identical href reads to one actual S3 call, so
+        # the metadata XML fetch inside each adapter.fetch() and this explicit metadata() call
+        # produce at most one network round-trip between them.
+        fetch_results, scene_metadata = await asyncio.gather(
+            asyncio.gather(
+                *(
+                    adapter.fetch(scene, aoi, bands=bl, resolution_m=float(rm))
+                    for rm, bl in zip(resolution_keys, band_lists, strict=True)
+                )
+            ),
+            adapter.metadata(scene_id),
+        )
+
         outputs: list[AnalysisOutput] = []
         rasters: dict[str, IndexRaster] = {}
-        provider = scene.provider
         processing_mode = "mock"
+        fetched_bands_10m: dict[str, np.ndarray] | None = None
+        transform_10m: tuple[float, float, float, float, float, float] | None = None
+        crs_10m: str | None = None
 
-        fetched_bands_10m = None
-        transform_10m = None
-        crs_10m = None
-
-        for resolution_m, names in resolution_groups.items():
-            bands = sorted({band for name in names for band in get_index(name).bands})
-            if emit_rasters and resolution_m == 10:
-                # Visual-composite bands: true color (B04/B03/B02) plus the NIR for false color.
-                bands = sorted(set(bands) | {"B08", "B04", "B03", "B02"})
-            fetched = await adapter.fetch(scene, aoi, bands=bands, resolution_m=float(resolution_m))
+        for res_m, names_for_res, fetched in zip(
+            resolution_keys, resolution_groups.values(), fetch_results, strict=True
+        ):
             processing_mode = fetched.provenance.processing_mode.value
-
-            if resolution_m == 10:
+            if res_m == 10:
                 fetched_bands_10m = fetched.data.bands
                 transform_10m = fetched.data.transform
                 crs_10m = fetched.data.crs
-
-            for name in names:
+            for name in names_for_res:
                 outputs.append(
                     analyze_index(
                         reflectance=fetched.data.bands,
@@ -115,6 +138,7 @@ async def collect_field(
                         crs=fetched.data.crs,
                     )
 
+        # Safety fallback: only reached if all CORE_INDICES happen to be 20 m-only.
         if emit_rasters and fetched_bands_10m is None:
             fetched_10m = await adapter.fetch(
                 scene, aoi, bands=["B08", "B04", "B03", "B02"], resolution_m=10.0
@@ -129,15 +153,13 @@ async def collect_field(
             green = fetched_bands_10m.get("B03")
             blue = fetched_bands_10m.get("B02")
             if red is not None and green is not None and blue is not None:
-                # A fetch that returned bands always carries its grid; narrow the Optionals.
                 assert transform_10m is not None and crs_10m is not None
                 rasters["rgb"] = IndexRaster(
                     array=rgb_raster({"B04": red, "B03": green, "B02": blue}),
                     transform=transform_10m,
                     crs=crs_10m,
                 )
-            # False color (B08/B04/B03, NIR first): vegetation renders red. A visual composite
-            # like rgb - no stats and no analysis row, just a COG for the workspace toggle.
+            # False color (B08/B04/B03, NIR first): vegetation renders red.
             if nir is not None and red is not None and green is not None:
                 assert transform_10m is not None and crs_10m is not None
                 rasters["fcc"] = IndexRaster(
@@ -153,6 +175,7 @@ async def collect_field(
                 processing_mode=processing_mode,
                 sensing_datetime=scene.sensing_datetime,
                 outputs=outputs,
+                scene_metadata=scene_metadata,
                 rasters=rasters,
             )
         )
