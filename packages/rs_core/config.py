@@ -127,6 +127,14 @@ class Settings(BaseSettings):
     # cache holds STAC item lists (only new imagery invalidates them -> short TTL).
     aoi_result_cache_ttl_s: int = 2592000  # 30 days
     aoi_search_cache_ttl_s: int = 300  # 5 minutes
+    # Collection pipeline (backfill / forward-fill) scene-metadata cache. Per-scene radiometric
+    # metadata (offset, quantification value, CRS, baseline) is immutable once a scene is published,
+    # so caching it by scene id lets every field sharing a Sentinel-2 tile skip re-reading the
+    # product XML: one read per scene across all workers, not one per field-pass. Keyed by scene id
+    # only (it is AOI-independent), generous TTL like the result cache. Fail-open, like the others -
+    # a Redis hiccup degrades to a live XML read, never an error. Reflectance is still read per
+    # scene from metadata (invariant 2); this only avoids re-reading the same immutable scene.
+    cdse_scene_meta_cache_ttl_s: int = 2592000  # 30 days
 
     # Comparison groups - Natural Region foundation (PRD 0002, ADR 0010). The seeded Natural Region
     # layer is committed reference geometry under data/natural_regions/ (tracked past the data/

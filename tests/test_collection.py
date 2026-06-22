@@ -13,6 +13,7 @@ from rs_core.config import ImageryAdapter, Settings
 from rs_imagery import AOI, TimeRange, get_access_adapter
 
 from services.worker.collection import collect_field, collect_field_locked
+from services.worker.tasks.collection import _build_collection_adapter
 
 _AOI = AOI(
     geometry={
@@ -217,3 +218,31 @@ async def test_collect_field_locked_skips_when_already_held() -> None:
     )
     assert results is None  # R-1: another worker owns the unit, so skip rather than double-process
     assert redis.store[_KEY] == "held-by-another-worker"  # untouched
+
+
+# ----------------------------------------------------------- collection adapter wiring (Phase 2a)
+
+
+async def test_build_collection_adapter_attaches_scene_meta_cache_for_windowed_cog() -> None:
+    """The stored pipeline's windowed_cog adapter is wired with the cross-worker scene-metadata
+    cache, returned alongside for close at task end. Lazy Redis client -> no network here."""
+    from rs_imagery.adapters.windowed_cog import WindowedCogAdapter
+
+    adapter, caches = _build_collection_adapter(
+        Settings(imagery_adapter=ImageryAdapter.WINDOWED_COG)
+    )
+    assert isinstance(adapter, WindowedCogAdapter)
+    assert adapter._scene_meta_cache is not None
+    assert len(caches) == 1
+    for cache in caches:
+        await cache.aclose()  # release the lazily-built client; never opened a connection
+
+
+def test_build_collection_adapter_passes_through_other_adapters() -> None:
+    """A non-windowed_cog adapter (config switch, invariant 1) is returned unchanged with no caches
+    to manage."""
+    from rs_imagery.adapters.mock import MockAdapter
+
+    adapter, caches = _build_collection_adapter(Settings(imagery_adapter=ImageryAdapter.MOCK))
+    assert isinstance(adapter, MockAdapter)
+    assert caches == []

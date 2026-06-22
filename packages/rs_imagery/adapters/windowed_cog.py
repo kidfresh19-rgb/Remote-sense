@@ -101,6 +101,8 @@ class WindowedCogAdapter(AccessPort):
         oauth: CdseOAuth2Client | None = None,
         search_cache: RedisJsonCache | None = None,
         search_cache_ttl_s: int | None = None,
+        scene_meta_cache: RedisJsonCache | None = None,
+        scene_meta_cache_ttl_s: int | None = None,
     ) -> None:
         self._settings = settings or get_settings()
         self._stac_client = stac_client
@@ -112,6 +114,15 @@ class WindowedCogAdapter(AccessPort):
             search_cache_ttl_s
             if search_cache_ttl_s is not None
             else self._settings.aoi_search_cache_ttl_s
+        )
+        # Cross-worker scene-metadata cache (immutable per scene id): a hit skips the product-XML
+        # read on every field-pass after the first that touches a shared Sentinel-2 tile. Distinct
+        # from the short-TTL search cache - scene radiometry never changes, so the TTL is generous.
+        self._scene_meta_cache = scene_meta_cache
+        self._scene_meta_cache_ttl_s = (
+            scene_meta_cache_ttl_s
+            if scene_meta_cache_ttl_s is not None
+            else self._settings.cdse_scene_meta_cache_ttl_s
         )
 
     # -- lazy construction of the network-facing collaborators ------------------------------------
@@ -189,12 +200,27 @@ class WindowedCogAdapter(AccessPort):
         return [item.to_scene_ref() for item in items]
 
     async def metadata(self, scene_id: str) -> SceneMetadata:
+        # A scene's radiometric metadata is immutable once published, so a cross-worker cache keyed
+        # by scene id lets every field sharing this tile skip the XML read. Invariant 2 holds: the
+        # cached value was itself read from this scene's metadata, never hard-coded; a reprocessed
+        # scene gets a new id (new key). Fail-open: a miss or any Redis error reads the XML live.
+        if self._scene_meta_cache is not None:
+            cached = await self._scene_meta_cache.get(scene_id)
+            if isinstance(cached, dict):
+                log.info("scene_meta_cache_hit", scene_id=scene_id)
+                return SceneMetadata.model_validate(cached)
+            log.info("scene_meta_cache_miss", scene_id=scene_id)
         item = self._item(scene_id)
         href = resolve_metadata_href(item.assets)
         # The XML read is a blocking CDSE/S3 call; run it off the event loop so concurrent passes
         # (ADR 0011) are not serialised by it. The per-task memo (read_bytes) dedupes repeats.
         xml_bytes = await asyncio.to_thread(self._source().read_bytes, href)
-        return parse_scene_metadata(scene_id, xml_bytes, crs=item.crs)
+        meta = parse_scene_metadata(scene_id, xml_bytes, crs=item.crs)
+        if self._scene_meta_cache is not None:
+            await self._scene_meta_cache.set(
+                scene_id, meta.model_dump(mode="json"), ttl_s=self._scene_meta_cache_ttl_s
+            )
+        return meta
 
     async def fetch(
         self,
