@@ -168,16 +168,24 @@ def _guard_aoi_size(geometry: dict[str, Any]) -> None:
         )
 
 
-def _render_rgb_jpeg(
+def _render_rgb_cog(
     bands: dict[str, np.ndarray],
     transform: Any,
     crs: Any,
 ) -> bytes:
-    """Render a natural-colour JPEG (512 px) from B04/B03/B02 reflectance bands via an in-memory
-    COG. The per-channel stretch matches the tiler's RGB composite range. Requires the `geo` extra
-    (rasterio + rio_tiler); raises RuntimeError when absent."""
+    """Encode B04/B03/B02 reflectance bands as a georeferenced RGB COG (band order Red=B04,
+    Green=B03, Blue=B02; float32 reflectance, no display stretch - the same contract as the
+    registered-field RGB download, so the file opens true to value in QGIS with a 0-0.3 stretch).
+    Requires the `geo` extra (rasterio); raises RuntimeError when absent."""
     from rs_analysis.cog import rgb_raster, write_cog
 
+    return write_cog(rgb_raster(bands), transform=transform, crs=crs)
+
+
+def _jpeg_from_cog(cog_bytes: bytes) -> bytes:
+    """Render a natural-colour JPEG (512 px) from an in-memory RGB reflectance COG. The per-channel
+    0-0.3 stretch matches the tiler's RGB composite range. Requires the `geo` extra (rasterio +
+    rio_tiler); raises RuntimeError when absent."""
     try:
         import rasterio
         from rasterio.io import MemoryFile
@@ -186,8 +194,6 @@ def _render_rgb_jpeg(
         raise RuntimeError("raster stack not available in this context") from exc
 
     _RGB_RANGES = ((0.0, 0.3), (0.0, 0.3), (0.0, 0.3))
-    rgb = rgb_raster(bands)
-    cog_bytes = write_cog(rgb, transform=transform, crs=crs)
     with rasterio.Env(), MemoryFile(cog_bytes) as memfile:
         with Reader(memfile.name) as cog:
             image = cog.preview(max_size=512)
@@ -775,12 +781,15 @@ def render_natural_color_task(
     geometry: dict[str, Any],
     pass_date: str,
     cache_key: str,
+    cog_cache_key: str | None = None,
 ) -> str:
-    """Render a natural-colour JPEG (512 px, B04/B03/B02) for one custom AOI scene and cache it in
-    MinIO at `cache_key` (7-day lifecycle). Returns a base64-encoded JPEG string (JSON-safe for the
-    Redis result backend). The scene is re-discovered by searching ±1 day around `pass_date` and
-    matching by `scene_id`. Cache write is failure-isolated: a put error logs a warning and does
-    not fail the task."""
+    """Render the natural-colour artifacts for one custom AOI scene (B04/B03/B02) and cache them in
+    MinIO under the `aoi_preview/` prefix (7-day lifecycle): always the 512 px JPEG at `cache_key`,
+    and - when `cog_cache_key` is given - the georeferenced RGB reflectance COG it was rendered
+    from, so the GeoTIFF download is a cache hit once the thumbnail has been viewed. Returns a
+    base64-encoded JPEG string (JSON-safe for the Redis result backend). The scene is re-discovered
+    by searching ±1 day around `pass_date` and matching by `scene_id`. Each cache write is
+    failure-isolated: a put error logs a warning and does not fail the task."""
     import base64
 
     settings = get_settings()
@@ -800,16 +809,22 @@ def render_natural_color_task(
         fetched = await adapter.fetch(
             scene, aoi, bands=sorted(["B02", "B03", "B04"]), resolution_m=10.0
         )
-        return _render_rgb_jpeg(fetched.data.bands, fetched.data.transform, fetched.data.crs)
+        return _render_rgb_cog(fetched.data.bands, fetched.data.transform, fetched.data.crs)
 
-    jpeg_bytes = asyncio.run(_run())
+    cog_bytes = asyncio.run(_run())
+    jpeg_bytes = _jpeg_from_cog(cog_bytes)
 
-    try:
-        store = cog_store_from_settings(settings)
-        if store is not None:
+    store = cog_store_from_settings(settings)
+    if store is not None:
+        try:
             store.put(cache_key, jpeg_bytes, content_type="image/jpeg")
-    except Exception:
-        log.warning("natural_color.cache_put.failed", scene_id=scene_id, exc_info=True)
+        except Exception:
+            log.warning("natural_color.cache_put.failed", scene_id=scene_id, exc_info=True)
+        if cog_cache_key is not None:
+            try:
+                store.put(cog_cache_key, cog_bytes, content_type="image/tiff")
+            except Exception:
+                log.warning("natural_color.cog_cache_put.failed", scene_id=scene_id, exc_info=True)
 
     return base64.b64encode(jpeg_bytes).decode()
 
