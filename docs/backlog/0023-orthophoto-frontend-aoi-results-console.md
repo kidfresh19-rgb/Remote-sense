@@ -1,6 +1,6 @@
 # Backlog 0023 — Orthophoto: frontend AOI Studio results console downloads + preview
 
-- Status: ready-for-agent
+- Status: done
 - Type: frontend
 - Parent: orthophoto download + natural color preview feature
 - Blocked by: 0020 (natural color BFF endpoint), 0021 (AOI Studio temp COG + download endpoint)
@@ -90,3 +90,20 @@ revokes the object URL on unmount.
 - [ ] `prefers-reduced-motion`: thumbnails appear without fade-in.
 - [ ] TypeScript compiles cleanly (`tsc --noEmit`).
 - [ ] No Lucide imports introduced.
+
+## Follow-on (shipped) — orthophoto image download
+
+The thumbnail/filmstrip console above shipped first. Layered on top: a way to download the
+**natural-colour orthophoto image itself** for the selected pass, next to the CSV button.
+
+- Backend: `POST /analyse/aoi/natural-color` gained a `format: "jpeg" | "cog"` field. The render now
+  builds the RGB reflectance COG once and serves either the 512 px true-colour JPEG (default,
+  unchanged) or the georeferenced RGB GeoTIFF. Both artifacts are persisted under the shared
+  `aoi_preview/` prefix (`aoi_rgb_cog_key`, 7-day lifecycle), so viewing a thumbnail warms the
+  GeoTIFF cache. COG is float32 reflectance (apply a 0-0.3 per-channel stretch in QGIS), no DN math.
+- Frontend: `AOIStudioPage` now passes `geometry`/`jobId` into `AOIResultsTable`. The results header
+  has **Image** (JPEG) and **GeoTIFF** buttons that act on the selected pass; click a filmstrip
+  thumbnail or a table row to pick the pass (defaults to the latest usable pass). Custom AOI only -
+  whole-farm targets have no client geometry, so the buttons are hidden there.
+- Out of scope (separate tickets if demanded): all-passes ZIP export; whole-farm orthophoto (needs a
+  server-side-union variant endpoint).
