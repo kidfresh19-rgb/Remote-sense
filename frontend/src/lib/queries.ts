@@ -306,6 +306,30 @@ export function useAllFields(farms: Farm[] | undefined) {
   });
 }
 
+/** All region-boundary layers (seeded Natural Regions + analyst-uploaded), for the map's overlay
+ *  toggle. Cached a minute: the set changes only when an analyst uploads or draws a region. */
+export function useRegionLayers() {
+  const { token } = useToken();
+  return useQuery({
+    queryKey: ["region-layers"],
+    queryFn: ({ signal }) => api.regionLayers(token!, signal),
+    enabled: !!token,
+    staleTime: 60_000,
+  });
+}
+
+/** One layer's boundaries as GeoJSON for a MapLibre overlay. Enabled only while a layer is chosen,
+ *  so toggling the overlay off (layerId null) stops fetching. */
+export function useRegionBoundaries(layerId: string | null) {
+  const { token } = useToken();
+  return useQuery({
+    queryKey: ["region-boundaries", layerId],
+    queryFn: ({ signal }) => api.regionBoundaries(layerId!, token!, signal),
+    enabled: !!token && !!layerId,
+    staleTime: 60_000,
+  });
+}
+
 export function useCollectField(fieldId: string | null) {
   const { token } = useToken();
   return useMutation({

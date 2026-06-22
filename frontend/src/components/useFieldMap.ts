@@ -20,6 +20,18 @@ const CUSTOM_AOI_SOURCE = "custom-aoi";
 const CUSTOM_AOI_FILL = "custom-aoi-fill";
 const CUSTOM_AOI_LINE = "custom-aoi-line";
 
+// Region-boundary context overlays (comparison groups, PRD 0002 slices 8a/8b): the seeded Natural
+// Region layer and a chosen analyst-uploaded layer, each a toggled GeoJSON fill+line beneath the
+// field. Distinct hues so the two read apart from each other and from the field accent.
+const NR_SOURCE = "region-nr";
+const NR_FILL = "region-nr-fill";
+const NR_LINE = "region-nr-line";
+const NR_COLOR = "#f0b429"; // amber: seeded Natural Region boundaries
+const UPLOADED_SOURCE = "region-uploaded";
+const UPLOADED_FILL = "region-uploaded-fill";
+const UPLOADED_LINE = "region-uploaded-line";
+const UPLOADED_COLOR = "#9b8afb"; // violet: analyst-uploaded boundaries
+
 const DRAW_VERTS_SOURCE = "draw-verts";
 const DRAW_LINE_SOURCE = "draw-line";
 const DRAW_VERTS_LAYER = "draw-verts-layer";
@@ -129,6 +141,12 @@ interface FieldMapParams {
   onMap?: (map: MaplibreMap | null) => void;
   /** Custom AOI geometry to render as a dashed overlay. */
   customAOI?: Geometry | null;
+  /** Seeded Natural Region boundaries as a GeoJSON FeatureCollection, drawn as a toggled context
+   *  overlay. Null/undefined removes the overlay. */
+  naturalRegions?: GeoJSON.FeatureCollection | null;
+  /** A chosen analyst-uploaded region layer as a GeoJSON FeatureCollection, drawn as a toggled
+   *  context overlay. Null/undefined removes the overlay. */
+  uploadedRegions?: GeoJSON.FeatureCollection | null;
   /** A point pin ([lng, lat]) for a searched place that has no boundary, so "fly to" lands on a
    *  visible target. Cleared by the caller once a field or AOI boundary takes over. */
   marker?: [number, number] | null;
@@ -163,6 +181,54 @@ function safeRemoveSource(map: MaplibreMap | null, id: string): void {
   } catch {
     // Map may have been destroyed; ignore errors
   }
+}
+
+/** Render (or clear) one region-boundary context overlay: a translucent fill + a solid outline
+ *  fed by a GeoJSON FeatureCollection. Kept beneath the index raster and the field outline so it
+ *  never obscures the analysis. Idempotent: re-applies by updating the source if it already exists,
+ *  removing everything when `data` is null/empty. */
+function applyBoundaryOverlay(
+  map: MaplibreMap,
+  ids: { source: string; fill: string; line: string },
+  data: GeoJSON.FeatureCollection | null | undefined,
+  color: string,
+): void {
+  if (!data || data.features.length === 0) {
+    safeRemoveLayer(map, ids.fill);
+    safeRemoveLayer(map, ids.line);
+    safeRemoveSource(map, ids.source);
+    return;
+  }
+  const source = map.getSource(ids.source) as GeoJSONSource | undefined;
+  if (source) {
+    source.setData(data);
+    return;
+  }
+  map.addSource(ids.source, { type: "geojson", data });
+  // Sit below the index raster (if shown), else below the field fill, so analysis stays on top.
+  const beforeId = map.getLayer(INDEX_LAYER)
+    ? INDEX_LAYER
+    : map.getLayer(FIELD_FILL)
+      ? FIELD_FILL
+      : undefined;
+  map.addLayer(
+    {
+      id: ids.fill,
+      type: "fill",
+      source: ids.source,
+      paint: { "fill-color": color, "fill-opacity": 0.07 },
+    },
+    beforeId,
+  );
+  map.addLayer(
+    {
+      id: ids.line,
+      type: "line",
+      source: ids.source,
+      paint: { "line-color": color, "line-width": 1.5 },
+    },
+    beforeId,
+  );
 }
 
 function updateDrawLayers(map: MaplibreMap, verts: [number, number][]): void {
@@ -279,6 +345,8 @@ export function useFieldMap(
     controls = true,
     onMap,
     customAOI,
+    naturalRegions,
+    uploadedRegions,
     marker,
     drawMode,
     onDrawComplete,
@@ -489,6 +557,30 @@ export function useFieldMap(
     if (readyRef.current) apply();
     else map.once("load", apply);
   }, [customAOI, field]);
+
+  // Natural Region boundary overlay (PRD 0002 slice 8a), toggled and drawn beneath the analysis.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const apply = () => applyBoundaryOverlay(map, { source: NR_SOURCE, fill: NR_FILL, line: NR_LINE }, naturalRegions, NR_COLOR);
+    if (readyRef.current) apply();
+    else map.once("load", apply);
+  }, [naturalRegions]);
+
+  // Analyst-uploaded boundary overlay (PRD 0002 slice 8b), toggled and drawn beneath the analysis.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const apply = () =>
+      applyBoundaryOverlay(
+        map,
+        { source: UPLOADED_SOURCE, fill: UPLOADED_FILL, line: UPLOADED_LINE },
+        uploadedRegions,
+        UPLOADED_COLOR,
+      );
+    if (readyRef.current) apply();
+    else map.once("load", apply);
+  }, [uploadedRegions]);
 
   // Draw mode: click to place vertices, double-click to close the polygon.
   useEffect(() => {

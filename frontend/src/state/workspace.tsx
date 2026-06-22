@@ -18,6 +18,10 @@ interface WorkspaceState {
   showRgb: boolean;
   showFcc: boolean; // false color (NIR/red/green): vegetation renders red
   customAOI: Geometry | null; // user-defined analysis boundary
+  // Region-boundary map overlays (comparison groups, PRD 0002 slices 8a/8b). Global map context,
+  // independent of the selected field, so they are not cleared on a farm/field change.
+  showNaturalRegions: boolean; // the seeded Natural Region layer
+  uploadedRegionLayerId: string | null; // the chosen analyst-uploaded layer, or none
 }
 
 interface RestoreView {
@@ -38,7 +42,9 @@ type Action =
   | { type: "toggleRaster" }
   | { type: "toggleRgb" }
   | { type: "toggleFcc" }
-  | { type: "setCustomAOI"; geometry: Geometry | null };
+  | { type: "setCustomAOI"; geometry: Geometry | null }
+  | { type: "toggleNaturalRegions" }
+  | { type: "setUploadedRegionLayer"; layerId: string | null };
 
 const initialState: WorkspaceState = {
   farmId: null,
@@ -51,6 +57,8 @@ const initialState: WorkspaceState = {
   showRgb: false,
   showFcc: false,
   customAOI: null,
+  showNaturalRegions: false,
+  uploadedRegionLayerId: null,
 };
 
 function reducer(state: WorkspaceState, action: Action): WorkspaceState {
@@ -131,6 +139,10 @@ function reducer(state: WorkspaceState, action: Action): WorkspaceState {
       };
     case "setCustomAOI":
       return { ...state, customAOI: action.geometry };
+    case "toggleNaturalRegions":
+      return { ...state, showNaturalRegions: !state.showNaturalRegions };
+    case "setUploadedRegionLayer":
+      return { ...state, uploadedRegionLayerId: action.layerId };
     default:
       return state;
   }
@@ -149,6 +161,8 @@ interface WorkspaceContextValue extends WorkspaceState {
   toggleRgb: () => void;
   toggleFcc: () => void;
   setCustomAOI: (geometry: Geometry | null) => void;
+  toggleNaturalRegions: () => void;
+  setUploadedRegionLayer: (layerId: string | null) => void;
 }
 
 const WorkspaceContext = createContext<WorkspaceContextValue | null>(null);
@@ -170,6 +184,9 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       toggleRgb: () => dispatch({ type: "toggleRgb" }),
       toggleFcc: () => dispatch({ type: "toggleFcc" }),
       setCustomAOI: (geometry) => dispatch({ type: "setCustomAOI", geometry }),
+      toggleNaturalRegions: () => dispatch({ type: "toggleNaturalRegions" }),
+      setUploadedRegionLayer: (layerId) =>
+        dispatch({ type: "setUploadedRegionLayer", layerId }),
     }),
     [state],
   );

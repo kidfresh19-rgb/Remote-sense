@@ -1,6 +1,6 @@
 # Backlog 0010 — Map layer: Natural Region boundaries
 
-- Status: ready-for-agent
+- Status: built
 - Type: AFK
 - Parent: PRD 0002 (`docs/prd/0002-farm-comparison-groups.md`), slice 8a
 - Blocked by: 0002
@@ -14,9 +14,9 @@ reading boundary GeoJSON from the workspace BFF. Default off.
 
 ## Acceptance criteria
 
-- [ ] The Natural Region boundary layer is a toggleable MapLibre overlay, default off.
-- [ ] It renders the seeded Natural Region polygons from the BFF.
-- [ ] ruff + ruff format + mypy + pytest green; the frontend is validated per the frontend
+- [x] The Natural Region boundary layer is a toggleable MapLibre overlay, default off.
+- [x] It renders the seeded Natural Region polygons from the BFF.
+- [x] ruff + ruff format + mypy + pytest green; the frontend is validated per the frontend
   conventions and `/verify`.
 
 ## Tests (seams)
