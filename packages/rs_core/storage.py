@@ -52,7 +52,8 @@ class CogStore(Protocol):
     """Where derived index COGs live. The pipeline puts, the retention job deletes (S4.3); the
     tiler reads (via GDAL, out of band)."""
 
-    def put(self, key: str, data: bytes) -> None: ...
+    # content_type defaults to the COG media type; the natural-color preview overrides it to JPEG.
+    def put(self, key: str, data: bytes, *, content_type: str = "image/tiff") -> None: ...
 
     def exists(self, key: str) -> bool: ...
 
