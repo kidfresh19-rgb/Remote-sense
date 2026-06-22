@@ -235,7 +235,11 @@ export function FieldInspector() {
                 onCollect={handleCollect}
               />
             ) : tab === "passes" ? (
-              <SceneList fieldId={fieldId} collecting={collecting} />
+              <SceneList
+                fieldId={fieldId}
+                collecting={collecting}
+                geometryVersion={field?.geometry_version}
+              />
             ) : tab === "read" ? (
               <InterpretationPanel fieldId={fieldId} />
             ) : tab === "notes" ? (
