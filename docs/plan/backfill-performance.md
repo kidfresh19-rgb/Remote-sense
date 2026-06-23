@@ -23,13 +23,14 @@ from here.
 | 2a | Cross-worker scene-metadata cache + collection-adapter cache wiring | DONE, merged + pushed | `e1e077b`, `5752d5d`; merged to integration (`be3a6c5`) |
 | 2b | Eliminate redundant per-pass STAC search | DONE | `aada28d` on `perf/backfill-pass-redundancy` |
 | 2c | Share one OAuth client per worker process | N/A (won't do) | see below - the windowed_cog collection path uses no OAuth |
-| 3a | Fail-fast on permanent CDSE errors | TODO (parked) | |
+| 3a | Fail-fast on permanent CDSE errors | DONE | `bd952ff` on `develop` |
 | 3b | Reads-per-pass telemetry + bucket sizing | DONE | see below — band memo stats surfaced in `collection.field.complete` / `collection.pass.complete` |
 | 4 | COG off the number-critical path | DEFERRED (measurement-gated) | |
 
-Phases 1 + 2a are merged into `integration/azure-consolidation` and pushed to `origin` (azure); they
-are NOT yet on `develop`. Phases 2b and 3b are committed on `develop` (this branch), unpushed.
-2c is N/A; 3a remains parked per user decision.
+Everything now lives on `develop`: the `integration/azure-consolidation` consolidation was merged
+into `develop`, so Phases 1, 2a, 2b, 3b and 3a are all on it. `origin/develop` is at `5c7418c`; local
+`develop` is ahead 4 (2b, docs, 3b, 3a), **unpushed**. 2c is N/A; Phase 4 is deferred and 3b is its
+measurement gauge.
 
 ## Diagnosis (the four problems)
 
@@ -149,13 +150,31 @@ Dropped after grounding. Two independent reasons:
 Phase 2b already removed the per-pass search (the cost that mattered). If the interactive lane ever
 needs cross-task token reuse, that is server_compute's concern, tracked separately, not here.
 
-## Phase 3a (TODO): fail-fast on permanent CDSE errors
+## Phase 3a (DONE, `bd952ff`): fail-fast on permanent CDSE errors
 
-`RasterioWindowSource._make_retrying` retries any `RasterioIOError` 4x with backoff. Classify: retry
-transient (timeout / 5xx / 429), fail fast on permanent (404 / NoSuchKey / AccessDenied / LTA-offline
-granule). Same for `_read_bytes_quota_guarded` (the boto3 path already has adaptive retry; add the
-permanent-error short-circuit). Zero-network testable with a fake source that raises classified
-errors.
+The bug was bigger than wasted retries: `RasterioWindowSource._make_retrying` retried any
+`RasterioIOError` 4x, **and** `CircuitBreaker` counted any exception as a failure - so ~5 permanent
+errors in a row (a deleted / forbidden / LTA-offline granule) would OPEN the breaker and pause ALL
+CDSE reads for 60s on an otherwise-healthy store.
+
+**What shipped:**
+- `resilience.py`: a `PermanentError` marker. `CircuitBreaker.call`/`call_sync` treat it as a health
+  *success* - a definitive 404/AccessDenied means CDSE *answered*, so it is reachable: never trip on
+  missing data, break any failure streak, and never deadlock a half-open probe. Re-raised for the
+  caller to handle.
+- `windowed_cog.py`: `_is_permanent_read_error` (conservative substring classifier - unmatched
+  defaults to transient, so a recoverable read is never wrongly dropped) and `_is_permanent_s3_error`
+  (boto3 `ClientError` code/status). `_read_window_once` classifies a `RasterioIOError` and re-raises
+  permanent ones as `PermanentReadError` (not a `RasterioIOError`, so the retry skips it; a
+  `PermanentError`, so the breaker spares it); `_open_and_read` holds the raw GDAL read. The boto3 and
+  http metadata-byte paths classify the same way.
+- Tests (zero-network): `test_imagery_resilience.py` (breaker does not trip on `PermanentError`, and
+  the permanent error breaks the failure streak); `test_windowed_cog_adapter.py` (classifier units; a
+  permanent windowed read fails after 1 attempt with the breaker spared; a transient one retries 4x
+  and trips the breaker).
+- Validity: no index math touched, no invariant moved, numbers byte-identical - only error handling
+  changed. A permanently-missing scene still fails its pass (fast now), and is re-planned next scan;
+  *skipping* such scenes permanently is a separate feature, out of 3a scope.
 
 ## Phase 3b (DONE): telemetry + bucket sizing
 
