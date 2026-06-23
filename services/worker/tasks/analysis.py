@@ -25,7 +25,6 @@ from functools import partial
 from typing import Any
 
 import numpy as np
-
 from rs_analysis import analyze_index, get_index
 from rs_core import CogStore, cog_store_from_settings, get_settings
 from rs_core.cache import RedisJsonCache, redis_json_cache_from_settings
@@ -268,7 +267,8 @@ async def _analyse_scene(
     # Emit temp COG for AOI Studio downloads (failure-isolated; arrays in memory now).
     if cog_store is not None and job_id is not None:
         try:
-            from rs_analysis.cog import index_raster as _ir, write_cog as _wc
+            from rs_analysis.cog import index_raster as _ir
+            from rs_analysis.cog import write_cog as _wc
 
             pass_date_str = scene.sensing_datetime.date().isoformat()
             key = aoi_tmp_cog_key(job_id, pass_date_str, index_name)
@@ -300,8 +300,13 @@ async def _clearest_scene_result(
     best: dict[str, Any] | None = None
     for scene in scenes:
         result = await _analyse_scene(
-            adapter, scene, aoi, index_name,
-            result_cache=result_cache, cog_store=cog_store, job_id=job_id,
+            adapter,
+            scene,
+            aoi,
+            index_name,
+            result_cache=result_cache,
+            cog_store=cog_store,
+            job_id=job_id,
         )
         if best is None or result["clear_fraction"] > best["clear_fraction"]:
             best = result
@@ -457,8 +462,13 @@ async def _resolve_requested_day(
     same_day = by_day.get(day)
     if same_day:
         result = await _clearest_scene_result(
-            adapter, same_day, aoi, index_name,
-            result_cache=result_cache, cog_store=cog_store, job_id=job_id,
+            adapter,
+            same_day,
+            aoi,
+            index_name,
+            result_cache=result_cache,
+            cog_store=cog_store,
+            job_id=job_id,
         )
         result["requested_date"] = day.isoformat()
         return result
@@ -570,8 +580,14 @@ async def _analyse_aoi_series(
         passes = await _gather_passes(
             [
                 partial(
-                    _analyse_scene, adapter, scene, aoi, index_name,
-                    result_cache=result_cache, cog_store=cog_store, job_id=job_id,
+                    _analyse_scene,
+                    adapter,
+                    scene,
+                    aoi,
+                    index_name,
+                    result_cache=result_cache,
+                    cog_store=cog_store,
+                    job_id=job_id,
                 )
                 for scene in chosen
             ],
