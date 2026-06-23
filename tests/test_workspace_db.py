@@ -385,13 +385,20 @@ async def test_field_collect_enqueues_backfill_for_existing_field(maker_, monkey
 
     field_id = await _seed(maker_)
     enqueued: dict = {}
-    monkeypatch.setattr(tasks.backfill_field, "delay", lambda fid: enqueued.update(fid=fid))
+    monkeypatch.setattr(
+        tasks.backfill_field,
+        "apply_async",
+        lambda *, args, queue: enqueued.update(args=args, queue=queue),
+    )
     async with maker_() as session:
         result = await field_collect_endpoint(field_id, _ANALYST, session)
     assert result["status"] == "enqueued"
     assert result["field_id"] == str(field_id)
     assert result["by"] == "analyst-1"  # the verified token subject, not client input
-    assert enqueued["fid"] == str(field_id)  # the existing field's backfill was enqueued
+    # User-initiated, so it runs interactive=True on the reserved lane: the newest passes populate
+    # the chart promptly instead of queuing behind the daily bulk sweep.
+    assert enqueued["args"] == [str(field_id), True]
+    assert enqueued["queue"] == "interactive"
 
 
 async def test_field_collect_unknown_field_is_404(maker_, monkeypatch) -> None:
@@ -401,8 +408,8 @@ async def test_field_collect_unknown_field_is_404(maker_, monkeypatch) -> None:
     # A 404 must short-circuit before any enqueue, so a missing field never schedules pipeline work.
     monkeypatch.setattr(
         tasks.backfill_field,
-        "delay",
-        lambda fid: pytest.fail("must not enqueue for a missing field"),
+        "apply_async",
+        lambda **_: pytest.fail("must not enqueue for a missing field"),
     )
     async with maker_() as session:
         with pytest.raises(HTTPException) as excinfo:

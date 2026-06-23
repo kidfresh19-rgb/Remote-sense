@@ -271,6 +271,63 @@ def test_render_rgb_cog_and_jpeg_from_synthetic_bands() -> None:
     assert jpeg[:3] == b"\xff\xd8\xff"  # JPEG magic
 
 
+def test_render_rgb_cog_clips_outside_aoi_mask_to_nodata() -> None:
+    """A mask passed to `_render_rgb_cog` writes outside-AOI pixels as NoData (NaN) in the decoded
+    COG, while inside-AOI pixels keep their reflectance. This is the radiometric contract the
+    polygon clip relies on. Needs the geo extra; skips on a bare host."""
+    pytest.importorskip("rasterio")
+
+    import numpy as np
+    from rasterio.io import MemoryFile
+
+    from services.worker.tasks.analysis import _render_rgb_cog
+
+    bands = {b: np.full((8, 8), 0.12, dtype="float32") for b in ("B02", "B03", "B04")}
+    mask = np.zeros((8, 8), dtype=bool)
+    mask[2:6, 2:6] = True  # only the central 4x4 block is inside the AOI
+    transform = (10.0, 0.0, 500000.0, 0.0, -10.0, 8030000.0)
+
+    cog = _render_rgb_cog(bands, transform, "EPSG:32735", aoi_mask=mask)
+    with MemoryFile(cog) as mem, mem.open() as src:
+        red = src.read(1)
+
+    assert np.isnan(red[0, 0])  # corner is outside the AOI -> NoData
+    assert not np.isnan(red[3, 3])  # centre is inside the AOI -> kept
+    assert red[3, 3] == pytest.approx(0.12)
+
+
+def test_aoi_window_mask_clips_to_drawn_polygon() -> None:
+    """A non-rectangular AOI yields a window mask that is True inside the polygon and False in the
+    bounding-box corners outside it, after reprojecting the lon/lat geometry to the band CRS.
+    Needs the geo extra; skips on a bare host."""
+    pytest.importorskip("rasterio")
+
+    from rasterio.warp import transform_bounds
+
+    from services.worker.tasks.analysis import _aoi_window_mask
+
+    # Right triangle in lon/lat: the hypotenuse cuts off the south-east bbox corner.
+    triangle = {
+        "type": "Polygon",
+        "coordinates": [
+            [[31.00, -17.80], [31.02, -17.80], [31.00, -17.82], [31.00, -17.80]]
+        ],
+    }
+    crs = "EPSG:32736"  # 31 E is east of 30 E
+    left, bottom, right, top = transform_bounds("EPSG:4326", crs, 31.00, -17.82, 31.02, -17.80)
+    res = 10.0
+    width = max(1, round((right - left) / res))
+    height = max(1, round((top - bottom) / res))
+    transform = (res, 0.0, left, 0.0, -res, top)
+
+    mask = _aoi_window_mask(triangle, crs=crs, transform=transform, shape=(height, width))
+
+    assert mask.shape == (height, width)
+    assert mask.any()  # the triangle covers part of the window
+    assert not mask.all()  # but not the whole bounding box -> clipping happened
+    assert not bool(mask[-1, -1])  # the south-east corner is outside the triangle
+
+
 def test_natural_color_cache_miss_enqueues_task(monkeypatch) -> None:
     """On cache miss the task is enqueued and its b64 result is decoded and returned."""
     import base64

@@ -395,29 +395,41 @@ async def due_field_ids(
     return [str(fid) for fid in backfill], forward
 
 
-def _build_collection_adapter(settings: Settings) -> tuple[AccessPort, list[RedisJsonCache]]:
-    """The imagery adapter for the stored backfill / forward-fill path, wired with the ADR 0011
-    caches that path was missing. For windowed_cog, attach two cross-worker caches keyed by the
-    immutable scene id: the scene-metadata cache (so fields sharing a Sentinel-2 tile skip the
-    product-XML read after the first pass) and the scene-item cache (so a fanned-out per-pass task
-    resolves asset hrefs from Redis instead of re-running a one-day STAC search). Returns the
-    adapter plus the caches to close at task end. Any other adapter (mock / server_compute) is
-    returned unchanged - the adapter remains a config switch (invariant 1)."""
+def build_windowed_cog_reader(
+    settings: Settings, *, search_cache: RedisJsonCache | None = None
+) -> tuple[AccessPort, list[RedisJsonCache]]:
+    """Build the imagery adapter plus the scene caches to close at task end - the single place that
+    wires the windowed_cog cache set, so the stored-collection path and the AOI Studio path cannot
+    drift. For windowed_cog, attach the two immutable cross-lane caches keyed by the scene id: the
+    scene-metadata cache (any reader sharing a Sentinel-2 tile skips the product-XML read after the
+    first pass) and the scene-item cache (a pass resolves asset hrefs from Redis instead of
+    re-running a one-day STAC search). When `search_cache` is given (the AOI Studio path), it is
+    wired too but owned by the caller, so only the scene caches built here are returned to close. A
+    scene touched by either lane warms the other - one read per scene across the system. Any other
+    adapter (mock / server_compute) is returned unchanged with no caches - the adapter stays a
+    config switch (invariant 1). Invariant 2 holds: each cached value was itself read per scene from
+    metadata; every cache fails open, so a Redis hiccup degrades to a live read, never an error."""
     if settings.imagery_adapter is not ImageryAdapter.WINDOWED_COG:
         return get_access_adapter(settings), []
     from rs_imagery.adapters.windowed_cog import WindowedCogAdapter
 
-    caches: list[RedisJsonCache] = []
     scene_meta_cache = redis_json_cache_from_settings(settings, namespace="cdse:scene_meta")
-    if scene_meta_cache is not None:
-        caches.append(scene_meta_cache)
     scene_item_cache = redis_json_cache_from_settings(settings, namespace="cdse:scene_item")
-    if scene_item_cache is not None:
-        caches.append(scene_item_cache)
     adapter = WindowedCogAdapter(
-        settings, scene_meta_cache=scene_meta_cache, scene_item_cache=scene_item_cache
+        settings,
+        search_cache=search_cache,
+        scene_meta_cache=scene_meta_cache,
+        scene_item_cache=scene_item_cache,
     )
+    caches = [c for c in (scene_meta_cache, scene_item_cache) if c is not None]
     return adapter, caches
+
+
+def _build_collection_adapter(settings: Settings) -> tuple[AccessPort, list[RedisJsonCache]]:
+    """The imagery adapter for the stored backfill / forward-fill path: the shared windowed_cog
+    reader with the immutable scene caches but no AOI search cache (the stored path dedups against
+    the DB, not a search cache). See build_windowed_cog_reader."""
+    return build_windowed_cog_reader(settings)
 
 
 async def _aclose_caches(caches: list[RedisJsonCache]) -> None:
@@ -464,10 +476,49 @@ async def _run_for_field(field_id: str, *, is_backfill: bool) -> dict[str, objec
         await engine.dispose()
 
 
-async def _fan_out_backfill(field_id: str) -> dict[str, object]:
+def _split_passes_by_lane(
+    plan: Sequence[SceneRef], *, interactive: bool, head: int
+) -> tuple[list[SceneRef], list[SceneRef]]:
+    """Partition fanned-out backfill passes into `(interactive, bulk)`. A non-interactive run (the
+    nightly sweep / ingest) keeps every pass on the bulk lane in discovery order. A user-initiated
+    run promotes the `head` most-recent passes to the interactive lane: `plan_backfill_scenes`
+    returns scenes oldest-first, so sort newest-first before taking the head, or the *oldest* passes
+    would be the ones promoted. A plan of `head` or fewer passes goes entirely interactive. Pure (no
+    I/O) so the ordering rule is unit-testable with no DB (CLAUDE.md 3)."""
+    if not interactive:
+        return [], list(plan)
+    ordered = sorted(plan, key=lambda r: r.sensing_datetime, reverse=True)
+    return ordered[:head], ordered[head:]
+
+
+def _enqueue_collect_pass(field_id: str, ref: SceneRef, *, queue: str | None = None) -> None:
+    """Enqueue one fanned-out backfill pass for `ref`. Thread the serialised SceneRef so the pass
+    skips its own one-day search (2b) and keeps the real sensing_datetime; scene_id + pass_date
+    stay positional so an in-flight old-format message (acks_late redelivery) still deserialises and
+    takes the search fallback. `queue=None` routes to the task's default bulk `celery` lane;
+    "interactive" puts a user-initiated pass on the reserved lane, clear of the daily sweep."""
+    args = [
+        field_id,
+        ref.scene_id,
+        ref.sensing_datetime.date().isoformat(),
+        ref.model_dump_json(),
+    ]
+    if queue is None:
+        collect_pass_task.delay(*args)
+    else:
+        collect_pass_task.apply_async(args=args, queue=queue)
+
+
+async def _fan_out_backfill(field_id: str, *, interactive: bool = False) -> dict[str, object]:
     """Plan the field's outstanding backfill passes and enqueue one collect_pass task per pass; if
     none remain, the window is fully collected, so mark the backfill complete and clear the flag
-    (D11). Each pass then runs and commits independently under its own per-scene lock."""
+    (D11). Each pass then runs and commits independently under its own per-scene lock.
+
+    `interactive` is set only by the user-initiated "Collect now" endpoint: the newest
+    `collect_now_interactive_head` passes are routed to the `interactive` lane so the field's
+    current state populates promptly, while the deep-history tail stays on the bulk lane and never
+    crowds the AOI Studio previews that share the interactive lane. The nightly sweep and ingest
+    leave it False, so every pass runs on the bulk lane exactly as before."""
     settings = get_settings()
     adapter, caches = _build_collection_adapter(settings)
     engine = create_async_engine(settings.database_url, poolclass=NullPool)
@@ -502,18 +553,28 @@ async def _fan_out_backfill(field_id: str) -> dict[str, object]:
         await _aclose_caches(caches)
         await engine.dispose()
     if not plan:
-        return {"fanned_out": 0, "complete": True}
-    for ref in plan:
-        # Thread the scene ref so the pass skips its own one-day search (2b) and keeps the real
-        # sensing_datetime; scene_id + pass_date stay positional so an in-flight old-format message
-        # (acks_late redelivery) still deserialises and just takes the search fallback.
-        collect_pass_task.delay(
-            field_id,
-            ref.scene_id,
-            ref.sensing_datetime.date().isoformat(),
-            ref.model_dump_json(),
-        )
-    return {"fanned_out": len(plan), "complete": False}
+        return {"fanned_out": 0, "interactive": 0, "complete": True}
+
+    interactive_passes, bulk_passes = _split_passes_by_lane(
+        plan, interactive=interactive, head=settings.collect_now_interactive_head
+    )
+    for ref in interactive_passes:
+        _enqueue_collect_pass(field_id, ref, queue="interactive")
+    for ref in bulk_passes:
+        _enqueue_collect_pass(field_id, ref)
+    log.info(
+        "collection.backfill.fanned_out",
+        field_id=field_id,
+        interactive=interactive,
+        fanned_out=len(plan),
+        interactive_passes=len(interactive_passes),
+        bulk_passes=len(bulk_passes),
+    )
+    return {
+        "fanned_out": len(plan),
+        "interactive": len(interactive_passes),
+        "complete": False,
+    }
 
 
 def _snap_dates(
@@ -675,10 +736,13 @@ async def _scan_and_enqueue() -> dict[str, int]:
 
 
 @celery.task(name="collection.backfill_field")
-def backfill_field(field_id: str) -> dict[str, object]:
+def backfill_field(field_id: str, interactive: bool = False) -> dict[str, object]:
     """Fan a field's full-history backfill into one collect_pass task per outstanding pass (D11);
-    a later scan that finds no passes left converges it to backfill-complete."""
-    return asyncio.run(_fan_out_backfill(field_id))
+    a later scan that finds no passes left converges it to backfill-complete. `interactive` is the
+    optional trailing flag the user-initiated "Collect now" endpoint sets so the newest passes fan
+    out on the interactive lane; the nightly sweep and ingest omit it (bulk lane). It is the last
+    arg so an in-flight 1-arg message (acks_late redelivery) still runs and defaults to bulk."""
+    return asyncio.run(_fan_out_backfill(field_id, interactive=interactive))
 
 
 @celery.task(name="collection.collect_pass")

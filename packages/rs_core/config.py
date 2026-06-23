@@ -143,6 +143,16 @@ class Settings(BaseSettings):
     # like the others - a miss or a Redis hiccup falls back to a live search, never an error.
     cdse_scene_item_cache_ttl_s: int = 2592000  # 30 days
 
+    # Collect now (the workspace per-field on-demand backfill) lane split. A user clicking
+    # "Collect now" wants a number now, so the N most-recent passes are fanned out on the
+    # `interactive` Celery lane (the right edge of the chart populates within ~a revisit cycle)
+    # while the deep-history tail stays on the bulk `celery` lane, so a deep backfill never crowds
+    # the AOI Studio previews that share the interactive lane. The nightly sweep and the ingest
+    # backfill keep every pass on the bulk lane - this only governs the user-initiated endpoint.
+    # 5 spans ~50 days at the Sentinel-2 revisit after cloud filtering (enough to read the field's
+    # current state) while staying bounded on the interactive lane.
+    collect_now_interactive_head: int = 5
+
     # Comparison groups - Natural Region foundation (PRD 0002, ADR 0010). The seeded Natural Region
     # layer is committed reference geometry under data/natural_regions/ (tracked past the data/
     # gitignore). natural_region_name_column is the attribute the seed reads region names from;

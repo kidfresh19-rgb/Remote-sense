@@ -1,4 +1,4 @@
-import { DownloadSimple, Spinner, ChartLine, Table as TableIcon, ArrowUp, ArrowDown, ArrowsOut, ArrowsIn, X, ChartPieSlice, Image as ImageIcon, FileImage } from "@phosphor-icons/react";
+import { DownloadSimple, Spinner, ChartLine, Table as TableIcon, ArrowUp, ArrowDown, ArrowsOut, ArrowsIn, X, ChartPieSlice, Image as ImageIcon, FileImage, Warning } from "@phosphor-icons/react";
 import { useMemo, useState, useCallback, useEffect } from "react";
 import { createPortal } from "react-dom";
 import type { Geometry } from "geojson";
@@ -60,6 +60,10 @@ export function AOIResultsTable({
   // Orthophoto download: which pass the analyst has focused, and which format is in flight.
   const [selectedPassDate, setSelectedPassDate] = useState<string | null>(null);
   const [orthoFormat, setOrthoFormat] = useState<"jpeg" | "cog" | null>(null);
+  // A failed orthophoto download surfaces here. The fetch was previously silent, so an analyst saw
+  // the button spin and then nothing; a cold render that timed out reads differently from a hard
+  // failure, and a network throw must still clear the spinner.
+  const [orthoError, setOrthoError] = useState<string | null>(null);
 
   // Fetch the natural-colour orthophoto for one pass and save it. Mirrors the per-pass index
   // download and the eager shape of useNaturalColorThumbnail, but carries the AOI geometry so the
@@ -68,6 +72,7 @@ export function AOIResultsTable({
   const downloadOrthophoto = useCallback(
     async (pass: AOISeriesPass, format: "jpeg" | "cog") => {
       if (!geometry || !token || !pass.scene_id || !pass.pass_date) return;
+      setOrthoError(null);
       setOrthoFormat(format);
       try {
         const body: NaturalColorReq = {
@@ -81,7 +86,16 @@ export function AOIResultsTable({
           headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
           body: JSON.stringify(body),
         });
-        if (!resp.ok) return; // silent skip, matching the other download helpers
+        if (!resp.ok) {
+          // A 502/504 means the cold COG render is still holding the proxy; any other code is a
+          // genuine failure. Tell the analyst which, instead of the old silent skip.
+          setOrthoError(
+            resp.status === 502 || resp.status === 504
+              ? "Still preparing this image. Give it a moment, then try again."
+              : "Could not generate the orthophoto. Please try again.",
+          );
+          return;
+        }
         const blob = await resp.blob();
         const blobUrl = URL.createObjectURL(blob);
         const a = document.createElement("a");
@@ -89,6 +103,8 @@ export function AOIResultsTable({
         a.download = `rgb_${pass.scene_id}_${pass.pass_date}.${format === "cog" ? "tif" : "jpg"}`;
         a.click();
         URL.revokeObjectURL(blobUrl);
+      } catch {
+        setOrthoError("Could not reach the server. Check your connection and try again.");
       } finally {
         setOrthoFormat(null);
       }
@@ -105,6 +121,13 @@ export function AOIResultsTable({
       setOverviewActive(false);
     }
   }, [selectedIndex, hasAnyJob]);
+
+  // Clear a download error after a few seconds so a stale message does not linger.
+  useEffect(() => {
+    if (!orthoError) return;
+    const t = setTimeout(() => setOrthoError(null), 6000);
+    return () => clearTimeout(t);
+  }, [orthoError]);
 
   // Close on Escape
   useEffect(() => {
@@ -279,6 +302,22 @@ export function AOIResultsTable({
             </button>
           </div>
         </div>
+
+        {orthoError ? (
+          <div
+            role="alert"
+            className="flex items-center justify-between gap-2 rounded-md border border-critical/40 bg-critical/10 px-3 py-2 text-xs text-critical"
+          >
+            <span>{orthoError}</span>
+            <button
+              onClick={() => setOrthoError(null)}
+              aria-label="Dismiss"
+              className="shrink-0 rounded text-critical/70 transition-colors hover:text-critical focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+            >
+              <X size={13} />
+            </button>
+          </div>
+        ) : null}
 
         {viewMode === "chart" ? (
           <>
@@ -1501,7 +1540,12 @@ function Row({
   const interpolated = pass.status === "interpolated";
 
   if (!ok && !interpolated) {
+    const isError = pass.status === "error";
     const hasNearest = pass.before || pass.after;
+    // A failed pass (3a at the AOI layer): one scene's read errored while the rest of the series
+    // resolved. Mark it distinctly from a genuine "no pass" so the gap is not read as missing
+    // imagery; backfill mode has no Requested column, so surface the pass date inline.
+    const errorDate = pass.pass_date ?? pass.requested_date ?? null;
     return (
       <tr className="border-b border-border/60 text-muted">
         {showRequested ? (
@@ -1511,10 +1555,17 @@ function Row({
         ) : null}
         <td className="py-1.5 pr-3" colSpan={jobId && token ? 8 : 8}>
           <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:gap-2">
-            <Badge tone="neutral" className="w-fit text-[10px] uppercase">
-              no pass
+            <Badge tone={isError ? "critical" : "neutral"} className="w-fit text-[10px] uppercase">
+              {isError ? "failed" : "no pass"}
             </Badge>
-            {hasNearest && (
+            {isError ? (
+              <span className="text-[11px] text-muted" title={pass.detail ?? undefined}>
+                {!showRequested && errorDate ? (
+                  <span className="mr-1.5 font-medium text-fg">{formatDate(errorDate)}</span>
+                ) : null}
+                {pass.detail ?? "the imagery read failed for this pass"}
+              </span>
+            ) : hasNearest ? (
               <span className="text-[11px] text-muted">
                 Nearest passes:{" "}
                 {pass.before ? (
@@ -1535,7 +1586,7 @@ function Row({
                   "none"
                 )}
               </span>
-            )}
+            ) : null}
           </div>
         </td>
         {jobId && token ? <td /> : null}

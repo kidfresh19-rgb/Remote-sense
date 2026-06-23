@@ -172,15 +172,18 @@ export interface AOISeriesRequest {
 }
 
 /** One pass of a multi-pass AOI preview. `requested_date` is present in dates mode (the calendar
- *  day asked for); `status` is "ok", "interpolated", or "no_pass".
+ *  day asked for); `status` is "ok", "interpolated", "no_pass", or "error".
  *  "ok" - exact same-day scene; full stats + single-scene provenance present.
  *  "interpolated" - no same-day scene; stats averaged from the two nearest passes
  *    (`before_pass_date` + `after_pass_date` carry the source dates).
- *  "no_pass" - no scene found within the search window on either side. */
+ *  "no_pass" - no scene found within the search window on either side.
+ *  "error" - this one scene's read failed (e.g. a cold-archived granule); the rest of the series
+ *    still resolved. `detail` carries the failure message. Excluded from charts and the push. */
 export interface AOISeriesPass {
-  status: "ok" | "interpolated" | "no_pass" | string;
+  status: "ok" | "interpolated" | "no_pass" | "error" | string;
   requested_date?: string;
   index?: string;
+  detail?: string;
   pass_date?: string;
   before_pass_date?: string;
   after_pass_date?: string;

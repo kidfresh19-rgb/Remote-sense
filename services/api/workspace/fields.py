@@ -414,7 +414,11 @@ async def field_collect_endpoint(
     waiting for the nightly scan. This only exposes the existing pipeline entrypoint:
     `backfill_field` is idempotent and gap-filling (it replans only outstanding passes), so repeated
     clicks are safe and converge the field to complete. A missing field is a 404, not a dangling
-    task. Requires `run_analysis`."""
+    task. Requires `run_analysis`.
+
+    User-initiated, so it runs `interactive=True`: the planner and the newest passes go on the
+    reserved `interactive` lane, so the chart's right edge populates promptly instead of queuing
+    behind the daily bulk sweep; the deep-history tail still fans out on the bulk lane."""
     from services.worker.tasks import backfill_field
 
     field_exists = (
@@ -422,7 +426,7 @@ async def field_collect_endpoint(
     ).scalar_one_or_none()
     if field_exists is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "field not found")
-    backfill_field.delay(str(field_id))
+    backfill_field.apply_async(args=[str(field_id), True], queue="interactive")
     return {"status": "enqueued", "field_id": str(field_id), "by": principal.subject}
 
 
