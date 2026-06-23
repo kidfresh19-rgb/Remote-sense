@@ -830,7 +830,13 @@ def render_natural_color_task(
     cog_bytes = asyncio.run(_run())
     jpeg_bytes = _jpeg_from_cog(cog_bytes)
 
-    store = cog_store_from_settings(settings)
+    # Caching is best-effort: a store that cannot even be built (misconfigured S3) must still let
+    # the task return the rendered JPEG, exactly as the put failures below degrade rather than fail.
+    try:
+        store = cog_store_from_settings(settings)
+    except Exception:
+        log.warning("natural_color.cache_store.failed", scene_id=scene_id, exc_info=True)
+        store = None
     if store is not None:
         try:
             store.put(cache_key, jpeg_bytes, content_type="image/jpeg")
