@@ -1501,7 +1501,12 @@ function Row({
   const interpolated = pass.status === "interpolated";
 
   if (!ok && !interpolated) {
+    const isError = pass.status === "error";
     const hasNearest = pass.before || pass.after;
+    // A failed pass (3a at the AOI layer): one scene's read errored while the rest of the series
+    // resolved. Mark it distinctly from a genuine "no pass" so the gap is not read as missing
+    // imagery; backfill mode has no Requested column, so surface the pass date inline.
+    const errorDate = pass.pass_date ?? pass.requested_date ?? null;
     return (
       <tr className="border-b border-border/60 text-muted">
         {showRequested ? (
@@ -1511,10 +1516,17 @@ function Row({
         ) : null}
         <td className="py-1.5 pr-3" colSpan={jobId && token ? 8 : 8}>
           <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:gap-2">
-            <Badge tone="neutral" className="w-fit text-[10px] uppercase">
-              no pass
+            <Badge tone={isError ? "critical" : "neutral"} className="w-fit text-[10px] uppercase">
+              {isError ? "failed" : "no pass"}
             </Badge>
-            {hasNearest && (
+            {isError ? (
+              <span className="text-[11px] text-muted" title={pass.detail ?? undefined}>
+                {!showRequested && errorDate ? (
+                  <span className="mr-1.5 font-medium text-fg">{formatDate(errorDate)}</span>
+                ) : null}
+                {pass.detail ?? "the imagery read failed for this pass"}
+              </span>
+            ) : hasNearest ? (
               <span className="text-[11px] text-muted">
                 Nearest passes:{" "}
                 {pass.before ? (
@@ -1535,7 +1547,7 @@ function Row({
                   "none"
                 )}
               </span>
-            )}
+            ) : null}
           </div>
         </td>
         {jobId && token ? <td /> : null}

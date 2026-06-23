@@ -30,6 +30,7 @@ from services.worker.tasks.analysis import (
     MAX_AOI_SPAN_DEG,
     ResultCache,
     _analyse_aoi_series,
+    _analyse_aoi_series_multi,
 )
 
 _GEOM: dict = {
@@ -179,6 +180,96 @@ async def test_backfill_mode_clamps_months_to_configured_depth() -> None:
     )
     horizon_start, _ = backfill_window(now.date(), 12)
     assert all(p["pass_date"] >= horizon_start.isoformat() for p in out["passes"])
+
+
+# ------------------------------------------------------------------- engine: per-pass isolation
+
+
+class _FlakyAdapter(MockAdapter):
+    """A mock adapter whose fetch raises for one target scene, so a single bad granule can be made
+    to fail mid-series (AN-2). The same instance discovers the scenes and runs the engine, so the
+    target scene_id is the one the engine will actually fetch."""
+
+    def __init__(self, **kw: object) -> None:
+        super().__init__(**kw)  # type: ignore[arg-type]
+        self.fail_scene_id: str | None = None
+
+    async def fetch(self, scene: object, *args: object, **kwargs: object):  # type: ignore[override]
+        sid = getattr(scene, "scene_id", None)
+        if self.fail_scene_id is not None and sid == self.fail_scene_id:
+            raise RuntimeError("simulated cold-archived granule")
+        return await super().fetch(scene, *args, **kwargs)  # type: ignore[arg-type]
+
+
+async def test_backfill_isolates_a_failed_pass() -> None:
+    # One scene's read fails; the series must still return every other pass, mark the bad one as an
+    # `error` (not silently dropped), and not count it as resolved - the whole job no longer dies.
+    now = datetime(2025, 6, 15, tzinfo=UTC)
+    depth = 6
+    window_start, _ = backfill_window(now.date(), depth)
+    adapter = _FlakyAdapter()
+    scenes = await adapter.search(
+        _AOI, TimeRange(start=_sod(window_start), end=now), max_scene_cloud_pct=70.0
+    )
+    assert len(scenes) >= 3
+    target = sorted(scenes, key=lambda s: s.sensing_datetime)[1]  # a middle pass fails
+    adapter.fail_scene_id = target.scene_id
+
+    ticks: list[tuple[int, int]] = []
+    out = await _analyse_aoi_series(
+        _GEOM,
+        "ndvi",
+        "backfill",
+        None,
+        depth,
+        adapter=adapter,
+        backfill_months=18,
+        now=now,
+        on_progress=lambda d, t: ticks.append((d, t)),
+    )
+
+    passes = out["passes"]
+    errors = [p for p in passes if p["status"] == "error"]
+    assert len(errors) == 1  # exactly the one bad scene, isolated
+    assert errors[0]["scene_id"] == target.scene_id
+    assert errors[0]["index"] == "ndvi"
+    assert errors[0]["detail"]  # carries the failure message for the results console
+    assert out["resolved"] == len(passes) - 1  # the error pass is not counted resolved
+    assert all(p["status"] == "ok" for p in passes if p["status"] != "error")
+    n = len(passes)
+    assert ticks[-1] == (n, n)  # progress still climbed to the full total
+
+
+async def test_multi_backfill_isolates_a_failed_pass_per_index() -> None:
+    # The all-indices engine shares one gather, so an isolated failure must surface inside the right
+    # index series and leave every other index/pass intact.
+    now = datetime(2025, 6, 15, tzinfo=UTC)
+    depth = 6
+    window_start, _ = backfill_window(now.date(), depth)
+    adapter = _FlakyAdapter()
+    scenes = await adapter.search(
+        _AOI, TimeRange(start=_sod(window_start), end=now), max_scene_cloud_pct=70.0
+    )
+    target = sorted(scenes, key=lambda s: s.sensing_datetime)[1]
+    adapter.fail_scene_id = target.scene_id
+
+    out = await _analyse_aoi_series_multi(
+        _GEOM,
+        ["ndvi", "ndre"],
+        "backfill",
+        None,
+        depth,
+        adapter=adapter,
+        backfill_months=18,
+        now=now,
+    )
+
+    for name in ("ndvi", "ndre"):
+        series = out["indices"][name]
+        errors = [p for p in series["passes"] if p["status"] == "error"]
+        assert len(errors) == 1  # the bad scene fails for each index that reads it
+        assert errors[0]["scene_id"] == target.scene_id
+        assert series["resolved"] == len(series["passes"]) - 1
 
 
 # --------------------------------------------------------------------------- engine: concurrency

@@ -108,17 +108,20 @@ def _build_search_cache(settings: Settings) -> RedisJsonCache | None:
     return redis_json_cache_from_settings(settings, namespace="aoi:search")
 
 
-def _build_adapter(settings: Settings, *, search_cache: RedisJsonCache | None = None) -> AccessPort:
-    """Build the configured imagery adapter. When the adapter is `windowed_cog` and a `search_cache`
-    is provided, the cache is injected so repeated searches skip the STAC catalog query (ADR 0011).
-    Other adapters (mock, server_compute) are returned without a cache — they don't hit CDSE STAC.
+def _build_adapter(
+    settings: Settings, *, search_cache: RedisJsonCache | None = None
+) -> tuple[AccessPort, list[RedisJsonCache]]:
+    """Build the configured imagery adapter plus the scene caches to close at task end. Delegates to
+    the shared windowed_cog reader so the AOI Studio path attaches the same immutable cross-lane
+    scene caches (cdse:scene_meta + cdse:scene_item, Phase 2a) as the stored-collection path: an AOI
+    pass over a scene already touched by either lane skips the product-XML read, and an AOI preview
+    warms the caches for the later field collection. The injected `search_cache` (ADR 0011) still
+    skips the STAC catalog query on a repeat; it is owned and closed by the caller, so only the scene
+    caches built here are returned. Other adapters (mock, server_compute) come back with no caches.
     """
-    from rs_core.config import ImageryAdapter
-    from rs_imagery.adapters.windowed_cog import WindowedCogAdapter
+    from services.worker.tasks.collection import build_windowed_cog_reader
 
-    if settings.imagery_adapter is ImageryAdapter.WINDOWED_COG and search_cache is not None:
-        return WindowedCogAdapter(settings, search_cache=search_cache)
-    return get_access_adapter(settings)
+    return build_windowed_cog_reader(settings, search_cache=search_cache)
 
 
 def _band_memo_stats(adapter: AccessPort) -> dict[str, int] | None:
@@ -417,6 +420,27 @@ async def _analyse_aoi(
     return best
 
 
+def _isolated(
+    factory: Callable[[], Awaitable[dict[str, Any]]], label: dict[str, Any]
+) -> Callable[[], Awaitable[dict[str, Any]]]:
+    """Wrap one pass factory so a failed read becomes an `error` pass instead of sinking the whole
+    multi-pass job - 3a applied at the AOI Studio orchestration layer: one cold-archived / forbidden
+    scene must not lose every other resolved pass in the series. `label` carries the pass's identity
+    (index + scene_id or requested_date) so the results console can show which pass failed; an error
+    pass is naturally excluded from the chart, the gateway push, and the `resolved` count, which all
+    key off status ok/interpolated. CancelledError (a BaseException) is not caught, so task
+    cancellation still propagates."""
+
+    async def run() -> dict[str, Any]:
+        try:
+            return await factory()
+        except Exception as exc:
+            log.warning("aoi.pass.failed", **label, detail=str(exc), exc_info=True)
+            return {"status": "error", "detail": str(exc), **label}
+
+    return run
+
+
 async def _gather_passes(
     factories: list[Callable[[], Awaitable[dict[str, Any]]]],
     *,
@@ -547,16 +571,19 @@ async def _analyse_aoi_series(
 
         passes = await _gather_passes(
             [
-                partial(
-                    _resolve_requested_day,
-                    adapter,
-                    by_day,
-                    aoi,
-                    index_name,
-                    day,
-                    result_cache=result_cache,
-                    cog_store=cog_store,
-                    job_id=job_id,
+                _isolated(
+                    partial(
+                        _resolve_requested_day,
+                        adapter,
+                        by_day,
+                        aoi,
+                        index_name,
+                        day,
+                        result_cache=result_cache,
+                        cog_store=cog_store,
+                        job_id=job_id,
+                    ),
+                    {"index": index_name, "requested_date": day.isoformat()},
                 )
                 for day in requested
             ],
@@ -579,15 +606,22 @@ async def _analyse_aoi_series(
 
         passes = await _gather_passes(
             [
-                partial(
-                    _analyse_scene,
-                    adapter,
-                    scene,
-                    aoi,
-                    index_name,
-                    result_cache=result_cache,
-                    cog_store=cog_store,
-                    job_id=job_id,
+                _isolated(
+                    partial(
+                        _analyse_scene,
+                        adapter,
+                        scene,
+                        aoi,
+                        index_name,
+                        result_cache=result_cache,
+                        cog_store=cog_store,
+                        job_id=job_id,
+                    ),
+                    {
+                        "index": index_name,
+                        "scene_id": scene.scene_id,
+                        "pass_date": scene.sensing_datetime.date().isoformat(),
+                    },
                 )
                 for scene in chosen
             ],
@@ -685,14 +719,17 @@ async def _analyse_aoi_series_multi(
                 index_factories.append(
                     (
                         index_name,
-                        partial(
-                            _resolve_requested_day,
-                            adapter,
-                            by_day,
-                            aoi,
-                            index_name,
-                            day,
-                            result_cache=result_cache,
+                        _isolated(
+                            partial(
+                                _resolve_requested_day,
+                                adapter,
+                                by_day,
+                                aoi,
+                                index_name,
+                                day,
+                                result_cache=result_cache,
+                            ),
+                            {"index": index_name, "requested_date": day.isoformat()},
                         ),
                     )
                 )
@@ -712,13 +749,20 @@ async def _analyse_aoi_series_multi(
                 index_factories.append(
                     (
                         index_name,
-                        partial(
-                            _analyse_scene,
-                            adapter,
-                            scene,
-                            aoi,
-                            index_name,
-                            result_cache=result_cache,
+                        _isolated(
+                            partial(
+                                _analyse_scene,
+                                adapter,
+                                scene,
+                                aoi,
+                                index_name,
+                                result_cache=result_cache,
+                            ),
+                            {
+                                "index": index_name,
+                                "scene_id": scene.scene_id,
+                                "pass_date": scene.sensing_datetime.date().isoformat(),
+                            },
                         ),
                     )
                 )
@@ -777,12 +821,14 @@ def analyse_aoi_task(geometry: dict[str, object], index_name: str) -> dict[str, 
     async def _runner() -> dict[str, object]:
         result_cache = _build_result_cache(settings)
         search_cache = _build_search_cache(settings)
-        adapter = _build_adapter(settings, search_cache=search_cache)
+        adapter, scene_caches = _build_adapter(settings, search_cache=search_cache)
         try:
             return await _analyse_aoi(
                 geometry, index_name, adapter=adapter, result_cache=result_cache
             )
         finally:
+            for scene_cache in scene_caches:
+                await scene_cache.aclose()
             if result_cache is not None:
                 await result_cache.aclose()
             if search_cache is not None:
@@ -869,10 +915,12 @@ def _run_aoi_series(
         )
         result_cache = _build_result_cache(settings)
         search_cache = _build_search_cache(settings)
-        adapter = _build_adapter(settings, search_cache=search_cache)
+        adapter, scene_caches = _build_adapter(settings, search_cache=search_cache)
         try:
             return await make_coro(adapter, result_cache)
         finally:
+            for scene_cache in scene_caches:
+                await scene_cache.aclose()
             if result_cache is not None:
                 await result_cache.aclose()
             if search_cache is not None:
@@ -1114,10 +1162,12 @@ def _run_farm_series(
 
         result_cache = _build_result_cache(settings)
         search_cache = _build_search_cache(settings)
-        adapter = _build_adapter(settings, search_cache=search_cache)
+        adapter, scene_caches = _build_adapter(settings, search_cache=search_cache)
         try:
             return await make_coro(fields, adapter, result_cache, concurrency)
         finally:
+            for scene_cache in scene_caches:
+                await scene_cache.aclose()
             if result_cache is not None:
                 await result_cache.aclose()
             if search_cache is not None:
