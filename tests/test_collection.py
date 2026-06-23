@@ -14,7 +14,12 @@ from rs_imagery import AOI, TimeRange, get_access_adapter
 from rs_imagery.adapters.mock import MockAdapter
 
 from services.worker.collection import collect_field, collect_field_locked
-from services.worker.tasks.collection import _build_collection_adapter
+from services.worker.tasks.collection import (
+    CollectionSummary,
+    _adapter_read_stats,
+    _build_collection_adapter,
+    _summary_dict,
+)
 
 _AOI = AOI(
     geometry={
@@ -314,3 +319,48 @@ def test_build_collection_adapter_passes_through_other_adapters() -> None:
     adapter, caches = _build_collection_adapter(Settings(imagery_adapter=ImageryAdapter.MOCK))
     assert isinstance(adapter, MockAdapter)
     assert caches == []
+
+
+# -------------------------------------------------------- 3b: reads-per-pass telemetry
+
+
+def test_adapter_read_stats_returns_none_for_mock_adapter() -> None:
+    """The mock and server_compute adapters have no band-level memo, so _adapter_read_stats returns
+    None (fail-open, adapter-agnostic, invariant 1). The log fields are omitted for those adapters
+    rather than crashing."""
+    adapter = _adapter()
+    assert _adapter_read_stats(adapter) is None
+
+
+def test_summary_dict_includes_band_memo_fields() -> None:
+    """_summary_dict serialises band_memo_hits/misses onto the Celery result dict so they appear in
+    task results even when None (no memo adapter)."""
+    summary = CollectionSummary(
+        locked=False,
+        scenes=2,
+        analyses=10,
+        cursor_date=None,
+        band_memo_hits=None,
+        band_memo_misses=None,
+    )
+    d = _summary_dict(summary)
+    assert "band_memo_hits" in d
+    assert "band_memo_misses" in d
+    assert d["band_memo_hits"] is None
+    assert d["band_memo_misses"] is None
+
+
+def test_summary_dict_serialises_band_memo_counts() -> None:
+    """When an adapter reports hit/miss counts (windowed_cog after a fetch), they flow through
+    CollectionSummary into _summary_dict so the task result carries the read budget."""
+    summary = CollectionSummary(
+        locked=False,
+        scenes=1,
+        analyses=5,
+        cursor_date=None,
+        band_memo_hits=12,
+        band_memo_misses=3,
+    )
+    d = _summary_dict(summary)
+    assert d["band_memo_hits"] == 12
+    assert d["band_memo_misses"] == 3

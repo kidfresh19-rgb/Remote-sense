@@ -5,6 +5,7 @@ beat scan that enqueues them."""
 from __future__ import annotations
 
 import asyncio
+import time
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -28,6 +29,7 @@ from rs_core import (
 )
 from rs_core.cache import RedisJsonCache, redis_json_cache_from_settings
 from rs_core.config import ImageryAdapter, Settings
+from rs_core.logging import get_logger
 from rs_imagery import AOI, AccessPort, SceneRef, TimeRange, get_access_adapter
 from shapely.geometry import mapping
 from sqlalchemy import select, update
@@ -46,6 +48,8 @@ from services.worker.planning import (
     plan_scenes,
     select_forward_fill_due,
 )
+
+log = get_logger("services.worker.tasks.collection")
 
 # The core indices stored on every usable pass (PLAN §5). Adding one is a config change here, not
 # a schema migration - the analysis row is index-agnostic.
@@ -66,6 +70,8 @@ class CollectionSummary:
     scenes: int
     analyses: int
     cursor_date: date | None = None
+    band_memo_hits: int | None = None
+    band_memo_misses: int | None = None
 
 
 def _summary_dict(summary: CollectionSummary) -> dict[str, object]:
@@ -75,7 +81,21 @@ def _summary_dict(summary: CollectionSummary) -> dict[str, object]:
         "scenes": summary.scenes,
         "analyses": summary.analyses,
         "cursor_date": summary.cursor_date.isoformat() if summary.cursor_date else None,
+        "band_memo_hits": summary.band_memo_hits,
+        "band_memo_misses": summary.band_memo_misses,
     }
+
+
+def _adapter_read_stats(adapter: AccessPort) -> dict[str, int] | None:
+    """The adapter's per-task band/metadata memo hit/miss counts, or None when the active adapter
+    has no read-level memo (mock, server_compute). `misses` is the real CDSE read count - the
+    per-pass read budget observable that Phase 4 is gated on. Read defensively via getattr so the
+    engine stays adapter-agnostic (invariant 1)."""
+    getter = getattr(adapter, "read_cache_stats", None)
+    if getter is None:
+        return None
+    stats = getter()
+    return stats if isinstance(stats, dict) else None
 
 
 def field_to_aoi(field: Field) -> AOI:
@@ -110,8 +130,8 @@ async def run_collection(
     lock, persist every result (scene metadata + per-index zonal stats), and advance the cursor.
     When `cog_store` is given, also emit + store each index COG for the tiler (D1/D7). `scenes` is
     forwarded to the known-scene fast path (a fanned-out pass already holds its scene ref). Returns
-    a summary; `locked=True` means another worker held the unit and we did nothing (R-1). Runs
-    inside the caller's transaction - the caller commits."""
+    a summary with band-memo stats for the caller to log; `locked=True` means another worker held
+    the unit and we did nothing (R-1). Runs inside the caller's transaction - the caller commits."""
     results = await collect_field_locked(
         lock_client=lock_client,
         collection_key=collection_key,
@@ -208,8 +228,14 @@ async def run_collection(
             cursor_date=latest_pass,
             last_scene_id=latest_scene,
         )
+    band_stats = _adapter_read_stats(adapter)
     return CollectionSummary(
-        locked=False, scenes=len(results), analyses=analyses, cursor_date=latest_pass
+        locked=False,
+        scenes=len(results),
+        analyses=analyses,
+        cursor_date=latest_pass,
+        band_memo_hits=band_stats["hits"] if band_stats is not None else None,
+        band_memo_misses=band_stats["misses"] if band_stats is not None else None,
     )
 
 
@@ -406,6 +432,7 @@ async def _run_for_field(field_id: str, *, is_backfill: bool) -> dict[str, objec
     adapter, caches = _build_collection_adapter(settings)
     redis = aioredis.Redis.from_url(settings.redis_url)
     engine = create_async_engine(settings.database_url, poolclass=NullPool)
+    t0 = time.monotonic()
     try:
         async with async_sessionmaker(engine, expire_on_commit=False)() as session:
             summary = await prepare_and_run(
@@ -419,6 +446,17 @@ async def _run_for_field(field_id: str, *, is_backfill: bool) -> dict[str, objec
                 cog_store=cog_store_from_settings(settings),
             )
             await session.commit()
+        log.info(
+            "collection.field.complete",
+            field_id=field_id,
+            is_backfill=is_backfill,
+            scenes=summary.scenes,
+            analyses=summary.analyses,
+            locked=summary.locked,
+            wall_clock_s=round(time.monotonic() - t0, 2),
+            band_memo_hits=summary.band_memo_hits,
+            band_memo_misses=summary.band_memo_misses,
+        )
         return _summary_dict(summary)
     finally:
         await _aclose_caches(caches)
@@ -582,6 +620,7 @@ async def _collect_one_pass(
     # The fan-out serialises the neutral SceneRef (no vendor type leaks past the adapter); an
     # old-format in-flight message has none, so the pass falls back to its one-day search.
     ref = SceneRef.model_validate_json(scene_ref) if scene_ref is not None else None
+    t0 = time.monotonic()
     try:
         async with async_sessionmaker(engine, expire_on_commit=False)() as session:
             field = (
@@ -601,6 +640,18 @@ async def _collect_one_pass(
                 scene_ref=ref,
             )
             await session.commit()
+        log.info(
+            "collection.pass.complete",
+            field_id=field_id,
+            scene_id=scene_id,
+            pass_date=pass_date,
+            scenes=summary.scenes,
+            analyses=summary.analyses,
+            locked=summary.locked,
+            wall_clock_s=round(time.monotonic() - t0, 2),
+            band_memo_hits=summary.band_memo_hits,
+            band_memo_misses=summary.band_memo_misses,
+        )
         return _summary_dict(summary)
     finally:
         await _aclose_caches(caches)

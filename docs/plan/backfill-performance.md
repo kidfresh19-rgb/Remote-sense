@@ -23,13 +23,13 @@ from here.
 | 2a | Cross-worker scene-metadata cache + collection-adapter cache wiring | DONE, merged + pushed | `e1e077b`, `5752d5d`; merged to integration (`be3a6c5`) |
 | 2b | Eliminate redundant per-pass STAC search | DONE | `aada28d` on `perf/backfill-pass-redundancy` |
 | 2c | Share one OAuth client per worker process | N/A (won't do) | see below - the windowed_cog collection path uses no OAuth |
-| 3a | Fail-fast on permanent CDSE errors | TODO | |
-| 3b | Reads-per-pass telemetry + quota-bucket sizing | TODO | |
+| 3a | Fail-fast on permanent CDSE errors | TODO (parked) | |
+| 3b | Reads-per-pass telemetry + bucket sizing | DONE | see below — band memo stats surfaced in `collection.field.complete` / `collection.pass.complete` |
 | 4 | COG off the number-critical path | DEFERRED (measurement-gated) | |
 
 Phases 1 + 2a are merged into `integration/azure-consolidation` and pushed to `origin` (azure); they
-are NOT yet on `develop`. Phase 2b is committed on `perf/backfill-pass-redundancy` (off develop),
-unpushed. 2c is N/A; 3a/3b remain on this branch as the next slices.
+are NOT yet on `develop`. Phases 2b and 3b are committed on `develop` (this branch), unpushed.
+2c is N/A; 3a remains parked per user decision.
 
 ## Diagnosis (the four problems)
 
@@ -157,12 +157,29 @@ granule). Same for `_read_bytes_quota_guarded` (the boto3 path already has adapt
 permanent-error short-circuit). Zero-network testable with a fake source that raises classified
 errors.
 
-## Phase 3b (TODO): telemetry + bucket sizing
+## Phase 3b (DONE): telemetry + bucket sizing
 
-Surface `adapter.read_cache_stats()` (band-memo misses = real CDSE reads) in the collection task
-completion logs, the way `aoi.series.complete` does for previews, so the read budget is observable
-before/after. Verify `RS_CDSE_RATE_LIMIT_RPS` / `RS_CDSE_RATE_LIMIT_BURST` match the account budget
-so throughput is not capped below ~300/min.
+`_adapter_read_stats(adapter)` (mirrors `_band_memo_stats` in `analysis.py`) reads the band memo
+hit/miss counts from `adapter.read_cache_stats()` defensively via `getattr` (invariant 1 — mock /
+server_compute adapters have no memo and return `None`, which is fine). `CollectionSummary` carries
+`band_memo_hits` / `band_memo_misses`; `_summary_dict` serialises both onto the Celery result dict;
+`run_collection` stamps them on the summary after each field collection.
+
+Two new structured log events:
+- **`collection.field.complete`** (from `_run_for_field`): `field_id`, `is_backfill`, `scenes`,
+  `analyses`, `locked`, `wall_clock_s`, `band_memo_hits`, `band_memo_misses`.
+- **`collection.pass.complete`** (from `_collect_one_pass`): same fields plus `scene_id`,
+  `pass_date`.
+
+`misses` is the real CDSE read count (band-memo misses = S3 eodata reads). Before Phase 3b, nobody
+could observe this number at runtime; now every completed task emits it. This is the gauge that
+Phase 4 (`COG off the critical path`) is gated on — if `misses` per pass is already low, Phase 4
+may not be worth the complexity.
+
+For the `RS_CDSE_RATE_LIMIT_RPS` / `RS_CDSE_RATE_LIMIT_BURST` bucket sizing: once `band_memo_misses`
+per pass is observable in production logs, compare against the account's actual CDSE quota (typically
+~4 rps sustained, ~10-burst) and tune if needed. Tests: `test_collection.py` (`_adapter_read_stats`
+returns None for mock; `CollectionSummary` carries the counts; `_summary_dict` serialises them).
 
 ## Phase 4 (DEFERRED, measurement-gated): COG off the number-critical path
 
