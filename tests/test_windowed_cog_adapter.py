@@ -420,3 +420,66 @@ async def test_multi_index_collapses_shared_reads(monkeypatch) -> None:
     assert src.reads == 3
     # Cache stats: hits = 4 (XML + B04, B08, SCL during SAVI), misses = 4 (during NDVI)
     assert src.cache_stats() == {"hits": 4, "misses": 4}
+
+
+# ----------------------------------------------------------------- scene-metadata cache (Phase 2a)
+
+
+def _scene_meta_cache(store: dict[str, str], *, fail: bool = False) -> RedisJsonCache:
+    return RedisJsonCache(_SharedFakeRedis(store, fail=fail), namespace="cdse:scene_meta")
+
+
+class _CountingMetaSource(_FakeSource):
+    """A _FakeSource that counts product-XML reads, so a scene-metadata cache hit can be proven to
+    skip the CDSE read entirely."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.byte_reads = 0
+
+    def read_bytes(self, href):  # noqa: ANN001
+        self.byte_reads += 1
+        return _mtd()
+
+
+def _meta_adapter(source: _FakeSource, cache: RedisJsonCache) -> WindowedCogAdapter:
+    return WindowedCogAdapter(
+        Settings(),
+        stac_client=_FakeStac([_item()]),  # type: ignore[arg-type]
+        window_source=source,
+        scene_meta_cache=cache,
+    )
+
+
+async def test_metadata_cache_hit_skips_xml_read_across_tasks() -> None:
+    store: dict[str, str] = {}
+    cache = _scene_meta_cache(store)
+
+    # First task: a miss reads the product XML once, then writes the parsed metadata to Redis.
+    src1 = _CountingMetaSource()
+    adapter1 = _meta_adapter(src1, cache)
+    await adapter1.search(_AOI, _RANGE)
+    meta1 = await adapter1.metadata("S2_TEST")
+    assert src1.byte_reads == 1
+    assert meta1.quantification_value == 10000.0
+    assert meta1.boa_add_offset["B04"] == -1000.0
+    assert store  # the parsed metadata is now cached for other workers
+
+    # A second task (fresh adapter + source, shared Redis) sharing the tile hits the cache: no CDSE
+    # read, identical radiometry. No prior search is even needed - metadata is scene-only.
+    src2 = _CountingMetaSource()
+    adapter2 = _meta_adapter(src2, cache)
+    meta2 = await adapter2.metadata("S2_TEST")
+    assert src2.byte_reads == 0
+    assert meta2.quantification_value == meta1.quantification_value
+    assert meta2.boa_add_offset == meta1.boa_add_offset
+    assert meta2.crs == meta1.crs
+
+
+async def test_metadata_cache_fails_open_to_live_read() -> None:
+    src = _CountingMetaSource()
+    adapter = _meta_adapter(src, _scene_meta_cache({}, fail=True))
+    await adapter.search(_AOI, _RANGE)
+    meta = await adapter.metadata("S2_TEST")  # cache.get raises -> fall open to the live XML read
+    assert src.byte_reads == 1
+    assert meta.quantification_value == 10000.0

@@ -25,6 +25,8 @@ from rs_core import (
     record_forward_fill_poll,
     upsert_scene_metadata,
 )
+from rs_core.cache import RedisJsonCache, redis_json_cache_from_settings
+from rs_core.config import ImageryAdapter, Settings
 from rs_imagery import AOI, AccessPort, SceneRef, TimeRange, get_access_adapter
 from shapely.geometry import mapping
 from sqlalchemy import select, update
@@ -360,9 +362,34 @@ async def due_field_ids(
     return [str(fid) for fid in backfill], forward
 
 
+def _build_collection_adapter(settings: Settings) -> tuple[AccessPort, list[RedisJsonCache]]:
+    """The imagery adapter for the stored backfill / forward-fill path, wired with the ADR 0011
+    caches that path was missing. For windowed_cog, attach the cross-worker scene-metadata cache
+    (immutable per scene id) so fields sharing a Sentinel-2 tile skip the product-XML read after the
+    first pass. Returns the adapter plus the caches to close at task end. Any other adapter (mock /
+    server_compute) is returned unchanged - the adapter remains a config switch (invariant 1)."""
+    if settings.imagery_adapter is not ImageryAdapter.WINDOWED_COG:
+        return get_access_adapter(settings), []
+    from rs_imagery.adapters.windowed_cog import WindowedCogAdapter
+
+    caches: list[RedisJsonCache] = []
+    scene_meta_cache = redis_json_cache_from_settings(settings, namespace="cdse:scene_meta")
+    if scene_meta_cache is not None:
+        caches.append(scene_meta_cache)
+    adapter = WindowedCogAdapter(settings, scene_meta_cache=scene_meta_cache)
+    return adapter, caches
+
+
+async def _aclose_caches(caches: list[RedisJsonCache]) -> None:
+    """Close each task-scoped cache's Redis client. Fail-open is the cache's own contract, so a
+    close error is swallowed there; this just drives the loop at task teardown."""
+    for cache in caches:
+        await cache.aclose()
+
+
 async def _run_for_field(field_id: str, *, is_backfill: bool) -> dict[str, object]:
     settings = get_settings()
-    adapter = get_access_adapter(settings)
+    adapter, caches = _build_collection_adapter(settings)
     redis = aioredis.Redis.from_url(settings.redis_url)
     engine = create_async_engine(settings.database_url, poolclass=NullPool)
     try:
@@ -380,6 +407,7 @@ async def _run_for_field(field_id: str, *, is_backfill: bool) -> dict[str, objec
             await session.commit()
         return _summary_dict(summary)
     finally:
+        await _aclose_caches(caches)
         await redis.aclose()
         await engine.dispose()
 
@@ -389,7 +417,7 @@ async def _fan_out_backfill(field_id: str) -> dict[str, object]:
     none remain, the window is fully collected, so mark the backfill complete and clear the flag
     (D11). Each pass then runs and commits independently under its own per-scene lock."""
     settings = get_settings()
-    adapter = get_access_adapter(settings)
+    adapter, caches = _build_collection_adapter(settings)
     engine = create_async_engine(settings.database_url, poolclass=NullPool)
     now = datetime.now(UTC)
     try:
@@ -419,6 +447,7 @@ async def _fan_out_backfill(field_id: str) -> dict[str, object]:
                 )
                 await session.commit()
     finally:
+        await _aclose_caches(caches)
         await engine.dispose()
     if not plan:
         return {"fanned_out": 0, "complete": True}
@@ -478,7 +507,7 @@ async def _plan_collect_dates(field_id: str, dates: list[str]) -> dict[str, obje
     the fanned-out tasks. Nothing new is invented - a snapped pass is a real scene collected exactly
     like a backfill pass."""
     settings = get_settings()
-    adapter = get_access_adapter(settings)
+    adapter, caches = _build_collection_adapter(settings)
     engine = create_async_engine(settings.database_url, poolclass=NullPool)
     try:
         async with async_sessionmaker(engine, expire_on_commit=False)() as session:
@@ -498,6 +527,7 @@ async def _plan_collect_dates(field_id: str, dates: list[str]) -> dict[str, obje
                 session, field_id=field.id, geometry_version=geometry_version
             )
     finally:
+        await _aclose_caches(caches)
         await engine.dispose()
 
     resolved, skipped, to_enqueue = _snap_dates(requested, scenes, already)
@@ -517,7 +547,7 @@ async def _plan_collect_dates(field_id: str, dates: list[str]) -> dict[str, obje
 
 async def _collect_one_pass(field_id: str, scene_id: str, pass_date: str) -> dict[str, object]:
     settings = get_settings()
-    adapter = get_access_adapter(settings)
+    adapter, caches = _build_collection_adapter(settings)
     redis = aioredis.Redis.from_url(settings.redis_url)
     engine = create_async_engine(settings.database_url, poolclass=NullPool)
     try:
@@ -540,6 +570,7 @@ async def _collect_one_pass(field_id: str, scene_id: str, pass_date: str) -> dic
             await session.commit()
         return _summary_dict(summary)
     finally:
+        await _aclose_caches(caches)
         await redis.aclose()
         await engine.dispose()
 
