@@ -9,10 +9,12 @@ drawing / single-feature is analyst-level (create_region_cluster), bulk upload i
 from __future__ import annotations
 
 import tempfile
+import uuid
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request, status
+from geoalchemy2.shape import to_shape
 from pydantic import BaseModel, StringConstraints
 from rs_core.config import get_settings
 from rs_core.geo import validate_geometry
@@ -21,15 +23,21 @@ from rs_core.regions import RegionLayerError, SkippedFeature, as_multipolygon, r
 from rs_core.repositories import (
     create_drawn_region,
     create_uploaded_layer,
+    get_region_layer,
+    list_region_layers_with_counts,
     natural_region_polygons,
     recompute_farm_region_assignments,
+    region_boundaries_for_layer,
 )
+from shapely.geometry import mapping
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from services.api.workspace.deps import (
     CreateRegionClusterPrincipal,
+    ReadSessionDep,
     SessionDep,
     UploadRegionBoundaryPrincipal,
+    ViewPrincipal,
 )
 
 router = APIRouter(tags=["workspace"])
@@ -68,8 +76,46 @@ class RegionUploadOut(BaseModel):
     farms_assigned: int
 
 
+class RegionLayerOut(BaseModel):
+    """One region-boundary layer for the map's layer toggle. `custodian` is the layer's data
+    provider / creation channel (RegionBoundaryLayer.source); `kind` is the per-boundary creation
+    method (seeded | uploaded | drawn) the frontend groups by, so the Natural Region toggle and the
+    uploaded-layer picker each know their own layers without inspecting a boundary."""
+
+    layer_id: str
+    name: str
+    custodian: str
+    kind: str
+    region_count: int
+    read_only: bool
+    year: int | None
+    version: str
+
+
+class RegionBoundaryFeatureCollection(BaseModel):
+    """A GeoJSON FeatureCollection of region boundaries, the shape a MapLibre geojson source reads
+    directly. Each feature carries its identity and dominant Natural Region in `properties`.
+    Geometry is WGS84, served only to the internal analyst map, never pushed (invariant 6,
+    ADR 0010)."""
+
+    type: Literal["FeatureCollection"] = "FeatureCollection"
+    features: list[dict[str, Any]]
+
+
 def _skipped_out(skipped: SkippedFeature) -> SkippedFeatureOut:
     return SkippedFeatureOut(index=skipped.index, name=skipped.name, reason=skipped.reason)
+
+
+def _layer_kind(layer: RegionBoundaryLayer) -> str:
+    """The creation method of a layer's boundaries, for grouping on the map. The seeded Natural
+    Region layer is read-only; analyst layers carry their channel in `source` (set by
+    `create_drawn_region` / `create_uploaded_layer`). Mirrors RegionBoundary.source without loading
+    a boundary row."""
+    if layer.read_only:
+        return "seeded"
+    if layer.source == "analyst-draw":
+        return "drawn"
+    return "uploaded"
 
 
 async def create_drawn_region_from_geojson(
@@ -190,3 +236,59 @@ async def upload_region_layer_endpoint(
         skipped=[_skipped_out(item) for item in skipped],
         farms_assigned=assigned,
     )
+
+
+# The two GET reads below back the workspace map's region-boundary overlays (PRD 0002 slices 8a/8b):
+# the seeded Natural Region layer and analyst-uploaded layers. View-gated, geometry-free of the
+# gateway (invariant 6 governs the outbound push, not the internal BFF, which already serves field
+# polygons to the same map). They ride ReadSessionDep like the other analytical reads (S4.4).
+
+
+@router.get("/regions/layers", response_model=list[RegionLayerOut])
+async def list_region_layers_endpoint(
+    principal: ViewPrincipal, session: ReadSessionDep
+) -> list[RegionLayerOut]:
+    """Every region-boundary layer with its boundary count, newest first. The map toggle reads this
+    to offer the seeded Natural Region layer and any uploaded layers; it fetches a layer's geometry
+    on demand from the boundaries endpoint."""
+    layers = await list_region_layers_with_counts(session)
+    return [
+        RegionLayerOut(
+            layer_id=str(layer.id),
+            name=layer.name,
+            custodian=layer.source,
+            kind=_layer_kind(layer),
+            region_count=count,
+            read_only=layer.read_only,
+            year=layer.year,
+            version=layer.version,
+        )
+        for layer, count in layers
+    ]
+
+
+@router.get("/regions/layers/{layer_id}/boundaries", response_model=RegionBoundaryFeatureCollection)
+async def region_layer_boundaries_endpoint(
+    layer_id: uuid.UUID, principal: ViewPrincipal, session: ReadSessionDep
+) -> RegionBoundaryFeatureCollection:
+    """One layer's boundaries as a GeoJSON FeatureCollection for the MapLibre overlay. 404 for an
+    unknown layer; a known layer with no boundaries returns an empty collection."""
+    layer = await get_region_layer(session, layer_id=layer_id)
+    if layer is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "region layer not found")
+    boundaries = await region_boundaries_for_layer(session, layer_id=layer_id)
+    features = [
+        {
+            "type": "Feature",
+            "geometry": mapping(to_shape(b.boundary)),
+            "properties": {
+                "region_boundary_id": str(b.id),
+                "layer_id": str(b.layer_id),
+                "name": b.name,
+                "source": b.source,
+                "dominant_nr": b.dominant_nr,
+            },
+        }
+        for b in boundaries
+    ]
+    return RegionBoundaryFeatureCollection(features=features)

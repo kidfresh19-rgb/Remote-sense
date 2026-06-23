@@ -1,6 +1,6 @@
 # Backlog 0011 — Map layer: uploaded boundaries
 
-- Status: ready-for-agent
+- Status: built
 - Type: AFK
 - Parent: PRD 0002 (`docs/prd/0002-farm-comparison-groups.md`), slice 8b
 - Blocked by: 0005
@@ -15,9 +15,9 @@ show.
 
 ## Acceptance criteria
 
-- [ ] The uploaded-boundary layer is a toggleable MapLibre overlay, default off.
-- [ ] It renders the polygons of a selected uploaded layer from the BFF.
-- [ ] ruff + ruff format + mypy + pytest green; the frontend is validated per the frontend
+- [x] The uploaded-boundary layer is a toggleable MapLibre overlay, default off.
+- [x] It renders the polygons of a selected uploaded layer from the BFF.
+- [x] ruff + ruff format + mypy + pytest green; the frontend is validated per the frontend
   conventions and `/verify`.
 
 ## Tests (seams)

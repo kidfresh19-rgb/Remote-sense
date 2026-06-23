@@ -1,4 +1,4 @@
-import type { Geometry } from "geojson";
+import type { FeatureCollection, Geometry } from "geojson";
 
 import { config } from "./config";
 
@@ -305,6 +305,25 @@ export interface CollectDatesResult {
   enqueued: number;
 }
 
+/** A region-boundary layer for the workspace map's overlay toggle (comparison groups, PRD 0002).
+ *  `kind` groups layers for the UI: "seeded" is the Natural Region reference, "uploaded"/"drawn"
+ *  are analyst-created. Mirrors RegionLayerOut in services/api/workspace/regions.py. */
+export interface RegionLayer {
+  layer_id: string;
+  name: string;
+  custodian: string;
+  kind: "seeded" | "uploaded" | "drawn" | string;
+  region_count: number;
+  read_only: boolean;
+  year: number | null;
+  version: string;
+}
+
+/** A layer's boundaries as a GeoJSON FeatureCollection (GET /regions/layers/{id}/boundaries), fed
+ *  straight into a MapLibre geojson source. Geometry is WGS84; each feature's properties carry the
+ *  boundary's id, name, source, and dominant Natural Region. */
+export type RegionFeatureCollection = FeatureCollection;
+
 export class ApiError extends Error {
   readonly status: number;
   constructor(status: number, message: string) {
@@ -451,6 +470,14 @@ export const api = {
   publishStatus: (canonicalFarmId: string, token: string, signal?: AbortSignal) =>
     get<PublishStatus>(
       `/farms/${encodeURIComponent(canonicalFarmId)}/publish/status`,
+      token,
+      signal,
+    ),
+  regionLayers: (token: string, signal?: AbortSignal) =>
+    get<RegionLayer[]>("/regions/layers", token, signal),
+  regionBoundaries: (layerId: string, token: string, signal?: AbortSignal) =>
+    get<RegionFeatureCollection>(
+      `/regions/layers/${encodeURIComponent(layerId)}/boundaries`,
       token,
       signal,
     ),

@@ -95,10 +95,14 @@ from services.api.workspace.publish import (
     router as publish_router,
 )
 from services.api.workspace.regions import (
+    RegionBoundaryFeatureCollection,
     RegionDrawRequest,
+    RegionLayerOut,
     RegionOut,
     RegionUploadOut,
     draw_region_endpoint,
+    list_region_layers_endpoint,
+    region_layer_boundaries_endpoint,
     upload_region_layer_endpoint,
 )
 from services.api.workspace.regions import (
@@ -132,7 +136,9 @@ __all__ = [
     "PublishEnqueuedOut",
     "PublishPrincipal",
     "PublishStatusOut",
+    "RegionBoundaryFeatureCollection",
     "RegionDrawRequest",
+    "RegionLayerOut",
     "RegionOut",
     "RegionUploadOut",
     "ResolvedPass",
@@ -167,6 +173,8 @@ __all__ = [
     "list_farms_endpoint",
     "list_fields",
     "list_fields_endpoint",
+    "list_region_layers_endpoint",
+    "region_layer_boundaries_endpoint",
     "publish_farm_endpoint",
     "publish_status_endpoint",
     "review_interpretation_endpoint",
