@@ -15,6 +15,7 @@ from rs_imagery.resilience import (
     AsyncTokenBucket,
     CircuitBreaker,
     CircuitOpenError,
+    PermanentError,
     QuotaWaitExceeded,
     SyncTokenBucket,
     async_bucket_from_settings,
@@ -165,6 +166,45 @@ async def test_breaker_call_guards_and_records() -> None:
 
     assert await breaker.call(ok) == "fine"
     assert breaker.allow()
+
+
+def test_breaker_does_not_trip_on_permanent_errors() -> None:
+    # A run of permanent failures (a missing / forbidden / LTA-offline object) must never open the
+    # circuit: the store is healthy, the data simply is not there. Threshold 1 makes the point
+    # sharply - a single *counted* failure would open it, yet the breaker stays closed.
+    breaker = CircuitBreaker(failure_threshold=1, reset_timeout_s=60.0, clock=_Clock())
+
+    def gone() -> None:
+        raise PermanentError("404 Not Found")
+
+    for _ in range(5):
+        with pytest.raises(PermanentError):
+            breaker.call_sync(gone)
+    assert breaker.allow()  # never tripped, despite threshold 1
+
+
+def test_breaker_permanent_error_breaks_the_failure_streak() -> None:
+    # A permanent error counts as a health success (CDSE answered, so it is reachable), so it
+    # resets the consecutive-failure count rather than being ignored outright.
+    breaker = CircuitBreaker(failure_threshold=2, reset_timeout_s=60.0, clock=_Clock())
+    breaker.record_failure()  # 1 transient failure (threshold 2)
+
+    with pytest.raises(PermanentError):
+        breaker.call_sync(lambda: (_ for _ in ()).throw(PermanentError("AccessDenied")))
+
+    breaker.record_failure()  # would be the 2nd-in-a-row and trip it, but the streak was reset
+    assert breaker.allow()  # 1 < 2: still closed, proving the permanent error reset the count
+
+
+async def test_breaker_call_does_not_trip_on_permanent_errors() -> None:
+    breaker = CircuitBreaker(failure_threshold=1, reset_timeout_s=60.0, clock=_Clock())
+
+    async def gone() -> None:
+        raise PermanentError("NoSuchKey")
+
+    with pytest.raises(PermanentError):
+        await breaker.call(gone)
+    assert breaker.allow()  # the async path spares the breaker the same way
 
 
 # -- Redis-backed buckets against in-memory fakes ----------------------------------------------

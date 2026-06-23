@@ -35,7 +35,7 @@ from rs_imagery.adapters.cdse_stac import (
 )
 from rs_imagery.auth import CdseOAuth2Client
 from rs_imagery.port import AccessPort
-from rs_imagery.resilience import CircuitBreaker, sync_bucket_from_settings
+from rs_imagery.resilience import CircuitBreaker, PermanentError, sync_bucket_from_settings
 from rs_imagery.types import (
     AOI,
     BandStack,
@@ -52,6 +52,49 @@ log = get_logger("rs_imagery.windowed_cog")
 
 _SCL_BAND = "SCL"
 _PROVIDER = "cdse"
+
+# A CDSE read is *permanent* when the object is genuinely unavailable - it never existed, was
+# deleted, is forbidden, or is cold-archived (LTA-offline) - as opposed to a transient timeout /
+# throttle / 5xx that a retry can clear. GDAL surfaces an HTTP failure as RasterioIOError text and
+# boto3 as a ClientError code, so the marker set covers both. Conservative by design: an unmatched
+# message defaults to transient (retry), so a recoverable read is never wrongly dropped; the cost of
+# a false "transient" is one wasted retry, the cost of a false "permanent" is a lost real scene.
+_PERMANENT_READ_MARKERS = (
+    "404",
+    "403",
+    "401",
+    "access denied",
+    "accessdenied",
+    "nosuchkey",
+    "no such key",
+    "not found",
+    "does not exist",
+)
+
+
+def _is_permanent_read_error(message: str) -> bool:
+    """True when an error message marks a permanently-unavailable object (see the marker set)."""
+    msg = message.lower()
+    return any(marker in msg for marker in _PERMANENT_READ_MARKERS)
+
+
+def _is_permanent_s3_error(exc: Exception) -> bool:
+    """True when a boto3 ClientError reports a permanent failure: a 401/403/404 HTTP status or a
+    permanent error code (NoSuchKey, AccessDenied, ...). Read defensively, so a non-ClientError
+    just falls through to transient."""
+    response = getattr(exc, "response", None)
+    if not isinstance(response, dict):
+        return False
+    status = response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+    code = str(response.get("Error", {}).get("Code", ""))
+    return status in (401, 403, 404) or _is_permanent_read_error(code)
+
+
+class PermanentReadError(PermanentError):
+    """A windowed/metadata read that failed permanently (the object is missing / forbidden /
+    cold-archived). Not a RasterioIOError, so the read-retry loop does not retry it; a
+    PermanentError, so the circuit breaker does not trip on a run of them (invariant: a missing
+    granule is not a CDSE outage)."""
 
 
 @dataclass(frozen=True)
@@ -505,6 +548,27 @@ class RasterioWindowSource:
     def _read_window_once(
         self, href: str, *, aoi: AOI, resolution_m: float, resampling: str = "bilinear"
     ) -> ReadWindow:
+        """One windowed read, classifying a permanent GDAL/HTTP failure (404 / AccessDenied / a
+        missing or LTA-offline granule) so the retry loop skips it (it is not a RasterioIOError) and
+        the breaker is spared (it is a PermanentError). A transient RasterioIOError is re-raised
+        as-is for the retry to handle. This is the function the retry wraps; _open_and_read does the
+        actual GDAL work so the classification stays one cheap layer above it."""
+        from rasterio.errors import RasterioIOError
+
+        try:
+            return self._open_and_read(
+                href, aoi=aoi, resolution_m=resolution_m, resampling=resampling
+            )
+        except RasterioIOError as exc:
+            if _is_permanent_read_error(str(exc)):
+                raise PermanentReadError(
+                    f"permanent CDSE read failure for {href!r}: {exc}"
+                ) from exc
+            raise
+
+    def _open_and_read(
+        self, href: str, *, aoi: AOI, resolution_m: float, resampling: str = "bilinear"
+    ) -> ReadWindow:
         import rasterio
         from rasterio.enums import Resampling
         from rasterio.warp import transform_bounds
@@ -603,8 +667,18 @@ class RasterioWindowSource:
         )
 
     def _read_s3_bytes(self, href: str) -> bytes:
+        from botocore.exceptions import ClientError
+
         bucket, _, key = href[len("s3://") :].partition("/")
-        return self._s3().get_object(Bucket=bucket, Key=key)["Body"].read()
+        try:
+            return self._s3().get_object(Bucket=bucket, Key=key)["Body"].read()
+        except ClientError as exc:
+            if _is_permanent_s3_error(exc):
+                code = exc.response.get("Error", {}).get("Code")
+                raise PermanentReadError(
+                    f"permanent CDSE metadata read failure for {href!r}: {code}"
+                ) from exc
+            raise
 
     def _read_http_bytes(self, href: str) -> bytes:
         import httpx
@@ -633,4 +707,12 @@ class RasterioWindowSource:
             stop=stop_after_attempt(4),
             reraise=True,
         )
-        return retrying(_get)
+        try:
+            return retrying(_get)
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code in (401, 403, 404):
+                raise PermanentReadError(
+                    f"permanent CDSE metadata read failure for {href!r}: "
+                    f"HTTP {exc.response.status_code}"
+                ) from exc
+            raise

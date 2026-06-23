@@ -17,10 +17,14 @@ from rs_core.cache import RedisJsonCache
 from rs_core.config import Settings
 from rs_imagery.adapters.cdse_stac import StacItem
 from rs_imagery.adapters.windowed_cog import (
+    PermanentReadError,
     RasterioWindowSource,
     ReadWindow,
     WindowedCogAdapter,
+    _is_permanent_read_error,
+    _is_permanent_s3_error,
 )
+from rs_imagery.resilience import CircuitBreaker
 from rs_imagery.types import AOI, ProcessingMode, SceneRef, TimeRange
 
 _TRANSFORM = (10.0, 0.0, 500000.0, 0.0, -10.0, 8000000.0)
@@ -550,3 +554,83 @@ async def test_scene_item_cache_miss_preserves_lookup_error_contract() -> None:
     adapter = _item_adapter(_FakeSource(), _FakeStac([_item()]), _scene_item_cache({}, fail=True))
     with pytest.raises(LookupError):
         await adapter.fetch(_REF, _AOI, bands=["B04", "B08"], resolution_m=10.0)
+
+
+# ----------------------------------------------- permanent-vs-transient read classification (3a)
+
+
+def test_is_permanent_read_error_classifies_messages() -> None:
+    # Unambiguous permanent markers (missing / forbidden object) classify as permanent...
+    assert _is_permanent_read_error("HTTP response code: 404")
+    assert _is_permanent_read_error("Access Denied")
+    assert _is_permanent_read_error("NoSuchKey: the specified key does not exist")
+    assert _is_permanent_read_error("403")
+    # ...while transient faults (timeouts, throttling, 5xx) stay retryable.
+    assert not _is_permanent_read_error("Connection timed out")
+    assert not _is_permanent_read_error("HTTP error 429: Too Many Requests")
+    assert not _is_permanent_read_error("502 Bad Gateway")
+
+
+def test_is_permanent_s3_error_reads_client_error_code_and_status() -> None:
+    pytest.importorskip("botocore")
+    from botocore.exceptions import ClientError
+
+    missing = ClientError(
+        {"Error": {"Code": "NoSuchKey"}, "ResponseMetadata": {"HTTPStatusCode": 404}}, "GetObject"
+    )
+    assert _is_permanent_s3_error(missing)
+    server = ClientError(
+        {"Error": {"Code": "InternalError"}, "ResponseMetadata": {"HTTPStatusCode": 500}},
+        "GetObject",
+    )
+    assert not _is_permanent_s3_error(server)  # 5xx is transient
+    assert not _is_permanent_s3_error(RuntimeError("not a ClientError"))  # defensive non-client
+
+
+class _FailingRasterioSource(RasterioWindowSource):
+    """Real source with the GDAL read (_open_and_read) stubbed to raise a chosen error, a zero-wait
+    retry, and a tunable breaker - so the classification and the breaker interaction are exercised
+    with no network and no real GDAL read."""
+
+    def __init__(self, exc: Exception, *, failure_threshold: int = 1) -> None:
+        super().__init__(_rio_settings())
+        self._exc = exc
+        self.attempts = 0
+        self._breaker = CircuitBreaker(failure_threshold=failure_threshold, reset_timeout_s=60.0)
+
+    def _make_retrying(self):  # noqa: ANN202 - mirrors the base, only the wait differs (test speed)
+        from rasterio.errors import RasterioIOError
+        from tenacity import Retrying, retry_if_exception_type, stop_after_attempt, wait_none
+
+        return Retrying(
+            retry=retry_if_exception_type(RasterioIOError),
+            wait=wait_none(),
+            stop=stop_after_attempt(4),
+            reraise=True,
+        )
+
+    def _open_and_read(self, href, *, aoi, resolution_m, resampling="bilinear"):  # noqa: ANN001
+        self.attempts += 1
+        raise self._exc
+
+
+def test_permanent_rasterio_read_fails_fast_and_spares_the_breaker() -> None:
+    pytest.importorskip("rasterio")
+    from rasterio.errors import RasterioIOError
+
+    src = _FailingRasterioSource(RasterioIOError("HTTP response code: 404"), failure_threshold=1)
+    with pytest.raises(PermanentReadError):
+        src.read_window("s3://eodata/x/B04_10m.jp2", aoi=_AOI, resolution_m=10.0)
+    assert src.attempts == 1  # classified permanent -> not retried
+    assert src._breaker.allow()  # breaker untouched despite threshold 1
+
+
+def test_transient_rasterio_read_is_retried_and_trips_the_breaker() -> None:
+    pytest.importorskip("rasterio")
+    from rasterio.errors import RasterioIOError
+
+    src = _FailingRasterioSource(RasterioIOError("Connection timed out"), failure_threshold=1)
+    with pytest.raises(RasterioIOError):
+        src.read_window("s3://eodata/x/B04_10m.jp2", aoi=_AOI, resolution_m=10.0)
+    assert src.attempts == 4  # transient -> retried to the stop limit
+    assert not src._breaker.allow()  # the exhausted transient read counted and tripped the breaker
