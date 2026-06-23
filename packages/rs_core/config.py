@@ -135,6 +135,13 @@ class Settings(BaseSettings):
     # a Redis hiccup degrades to a live XML read, never an error. Reflectance is still read per
     # scene from metadata (invariant 2); this only avoids re-reading the same immutable scene.
     cdse_scene_meta_cache_ttl_s: int = 2592000  # 30 days
+    # Collection-pipeline scene-item cache. A published scene's STAC item (its asset hrefs +
+    # footprint) is immutable, so caching it by scene id lets a fanned-out per-pass task resolve the
+    # band/metadata hrefs from Redis instead of re-running a one-day STAC search (one quota token +
+    # one OAuth round-trip saved per pass). Distinct from the short-TTL AOI search cache, which is
+    # keyed by (geometry, window): this is keyed by scene id only and never goes stale. Fail-open
+    # like the others - a miss or a Redis hiccup falls back to a live search, never an error.
+    cdse_scene_item_cache_ttl_s: int = 2592000  # 30 days
 
     # Comparison groups - Natural Region foundation (PRD 0002, ADR 0010). The seeded Natural Region
     # layer is committed reference geometry under data/natural_regions/ (tracked past the data/

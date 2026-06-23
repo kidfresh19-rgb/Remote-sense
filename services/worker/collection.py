@@ -11,12 +11,13 @@ persisted (S-1)."""
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 
 import numpy as np
 from rs_analysis import AnalysisOutput, analyze_index, get_index, index_raster, rgb_raster
-from rs_imagery import AOI, AccessPort, TimeRange
+from rs_imagery import AOI, AccessPort, SceneRef, TimeRange
 
 from services.worker.locks import DEFAULT_LOCK_TTL_SECONDS, LockClient, enqueue_lock
 from services.worker.planning import plan_scenes
@@ -52,6 +53,96 @@ def _indices_by_resolution(indices: list[str]) -> dict[int, list[str]]:
     return dict(grouped)
 
 
+async def _process_scene(
+    adapter: AccessPort,
+    scene: SceneRef,
+    aoi: AOI,
+    resolution_groups: dict[int, list[str]],
+    *,
+    emit_rasters: bool,
+) -> ScenePassResult:
+    """Fetch + compute every requested index for one scene, grouped by native resolution
+    (invariant 4). When `emit_rasters` is set, also carry the index + visual-composite arrays so
+    the caller can write their COGs without re-fetching reflectance (D1/D7)."""
+    outputs: list[AnalysisOutput] = []
+    rasters: dict[str, IndexRaster] = {}
+    provider = scene.provider
+    processing_mode = "mock"
+
+    fetched_bands_10m = None
+    transform_10m = None
+    crs_10m = None
+
+    for resolution_m, names in resolution_groups.items():
+        bands = sorted({band for name in names for band in get_index(name).bands})
+        if emit_rasters and resolution_m == 10:
+            # Visual-composite bands: true color (B04/B03/B02) plus the NIR for false color.
+            bands = sorted(set(bands) | {"B08", "B04", "B03", "B02"})
+        fetched = await adapter.fetch(scene, aoi, bands=bands, resolution_m=float(resolution_m))
+        processing_mode = fetched.provenance.processing_mode.value
+
+        if resolution_m == 10:
+            fetched_bands_10m = fetched.data.bands
+            transform_10m = fetched.data.transform
+            crs_10m = fetched.data.crs
+
+        for name in names:
+            outputs.append(
+                analyze_index(
+                    reflectance=fetched.data.bands,
+                    index_name=name,
+                    resolution_m=int(fetched.data.resolution_m),
+                    clear_fraction_override=fetched.clear_fraction,
+                )
+            )
+            if emit_rasters:
+                rasters[name] = IndexRaster(
+                    array=index_raster(fetched.data.bands, name),
+                    transform=fetched.data.transform,
+                    crs=fetched.data.crs,
+                )
+
+    if emit_rasters and fetched_bands_10m is None:
+        fetched_10m = await adapter.fetch(
+            scene, aoi, bands=["B08", "B04", "B03", "B02"], resolution_m=10.0
+        )
+        fetched_bands_10m = fetched_10m.data.bands
+        transform_10m = fetched_10m.data.transform
+        crs_10m = fetched_10m.data.crs
+
+    if emit_rasters and fetched_bands_10m is not None:
+        nir = fetched_bands_10m.get("B08")
+        red = fetched_bands_10m.get("B04")
+        green = fetched_bands_10m.get("B03")
+        blue = fetched_bands_10m.get("B02")
+        if red is not None and green is not None and blue is not None:
+            # A fetch that returned bands always carries its grid; narrow the Optionals.
+            assert transform_10m is not None and crs_10m is not None
+            rasters["rgb"] = IndexRaster(
+                array=rgb_raster({"B04": red, "B03": green, "B02": blue}),
+                transform=transform_10m,
+                crs=crs_10m,
+            )
+        # False color (B08/B04/B03, NIR first): vegetation renders red. A visual composite
+        # like rgb - no stats and no analysis row, just a COG for the workspace toggle.
+        if nir is not None and red is not None and green is not None:
+            assert transform_10m is not None and crs_10m is not None
+            rasters["fcc"] = IndexRaster(
+                array=np.stack([nir, red, green], axis=0),
+                transform=transform_10m,
+                crs=crs_10m,
+            )
+
+    return ScenePassResult(
+        scene_id=scene.scene_id,
+        provider=provider,
+        processing_mode=processing_mode,
+        sensing_datetime=scene.sensing_datetime,
+        outputs=outputs,
+        rasters=rasters,
+    )
+
+
 async def collect_field(
     *,
     adapter: AccessPort,
@@ -61,101 +152,53 @@ async def collect_field(
     already_processed: frozenset[str] = frozenset(),
     max_scene_cloud_pct: float | None = None,
     emit_rasters: bool = False,
+    scenes: Sequence[SceneRef] | None = None,
 ) -> list[ScenePassResult]:
-    """Search the archive for the AOI over `time_range`, then compute the requested indices for
-    every not-yet-processed scene. `already_processed` (scene ids done for this field at the
-    current geometry version) makes the call idempotent and resumable: re-running skips
-    finished scenes (dedup + gap fill, R-1). Works for backfill (a long range) and forward-fill
-    (a short range since the last cursor) alike."""
+    """Compute the requested indices for every not-yet-processed scene covering the AOI over
+    `time_range`. `already_processed` (scene ids done for this field at the current geometry
+    version) makes the call idempotent and resumable: re-running skips finished scenes (dedup +
+    gap fill, R-1). Works for backfill (a long range) and forward-fill (a short range) alike.
+
+    `scenes` is the known-scene fast path: when the caller already holds the scene refs (a
+    fanned-out backfill pass got them from the window search), pass them to skip the redundant
+    one-day `adapter.search` - one quota token + one OAuth round-trip saved per pass. The adapter
+    resolves each scene's asset hrefs from its cross-worker scene-item cache. A cold cache surfaces
+    as `LookupError`; we then fall back to the search we skipped (one search rehydrates the whole
+    window), so the result is identical whether or not the cache was warm."""
     if not indices:
         raise ValueError("collect_field needs at least one index; an empty list stores nothing")
-    scenes = await adapter.search(aoi, time_range, max_scene_cloud_pct=max_scene_cloud_pct)
-    by_id = {s.scene_id: s for s in scenes}
-    to_process = plan_scenes([s.scene_id for s in scenes], already_processed)
     resolution_groups = _indices_by_resolution(indices)
+
+    async def _search() -> list[SceneRef]:
+        return await adapter.search(aoi, time_range, max_scene_cloud_pct=max_scene_cloud_pct)
+
+    searched = scenes is None
+    scene_refs = await _search() if scenes is None else list(scenes)
+    by_id = {s.scene_id: s for s in scene_refs}
+    to_process = plan_scenes([s.scene_id for s in scene_refs], already_processed)
 
     results: list[ScenePassResult] = []
     for scene_id in to_process:
         scene = by_id[scene_id]
-        outputs: list[AnalysisOutput] = []
-        rasters: dict[str, IndexRaster] = {}
-        provider = scene.provider
-        processing_mode = "mock"
-
-        fetched_bands_10m = None
-        transform_10m = None
-        crs_10m = None
-
-        for resolution_m, names in resolution_groups.items():
-            bands = sorted({band for name in names for band in get_index(name).bands})
-            if emit_rasters and resolution_m == 10:
-                # Visual-composite bands: true color (B04/B03/B02) plus the NIR for false color.
-                bands = sorted(set(bands) | {"B08", "B04", "B03", "B02"})
-            fetched = await adapter.fetch(scene, aoi, bands=bands, resolution_m=float(resolution_m))
-            processing_mode = fetched.provenance.processing_mode.value
-
-            if resolution_m == 10:
-                fetched_bands_10m = fetched.data.bands
-                transform_10m = fetched.data.transform
-                crs_10m = fetched.data.crs
-
-            for name in names:
-                outputs.append(
-                    analyze_index(
-                        reflectance=fetched.data.bands,
-                        index_name=name,
-                        resolution_m=int(fetched.data.resolution_m),
-                        clear_fraction_override=fetched.clear_fraction,
-                    )
-                )
-                if emit_rasters:
-                    rasters[name] = IndexRaster(
-                        array=index_raster(fetched.data.bands, name),
-                        transform=fetched.data.transform,
-                        crs=fetched.data.crs,
-                    )
-
-        if emit_rasters and fetched_bands_10m is None:
-            fetched_10m = await adapter.fetch(
-                scene, aoi, bands=["B08", "B04", "B03", "B02"], resolution_m=10.0
+        try:
+            result = await _process_scene(
+                adapter, scene, aoi, resolution_groups, emit_rasters=emit_rasters
             )
-            fetched_bands_10m = fetched_10m.data.bands
-            transform_10m = fetched_10m.data.transform
-            crs_10m = fetched_10m.data.crs
-
-        if emit_rasters and fetched_bands_10m is not None:
-            nir = fetched_bands_10m.get("B08")
-            red = fetched_bands_10m.get("B04")
-            green = fetched_bands_10m.get("B03")
-            blue = fetched_bands_10m.get("B02")
-            if red is not None and green is not None and blue is not None:
-                # A fetch that returned bands always carries its grid; narrow the Optionals.
-                assert transform_10m is not None and crs_10m is not None
-                rasters["rgb"] = IndexRaster(
-                    array=rgb_raster({"B04": red, "B03": green, "B02": blue}),
-                    transform=transform_10m,
-                    crs=crs_10m,
-                )
-            # False color (B08/B04/B03, NIR first): vegetation renders red. A visual composite
-            # like rgb - no stats and no analysis row, just a COG for the workspace toggle.
-            if nir is not None and red is not None and green is not None:
-                assert transform_10m is not None and crs_10m is not None
-                rasters["fcc"] = IndexRaster(
-                    array=np.stack([nir, red, green], axis=0),
-                    transform=transform_10m,
-                    crs=crs_10m,
-                )
-
-        results.append(
-            ScenePassResult(
-                scene_id=scene_id,
-                provider=provider,
-                processing_mode=processing_mode,
-                sensing_datetime=scene.sensing_datetime,
-                outputs=outputs,
-                rasters=rasters,
+        except LookupError:
+            if searched:
+                raise  # a real search already ran; the scene is genuinely unresolvable
+            # Known-scene path met a cold scene-item cache: run the search we skipped to rehydrate
+            # the asset hrefs (one search covers the whole window), then retry this pass.
+            scene_refs = await _search()
+            searched = True
+            by_id = {s.scene_id: s for s in scene_refs}
+            rehydrated = by_id.get(scene_id)
+            if rehydrated is None:  # the search no longer lists it (aged out); skip, don't crash
+                continue
+            result = await _process_scene(
+                adapter, rehydrated, aoi, resolution_groups, emit_rasters=emit_rasters
             )
-        )
+        results.append(result)
     return results
 
 
@@ -170,13 +213,15 @@ async def collect_field_locked(
     already_processed: frozenset[str] = frozenset(),
     max_scene_cloud_pct: float | None = None,
     emit_rasters: bool = False,
+    scenes: Sequence[SceneRef] | None = None,
     ttl_seconds: int = DEFAULT_LOCK_TTL_SECONDS,
 ) -> list[ScenePassResult] | None:
     """Run `collect_field` for a work unit only while this worker holds its enqueue lock (R-1).
     Returns the per-pass results when we won the lock, or None when another worker already holds
     it - the caller simply skips, which is the dedup, not an error. `collection_key` sets the
     granularity (per field+geometry version for a backfill run, or per field/scene/version for a
-    single-scene task); build it with planning.collection_key."""
+    single-scene task); build it with planning.collection_key. `scenes` is forwarded to
+    `collect_field`'s known-scene fast path."""
     async with enqueue_lock(lock_client, collection_key, ttl_seconds=ttl_seconds) as acquired:
         if not acquired:
             return None
@@ -188,4 +233,5 @@ async def collect_field_locked(
             already_processed=already_processed,
             max_scene_cloud_pct=max_scene_cloud_pct,
             emit_rasters=emit_rasters,
+            scenes=scenes,
         )

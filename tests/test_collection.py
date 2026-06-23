@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 from rs_core.config import ImageryAdapter, Settings
 from rs_imagery import AOI, TimeRange, get_access_adapter
+from rs_imagery.adapters.mock import MockAdapter
 
 from services.worker.collection import collect_field, collect_field_locked
 from services.worker.tasks.collection import _build_collection_adapter
@@ -86,6 +87,71 @@ async def test_collect_field_partial_resume() -> None:
     )
     assert len(remaining) == len(first) - 1
     assert skip_one.isdisjoint({r.scene_id for r in remaining})
+
+
+class _CountingMock(MockAdapter):
+    """Mock adapter that counts searches, so the known-scene fast path can be proven to skip the
+    redundant per-pass `adapter.search`."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.searches = 0
+
+    async def search(self, aoi, time_range, *, max_scene_cloud_pct=None):  # noqa: ANN001
+        self.searches += 1
+        return await super().search(aoi, time_range, max_scene_cloud_pct=max_scene_cloud_pct)
+
+
+class _ColdCacheMock(_CountingMock):
+    """Mimics windowed_cog with a cold scene-item cache: fetch raises LookupError for any scene the
+    adapter has not 'discovered' via a search yet, so collect_field's search fallback is exercised
+    without a real adapter."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._known: set[str] = set()
+
+    async def search(self, aoi, time_range, *, max_scene_cloud_pct=None):  # noqa: ANN001
+        refs = await super().search(aoi, time_range, max_scene_cloud_pct=max_scene_cloud_pct)
+        self._known.update(r.scene_id for r in refs)
+        return refs
+
+    async def fetch(self, scene_ref, aoi, bands, *, resolution_m=None):  # noqa: ANN001
+        if scene_ref.scene_id not in self._known:
+            raise LookupError(f"scene {scene_ref.scene_id} not in this worker's cache")
+        return await super().fetch(scene_ref, aoi, bands, resolution_m=resolution_m)
+
+
+async def test_collect_field_known_scene_path_skips_search() -> None:
+    """Given the scene refs, collect_field computes them directly without re-searching, and carries
+    the real sensing_datetime through (provenance, invariant 5)."""
+    adapter = _CountingMock()
+    refs = await adapter.search(_AOI, _RANGE)
+    adapter.searches = 0  # the fast path must not search again
+
+    results = await collect_field(
+        adapter=adapter, aoi=_AOI, time_range=_RANGE, indices=["ndvi"], scenes=refs[:1]
+    )
+    assert adapter.searches == 0  # no redundant per-pass search
+    assert len(results) == 1
+    assert results[0].scene_id == refs[0].scene_id
+    assert results[0].sensing_datetime == refs[0].sensing_datetime
+
+
+async def test_collect_field_falls_back_to_search_on_cold_cache() -> None:
+    """A cold scene-item cache (fetch raises LookupError) makes collect_field run the search it
+    skipped, so the pass still collects - identical result, just one extra search."""
+    adapter = _ColdCacheMock()
+    refs = await adapter.search(_AOI, _RANGE)
+    adapter._known.clear()  # simulate a different worker with nothing cached
+    adapter.searches = 0
+
+    results = await collect_field(
+        adapter=adapter, aoi=_AOI, time_range=_RANGE, indices=["ndvi"], scenes=refs[:1]
+    )
+    assert adapter.searches == 1  # exactly one fallback search rehydrated the window
+    assert len(results) == 1
+    assert results[0].scene_id == refs[0].scene_id
 
 
 async def test_collect_field_emits_no_rasters_by_default() -> None:
@@ -223,9 +289,10 @@ async def test_collect_field_locked_skips_when_already_held() -> None:
 # ----------------------------------------------------------- collection adapter wiring (Phase 2a)
 
 
-async def test_build_collection_adapter_attaches_scene_meta_cache_for_windowed_cog() -> None:
-    """The stored pipeline's windowed_cog adapter is wired with the cross-worker scene-metadata
-    cache, returned alongside for close at task end. Lazy Redis client -> no network here."""
+async def test_build_collection_adapter_attaches_scene_caches_for_windowed_cog() -> None:
+    """The stored pipeline's windowed_cog adapter is wired with both cross-worker scene caches (the
+    scene-metadata cache and the scene-item cache), returned alongside for close at task end. Lazy
+    Redis client -> no network here."""
     from rs_imagery.adapters.windowed_cog import WindowedCogAdapter
 
     adapter, caches = _build_collection_adapter(
@@ -233,7 +300,8 @@ async def test_build_collection_adapter_attaches_scene_meta_cache_for_windowed_c
     )
     assert isinstance(adapter, WindowedCogAdapter)
     assert adapter._scene_meta_cache is not None
-    assert len(caches) == 1
+    assert adapter._scene_item_cache is not None
+    assert len(caches) == 2
     for cache in caches:
         await cache.aclose()  # release the lazily-built client; never opened a connection
 

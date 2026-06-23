@@ -103,6 +103,8 @@ class WindowedCogAdapter(AccessPort):
         search_cache_ttl_s: int | None = None,
         scene_meta_cache: RedisJsonCache | None = None,
         scene_meta_cache_ttl_s: int | None = None,
+        scene_item_cache: RedisJsonCache | None = None,
+        scene_item_cache_ttl_s: int | None = None,
     ) -> None:
         self._settings = settings or get_settings()
         self._stac_client = stac_client
@@ -123,6 +125,16 @@ class WindowedCogAdapter(AccessPort):
             scene_meta_cache_ttl_s
             if scene_meta_cache_ttl_s is not None
             else self._settings.cdse_scene_meta_cache_ttl_s
+        )
+        # Cross-worker scene-item cache (immutable per scene id): a published scene's STAC item
+        # (asset hrefs + footprint) never changes, so a fanned-out per-pass task can resolve the
+        # band/metadata hrefs from here instead of re-running a one-day STAC search. search() writes
+        # every discovered item; metadata()/fetch() resolve through it on an in-process miss.
+        self._scene_item_cache = scene_item_cache
+        self._scene_item_cache_ttl_s = (
+            scene_item_cache_ttl_s
+            if scene_item_cache_ttl_s is not None
+            else self._settings.cdse_scene_item_cache_ttl_s
         )
 
     # -- lazy construction of the network-facing collaborators ------------------------------------
@@ -147,14 +159,38 @@ class WindowedCogAdapter(AccessPort):
         getter = getattr(source, "cache_stats", None)
         return getter() if callable(getter) else None
 
-    def _item(self, scene_id: str) -> StacItem:
-        try:
-            return self._items[scene_id]
-        except KeyError as exc:
-            raise LookupError(
-                f"scene {scene_id!r} is not cached; call search() before metadata()/fetch() so the "
-                "adapter can resolve its asset hrefs"
-            ) from exc
+    async def _remember(self, items: list[StacItem]) -> None:
+        """Hold each discovered item in-process and, when the cross-worker scene-item cache is
+        configured, write it through keyed by its immutable scene id. A later per-pass task on any
+        worker then resolves the asset hrefs from Redis instead of re-searching."""
+        for item in items:
+            self._items[item.scene_id] = item
+        if self._scene_item_cache is not None:
+            for item in items:
+                await self._scene_item_cache.set(
+                    item.scene_id, item.to_json_dict(), ttl_s=self._scene_item_cache_ttl_s
+                )
+
+    async def _resolve_item(self, scene_id: str) -> StacItem:
+        """The cached STAC item for `scene_id`: the in-process map first, then the cross-worker
+        scene-item cache (which repopulates the map on a hit), else `LookupError`. Lets a per-pass
+        task that skipped search still resolve asset hrefs - the search fallback in collect_field
+        covers a cold cache, so the LookupError contract is unchanged when no cache is wired."""
+        item = self._items.get(scene_id)
+        if item is not None:
+            return item
+        if self._scene_item_cache is not None:
+            cached = await self._scene_item_cache.get(scene_id)
+            if isinstance(cached, dict):
+                log.info("scene_item_cache_hit", scene_id=scene_id)
+                item = StacItem.from_json_dict(cached)
+                self._items[scene_id] = item
+                return item
+            log.info("scene_item_cache_miss", scene_id=scene_id)
+        raise LookupError(
+            f"scene {scene_id!r} is not cached; call search() before metadata()/fetch() so the "
+            "adapter can resolve its asset hrefs"
+        )
 
     # -- AccessPort ------------------------------------------------------------------------------
 
@@ -179,16 +215,14 @@ class WindowedCogAdapter(AccessPort):
             if isinstance(cached, list):
                 log.info("search_cache_hit", key=cache_key, count=len(cached))
                 items = [StacItem.from_json_dict(d) for d in cached]
-                for item in items:
-                    self._items[item.scene_id] = item
+                await self._remember(items)
                 return [item.to_scene_ref() for item in items]
             log.info("search_cache_miss", key=cache_key)
 
         items = await self._stac().search_items(
             aoi, time_range, max_scene_cloud_pct=max_scene_cloud_pct
         )
-        for item in items:
-            self._items[item.scene_id] = item
+        await self._remember(items)
 
         if self._search_cache is not None and cache_key is not None:
             await self._search_cache.set(
@@ -210,7 +244,7 @@ class WindowedCogAdapter(AccessPort):
                 log.info("scene_meta_cache_hit", scene_id=scene_id)
                 return SceneMetadata.model_validate(cached)
             log.info("scene_meta_cache_miss", scene_id=scene_id)
-        item = self._item(scene_id)
+        item = await self._resolve_item(scene_id)
         href = resolve_metadata_href(item.assets)
         # The XML read is a blocking CDSE/S3 call; run it off the event loop so concurrent passes
         # (ADR 0011) are not serialised by it. The per-task memo (read_bytes) dedupes repeats.
@@ -236,7 +270,7 @@ class WindowedCogAdapter(AccessPort):
         requested = [b for b in bands if b != _SCL_BAND]
         if not requested:
             raise ValueError("fetch needs at least one reflectance band")
-        item = self._item(scene_ref.scene_id)
+        item = await self._resolve_item(scene_ref.scene_id)
         source = self._source()
         res = (
             float(resolution_m)

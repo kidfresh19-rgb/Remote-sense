@@ -483,3 +483,70 @@ async def test_metadata_cache_fails_open_to_live_read() -> None:
     meta = await adapter.metadata("S2_TEST")  # cache.get raises -> fall open to the live XML read
     assert src.byte_reads == 1
     assert meta.quantification_value == 10000.0
+
+
+# -------------------------------------------------------------------- scene-item cache (Phase 2b)
+
+
+def _scene_item_cache(store: dict[str, str], *, fail: bool = False) -> RedisJsonCache:
+    return RedisJsonCache(_SharedFakeRedis(store, fail=fail), namespace="cdse:scene_item")
+
+
+def _item_adapter(
+    source: _FakeSource, stac_client: _FakeStac, cache: RedisJsonCache
+) -> WindowedCogAdapter:
+    return WindowedCogAdapter(
+        Settings(),
+        stac_client=stac_client,  # type: ignore[arg-type]
+        window_source=source,
+        scene_item_cache=cache,
+    )
+
+
+_REF = SceneRef(
+    scene_id="S2_TEST",
+    provider="cdse",
+    sensing_datetime=datetime(2023, 6, 15, 8, 0, tzinfo=UTC),
+    footprint=_AOI.geometry,
+)
+
+
+async def test_search_writes_scene_item_cache_and_pass_resolves_without_research() -> None:
+    store: dict[str, str] = {}
+    cache = _scene_item_cache(store)
+
+    # The window search (e.g. the backfill fan-out) writes every discovered item through.
+    stac1 = _FakeStac([_item()])
+    adapter1 = _item_adapter(_FakeSource(), stac1, cache)
+    await adapter1.search(_AOI, _RANGE)
+    assert stac1.searches == 1
+    assert "cdse:scene_item:S2_TEST" in store  # item persisted by immutable scene id
+
+    # A fanned-out pass on a fresh adapter (shared Redis, no prior search of its own) resolves the
+    # asset hrefs from the cache: fetch + metadata work with zero extra STAC searches (2b win).
+    src2 = _FakeSource()
+    stac2 = _FakeStac([_item()])
+    adapter2 = _item_adapter(src2, stac2, cache)
+    result = await adapter2.fetch(_REF, _AOI, bands=["B04", "B08"], resolution_m=10.0)
+    assert result.scene_id == "S2_TEST"
+    assert stac2.searches == 0  # resolved from the scene-item cache, no redundant re-search
+    meta = await adapter2.metadata("S2_TEST")
+    assert meta.quantification_value == 10000.0
+
+
+async def test_search_succeeds_when_scene_item_cache_write_fails() -> None:
+    # The write-through is fail-open: a Redis hiccup must not fail the search; the in-process map
+    # still serves this adapter's own fetches.
+    stac = _FakeStac([_item()])
+    adapter = _item_adapter(_FakeSource(), stac, _scene_item_cache({}, fail=True))
+    scenes = await adapter.search(_AOI, _RANGE)
+    assert [s.scene_id for s in scenes] == ["S2_TEST"]
+    assert stac.searches == 1
+
+
+async def test_scene_item_cache_miss_preserves_lookup_error_contract() -> None:
+    # A cold cache (here, a failing one) leaves the no-cache contract intact: a pass with no
+    # in-process item still raises LookupError, which collect_field turns into its search fallback.
+    adapter = _item_adapter(_FakeSource(), _FakeStac([_item()]), _scene_item_cache({}, fail=True))
+    with pytest.raises(LookupError):
+        await adapter.fetch(_REF, _AOI, bands=["B04", "B08"], resolution_m=10.0)

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 
@@ -101,14 +102,16 @@ async def run_collection(
     already_processed: frozenset[str] = frozenset(),
     is_backfill: bool = False,
     cog_store: CogStore | None = None,
+    scenes: Sequence[SceneRef] | None = None,
     now: datetime | None = None,
     ttl_seconds: int = DEFAULT_LOCK_TTL_SECONDS,
 ) -> CollectionSummary:
     """The body both collection tasks share: collect a field over a time range under its enqueue
     lock, persist every result (scene metadata + per-index zonal stats), and advance the cursor.
-    When `cog_store` is given, also emit + store each index COG for the tiler (D1/D7). Returns a
-    summary; `locked=True` means another worker held the unit and we did nothing (R-1). Runs inside
-    the caller's transaction - the caller commits."""
+    When `cog_store` is given, also emit + store each index COG for the tiler (D1/D7). `scenes` is
+    forwarded to the known-scene fast path (a fanned-out pass already holds its scene ref). Returns
+    a summary; `locked=True` means another worker held the unit and we did nothing (R-1). Runs
+    inside the caller's transaction - the caller commits."""
     results = await collect_field_locked(
         lock_client=lock_client,
         collection_key=collection_key,
@@ -118,6 +121,7 @@ async def run_collection(
         indices=indices,
         already_processed=already_processed,
         emit_rasters=cog_store is not None,
+        scenes=scenes,
         ttl_seconds=ttl_seconds,
     )
     if results is None:
@@ -268,21 +272,20 @@ async def plan_backfill_scenes(
     aoi: AOI,
     months: int,
     now: datetime,
-) -> list[tuple[str, str]]:
-    """The not-yet-processed passes in the field's backfill window, as (scene_id, pass_date) pairs
-    to fan one task out per pass (D11). Dedups against the scenes already stored for this field at
-    this geometry version (R-1), so a re-scan enqueues only what is missing - which is also how the
-    backfill converges: an empty plan means the window is fully collected."""
+) -> list[SceneRef]:
+    """The not-yet-processed passes in the field's backfill window, as the scene refs to fan one
+    task out per pass (D11). Dedups against the scenes already stored for this field at this
+    geometry version (R-1), so a re-scan enqueues only what is missing - which is also how the
+    backfill converges: an empty plan means the window is fully collected. Returning the full
+    `SceneRef` (not just the id) lets the fan-out thread it to the pass task, so the pass skips its
+    own one-day search and keeps the real `sensing_datetime` for provenance (invariant 5)."""
     window_start, _ = backfill_window(now.date(), months)
     scenes = await adapter.search(aoi, TimeRange(start=_start_of_day(window_start), end=now))
     already = await processed_scene_ids(
         session, field_id=field_id, geometry_version=geometry_version
     )
     by_id = {s.scene_id: s for s in scenes}
-    return [
-        (scene_id, by_id[scene_id].sensing_datetime.date().isoformat())
-        for scene_id in plan_scenes([s.scene_id for s in scenes], already)
-    ]
+    return [by_id[scene_id] for scene_id in plan_scenes([s.scene_id for s in scenes], already)]
 
 
 async def collect_pass(
@@ -297,11 +300,14 @@ async def collect_pass(
     pass_date: date,
     indices: list[str],
     cog_store: CogStore | None = None,
+    scene_ref: SceneRef | None = None,
     now: datetime | None = None,
     ttl_seconds: int = DEFAULT_LOCK_TTL_SECONDS,
 ) -> CollectionSummary:
-    """Collect a single backfill pass (one scene) under its per-scene lock (R-1, D11). The one-day
-    search window resolves to just that scene; persistence and the cursor advance reuse
+    """Collect a single backfill pass (one scene) under its per-scene lock (R-1, D11). When
+    `scene_ref` is supplied (the fan-out threads it from its window search), the known-scene fast
+    path skips this pass's own one-day `adapter.search`; the one-day window is still built as the
+    fallback bound if the scene-item cache is cold. Persistence and the cursor advance reuse
     run_collection. `is_backfill=False` so the pass advances the cursor without prematurely marking
     the field's backfill complete - convergence is decided by plan_backfill_scenes."""
     already = await processed_scene_ids(
@@ -321,6 +327,7 @@ async def collect_pass(
         already_processed=already,
         is_backfill=False,
         cog_store=cog_store,
+        scenes=[scene_ref] if scene_ref is not None else None,
         now=now,
         ttl_seconds=ttl_seconds,
     )
@@ -364,10 +371,12 @@ async def due_field_ids(
 
 def _build_collection_adapter(settings: Settings) -> tuple[AccessPort, list[RedisJsonCache]]:
     """The imagery adapter for the stored backfill / forward-fill path, wired with the ADR 0011
-    caches that path was missing. For windowed_cog, attach the cross-worker scene-metadata cache
-    (immutable per scene id) so fields sharing a Sentinel-2 tile skip the product-XML read after the
-    first pass. Returns the adapter plus the caches to close at task end. Any other adapter (mock /
-    server_compute) is returned unchanged - the adapter remains a config switch (invariant 1)."""
+    caches that path was missing. For windowed_cog, attach two cross-worker caches keyed by the
+    immutable scene id: the scene-metadata cache (so fields sharing a Sentinel-2 tile skip the
+    product-XML read after the first pass) and the scene-item cache (so a fanned-out per-pass task
+    resolves asset hrefs from Redis instead of re-running a one-day STAC search). Returns the
+    adapter plus the caches to close at task end. Any other adapter (mock / server_compute) is
+    returned unchanged - the adapter remains a config switch (invariant 1)."""
     if settings.imagery_adapter is not ImageryAdapter.WINDOWED_COG:
         return get_access_adapter(settings), []
     from rs_imagery.adapters.windowed_cog import WindowedCogAdapter
@@ -376,7 +385,12 @@ def _build_collection_adapter(settings: Settings) -> tuple[AccessPort, list[Redi
     scene_meta_cache = redis_json_cache_from_settings(settings, namespace="cdse:scene_meta")
     if scene_meta_cache is not None:
         caches.append(scene_meta_cache)
-    adapter = WindowedCogAdapter(settings, scene_meta_cache=scene_meta_cache)
+    scene_item_cache = redis_json_cache_from_settings(settings, namespace="cdse:scene_item")
+    if scene_item_cache is not None:
+        caches.append(scene_item_cache)
+    adapter = WindowedCogAdapter(
+        settings, scene_meta_cache=scene_meta_cache, scene_item_cache=scene_item_cache
+    )
     return adapter, caches
 
 
@@ -451,8 +465,16 @@ async def _fan_out_backfill(field_id: str) -> dict[str, object]:
         await engine.dispose()
     if not plan:
         return {"fanned_out": 0, "complete": True}
-    for scene_id, pass_date in plan:
-        collect_pass_task.delay(field_id, scene_id, pass_date)
+    for ref in plan:
+        # Thread the scene ref so the pass skips its own one-day search (2b) and keeps the real
+        # sensing_datetime; scene_id + pass_date stay positional so an in-flight old-format message
+        # (acks_late redelivery) still deserialises and just takes the search fallback.
+        collect_pass_task.delay(
+            field_id,
+            ref.scene_id,
+            ref.sensing_datetime.date().isoformat(),
+            ref.model_dump_json(),
+        )
     return {"fanned_out": len(plan), "complete": False}
 
 
@@ -531,11 +553,16 @@ async def _plan_collect_dates(field_id: str, dates: list[str]) -> dict[str, obje
         await engine.dispose()
 
     resolved, skipped, to_enqueue = _snap_dates(requested, scenes, already)
+    by_id = {s.scene_id: s for s in scenes}
     for scene_id, pass_date in to_enqueue.items():
         # User-initiated collection: run on the interactive lane (queue isolation, celery_app.py)
         # so a requested date is collected promptly instead of queuing behind the bulk backfill,
-        # whose collect_pass fan-out (_fan_out_backfill) stays on the default queue.
-        collect_pass_task.apply_async(args=[field_id, scene_id, pass_date], queue="interactive")
+        # whose collect_pass fan-out (_fan_out_backfill) stays on the default queue. Thread the
+        # scene ref (already in hand from this search) so the pass skips its own one-day search.
+        collect_pass_task.apply_async(
+            args=[field_id, scene_id, pass_date, by_id[scene_id].model_dump_json()],
+            queue="interactive",
+        )
     return {
         "field_id": field_id,
         "requested": len(requested),
@@ -545,11 +572,16 @@ async def _plan_collect_dates(field_id: str, dates: list[str]) -> dict[str, obje
     }
 
 
-async def _collect_one_pass(field_id: str, scene_id: str, pass_date: str) -> dict[str, object]:
+async def _collect_one_pass(
+    field_id: str, scene_id: str, pass_date: str, scene_ref: str | None = None
+) -> dict[str, object]:
     settings = get_settings()
     adapter, caches = _build_collection_adapter(settings)
     redis = aioredis.Redis.from_url(settings.redis_url)
     engine = create_async_engine(settings.database_url, poolclass=NullPool)
+    # The fan-out serialises the neutral SceneRef (no vendor type leaks past the adapter); an
+    # old-format in-flight message has none, so the pass falls back to its one-day search.
+    ref = SceneRef.model_validate_json(scene_ref) if scene_ref is not None else None
     try:
         async with async_sessionmaker(engine, expire_on_commit=False)() as session:
             field = (
@@ -566,6 +598,7 @@ async def _collect_one_pass(field_id: str, scene_id: str, pass_date: str) -> dic
                 pass_date=date.fromisoformat(pass_date),
                 indices=CORE_INDICES,
                 cog_store=cog_store_from_settings(settings),
+                scene_ref=ref,
             )
             await session.commit()
         return _summary_dict(summary)
@@ -598,9 +631,14 @@ def backfill_field(field_id: str) -> dict[str, object]:
 
 
 @celery.task(name="collection.collect_pass")
-def collect_pass_task(field_id: str, scene_id: str, pass_date: str) -> dict[str, object]:
-    """Collect one backfill pass (a single scene) for a field under its per-scene lock (D11)."""
-    return asyncio.run(_collect_one_pass(field_id, scene_id, pass_date))
+def collect_pass_task(
+    field_id: str, scene_id: str, pass_date: str, scene_ref: str | None = None
+) -> dict[str, object]:
+    """Collect one backfill pass (a single scene) for a field under its per-scene lock (D11).
+    `scene_ref` (serialised SceneRef) is the 2b fast-path hint that lets the pass skip its own STAC
+    search; it is the optional trailing arg so an in-flight 3-arg message still runs (search
+    fallback)."""
+    return asyncio.run(_collect_one_pass(field_id, scene_id, pass_date, scene_ref))
 
 
 @celery.task(name="collection.collect_dates_field")
