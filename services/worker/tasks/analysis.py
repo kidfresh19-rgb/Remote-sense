@@ -25,7 +25,6 @@ from functools import partial
 from typing import Any
 
 import numpy as np
-
 from rs_analysis import analyze_index, get_index
 from rs_core import CogStore, cog_store_from_settings, get_settings
 from rs_core.cache import RedisJsonCache, redis_json_cache_from_settings
@@ -262,7 +261,8 @@ async def _analyse_scene(
     # Emit temp COG for AOI Studio downloads (failure-isolated; arrays in memory now).
     if cog_store is not None and job_id is not None:
         try:
-            from rs_analysis.cog import index_raster as _ir, write_cog as _wc
+            from rs_analysis.cog import index_raster as _ir
+            from rs_analysis.cog import write_cog as _wc
 
             pass_date_str = scene.sensing_datetime.date().isoformat()
             key = aoi_tmp_cog_key(job_id, pass_date_str, index_name)

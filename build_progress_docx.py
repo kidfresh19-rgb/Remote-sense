@@ -5,17 +5,19 @@ Output: System-Progress-Tracker.docx (+ system_flow.png alongside)
 """
 from __future__ import annotations
 
+# isort: off  — matplotlib.use() must precede pyplot import
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from matplotlib.patches import FancyBboxPatch, FancyArrowPatch
+from matplotlib.patches import FancyArrowPatch, FancyBboxPatch
+# isort: on
 
 from docx import Document
-from docx.shared import Pt, Inches, RGBColor
-from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.enum.table import WD_TABLE_ALIGNMENT
-from docx.oxml.ns import qn
+from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
+from docx.shared import Inches, Pt, RGBColor
 
 HERE = __file__.rsplit("\\", 1)[0]
 PNG = HERE + "\\system_flow.png"
@@ -72,12 +74,14 @@ def draw_diagram() -> None:
             x, y, w, h = box_
             cx, cy = x + w / 2, y + h / 2
             if side == "auto":
-                side = ("R" if c_other[0] > cx else "L") if abs(c_other[0] - cx) > abs(c_other[1] - cy) else ("T" if c_other[1] > cy else "B")
+                if abs(c_other[0] - cx) > abs(c_other[1] - cy):
+                    side = "R" if c_other[0] > cx else "L"
+                else:
+                    side = "T" if c_other[1] > cy else "B"
             return {"R": (x + w, cy), "L": (x, cy), "T": (cx, y + h), "B": (cx, y)}[side]
 
         pa = anchor((ax, ay, aw, ah), bc, side_a)
         pb = anchor((bx, by, bw, bh), ac, side_b)
-        ax_, fig_ = None, None
         arr = FancyArrowPatch(pa, pb, arrowstyle="-|>", mutation_scale=16,
                               linewidth=1.8, color=color, zorder=1,
                               connectionstyle="arc3,rad=0.0")
