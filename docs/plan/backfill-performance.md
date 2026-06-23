@@ -19,15 +19,17 @@ from here.
 
 | Phase | What | Status | Where |
 |-------|------|--------|-------|
-| 1 | Enqueue backfill on ingest (kill ~24h start latency) | DONE | `58c68a0` on `perf/backfill-start-latency` |
-| 2a | Cross-worker scene-metadata cache + collection-adapter cache wiring | DONE | `e1e077b`, `5752d5d` on `perf/backfill-pass-redundancy` |
-| 2b | Eliminate redundant per-pass STAC search | TODO | design below |
-| 2c | Share one OAuth client per worker process | TODO | |
+| 1 | Enqueue backfill on ingest (kill ~24h start latency) | DONE, merged + pushed | `58c68a0`; merged to `integration/azure-consolidation` (`94ed4a7`) |
+| 2a | Cross-worker scene-metadata cache + collection-adapter cache wiring | DONE, merged + pushed | `e1e077b`, `5752d5d`; merged to integration (`be3a6c5`) |
+| 2b | Eliminate redundant per-pass STAC search | DONE | `aada28d` on `perf/backfill-pass-redundancy` |
+| 2c | Share one OAuth client per worker process | N/A (won't do) | see below - the windowed_cog collection path uses no OAuth |
 | 3a | Fail-fast on permanent CDSE errors | TODO | |
 | 3b | Reads-per-pass telemetry + quota-bucket sizing | TODO | |
 | 4 | COG off the number-critical path | DEFERRED (measurement-gated) | |
 
-Nothing pushed yet. Phases 2b to 3b continue on `perf/backfill-pass-redundancy` (one PR).
+Phases 1 + 2a are merged into `integration/azure-consolidation` and pushed to `origin` (azure); they
+are NOT yet on `develop`. Phase 2b is committed on `perf/backfill-pass-redundancy` (off develop),
+unpushed. 2c is N/A; 3a/3b remain on this branch as the next slices.
 
 ## Diagnosis (the four problems)
 
@@ -35,9 +37,13 @@ Nothing pushed yet. Phases 2b to 3b continue on `perf/backfill-pass-redundancy` 
    enqueued backfill; ingested fields waited for the daily 02:00 scan. Fixed in Phase 1.
 2. **Redundant per-pass CDSE work.** `_fan_out_backfill` searches the whole window once, then each
    `collect_pass` re-runs a one-day `adapter.search` purely to re-hydrate the scene it was already
-   handed. That one-day search draws a quota token (`cdse_stac.py` `_bucket.acquire()`) and an OAuth
-   round-trip. Plus each task rebuilt the adapter, so the metadata XML was re-read across fields
-   sharing a tile. Phase 2a fixed the metadata re-read; Phase 2b/2c address the search + OAuth.
+   handed. That one-day search draws a quota token (`cdse_stac.py` `_bucket.acquire()`). Plus each
+   task rebuilt the adapter, so the metadata XML was re-read across fields sharing a tile. Phase 2a
+   fixed the metadata re-read; Phase 2b removed the redundant search. NOTE: the original diagnosis
+   also claimed an OAuth round-trip per pass - that was wrong. `_build_collection_adapter` builds
+   `WindowedCogAdapter` with no `oauth=`, so the stored pipeline's STAC search is unauthenticated
+   (the CDSE STAC catalogue is public; the S3 eodata reads use S3 keys). There is no per-pass token
+   to share, which is why Phase 2c is N/A.
 3. **COG-on-critical-path.** `run_collection` persists analysis rows then writes 7 COGs before the
    transaction commits, so the numbers wait on raster encode + MinIO I/O. Deferred to Phase 4.
 4. **CDSE quota is the global ceiling.** More workers do not help; only fewer reads/pass and latency
@@ -71,15 +77,36 @@ instead of once per field-pass.
 - Tests: `test_windowed_cog_adapter.py` (cache hit skips XML read across tasks; fails open),
   `test_collection.py` (builder attaches the cache for windowed_cog, passes other adapters through).
 
-## Phase 2b (TODO): eliminate the redundant per-pass STAC search
+## Phase 2b (DONE, `aada28d`): eliminate the redundant per-pass STAC search
 
-The win: remove one quota token + one OAuth round-trip per pass (for N passes per field backfill).
+The win: removed one quota token per pass (for N passes per field backfill) - no OAuth was involved
+(see 2c). Shipped as the no-port-change design below; no invariant moved, numbers byte-identical.
 
-**Constraint discovered during grounding:** `collect_field` (`services/worker/collection.py`) always
-calls `adapter.search`, and the `AccessPort` (`packages/rs_imagery/port.py`) defines exactly four
-operations (search, metadata, fetch, preview). Cleanly removing the per-pass search either needs a
-new port operation (an invariant-1 change, so an ADR) OR a no-port-change design. A no-port-change
-design exists and is preferred:
+**What shipped:**
+
+- **Adapter scene-item cache.** `WindowedCogAdapter` takes `scene_item_cache` (namespace
+  `cdse:scene_item`, TTL `RS_CDSE_SCENE_ITEM_CACHE_TTL_S`, default 30d). `search()` write-throughs
+  every discovered `StacItem` (`to_json_dict`) keyed by `scene_id`; `_resolve_item(scene_id)` returns
+  from the in-process `_items`, else loads from the cache (`from_json_dict`), else raises
+  `LookupError`. `metadata()`/`fetch()` now `await self._resolve_item(...)`. Fail-open.
+- **Known-scene fast path in `collect_field`.** New `scenes: Sequence[SceneRef] | None`. When given,
+  it skips `adapter.search`; a `LookupError` (cold cache) falls back to the search it skipped (one
+  search rehydrates the whole window), so the result is identical warm or cold.
+- **SceneRef threaded through the task.** `plan_backfill_scenes` now returns `list[SceneRef]`; the
+  fan-out serialises each (`model_dump_json`) as the optional 4th arg of `collect_pass_task`. An
+  in-flight 3-arg message (acks_late redelivery) still runs - it just takes the search fallback. The
+  real `sensing_datetime` is preserved (invariant 5), never rebuilt from `pass_date`. `collect_dates`
+  threads it too on the interactive lane.
+- **Invariant 7 held:** the band `_ReadMemo` stays per-task; only the OAuth-free STAC item and the
+  Redis caches are shared.
+- Tests: `test_windowed_cog_adapter.py` (cache write-through, cross-instance resolve, fail-open,
+  LookupError contract preserved), `test_collection.py` (known-scene path skips search; cold-cache
+  fallback), `test_tasks_db.py` updated for the new `plan_backfill_scenes` return type.
+
+**Original design rationale (kept for the record):** `collect_field` always called `adapter.search`,
+and `AccessPort` defines exactly four operations (search, metadata, fetch, preview). A clean removal
+either needed a new port op (invariant-1 change, ADR) OR the no-port-change design above. The
+no-port-change design was chosen:
 
 - **Adapter scene-item cache.** Add an optional `scene_item_cache: RedisJsonCache` (namespace
   `cdse:scene_item`, long TTL, immutable). `search()` writes each discovered `StacItem`
@@ -103,13 +130,24 @@ design exists and is preferred:
 - **Validity:** byte-identical numbers - same scenes, same StacItems (cache vs re-search), same
   fetch. The existing search-cache hit path already repopulates `_items` from cached StacItem JSON.
 
-## Phase 2c (TODO): share OAuth per worker process
+## Phase 2c (N/A - won't do): share OAuth per worker process
 
-`WindowedCogAdapter` and `CdseStacClient` already accept `oauth=`. Build one `CdseOAuth2Client` in
-`worker_process_init` (`services/worker/celery_app.py`) and thread it into `_build_collection_adapter`
-so the window/forward-fill searches reuse the token instead of re-fetching per task. (OAuth is used
-only by the STAC client; the S3/XML reads use S3 creds.) After 2b removes per-pass searches, this
-helps the per-field window search and forward-fill polls. Keep the band memo per-task (invariant 7).
+Dropped after grounding. Two independent reasons:
+
+1. **The collection path uses no OAuth.** `_build_collection_adapter` builds `WindowedCogAdapter`
+   with no `oauth=`, so its `CdseStacClient` runs `oauth=None` - the STAC search is unauthenticated
+   (the CDSE STAC catalogue is public; the S3 eodata reads use S3 keys, not a bearer token). Only the
+   `server_compute` adapter (the interactive Process-API/AOI-Studio lane) builds a `CdseOAuth2Client`,
+   and it already reuses it within its instance. There is no per-task token fetch in the stored
+   pipeline to share, so 2c would save nothing.
+2. **The literal design would be a runtime bug.** Each Celery task runs `asyncio.run(...)` on a fresh
+   event loop. A `CdseOAuth2Client` built once in `worker_process_init` owns an `httpx.AsyncClient`
+   whose connection pool binds to the first loop; reusing it on the next task's loop raises
+   "Event loop is closed". Sharing only the token string would need a process- or Redis-level token
+   store - a security-relevant refactor not justified by (1).
+
+Phase 2b already removed the per-pass search (the cost that mattered). If the interactive lane ever
+needs cross-task token reuse, that is server_compute's concern, tracked separately, not here.
 
 ## Phase 3a (TODO): fail-fast on permanent CDSE errors
 
@@ -147,9 +185,13 @@ write `docs/adr/0012-backfill-numbers-before-cog.md`.
 
 ## Branch / commit map
 
-- `perf/backfill-start-latency`: Phase 1 (`58c68a0`), with two unrelated orthophoto commits stacked
-  above it by separate work. Phase 1 PR should isolate `58c68a0`.
-- `perf/backfill-pass-redundancy` (off develop): Phase 2a (`e1e077b` storage fix, `5752d5d`
-  scene-meta cache). Phases 2b to 3b continue here.
-- Decisions: Phase 1 = its own small PR first; Phases 2+3 = one PR; Phase 4 deferred. Reuse the
-  existing `celery` bulk queue (no new queue).
+- `integration/azure-consolidation` (pushed to `origin`): the consolidation merged Phase 1 (via
+  `94ed4a7`, bundled with the two orthophoto commits) and Phase 2a (via `be3a6c5`). This is where 1 +
+  2a actually live now; they are NOT on `develop`. The earlier "Phase 1 PR isolates `58c68a0`" plan
+  was overtaken by the consolidation - if 1/2a ever need a clean landing on `develop`, that is a
+  separate cherry-pick decision.
+- `perf/backfill-start-latency`: Phase 1 (`58c68a0`) with two orthophoto commits stacked above it.
+- `perf/backfill-pass-redundancy` (off develop): Phase 2a (`e1e077b`, `5752d5d`) + Phase 2b
+  (`aada28d`). 3a/3b continue here. Unpushed.
+- Decisions: Phases 2+3 = one PR; 2c dropped (N/A); Phase 4 deferred. Reuse the existing `celery`
+  bulk queue (no new queue); the `interactive` queue isolation already exists (`celery_app.py`).
