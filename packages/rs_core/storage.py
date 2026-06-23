@@ -27,6 +27,13 @@ def aoi_preview_key(scene_id: str, geometry_hash: str) -> str:
     return f"aoi_preview/{scene_id}/{geometry_hash}.jpg"
 
 
+def aoi_rgb_cog_key(scene_id: str, geometry_hash: str) -> str:
+    """Cached natural-colour RGB reflectance COG for a custom AOI scene - the georeferenced
+    download companion to `aoi_preview_key`'s JPEG. Shares the `aoi_preview/` prefix so the same
+    7-day lifecycle rule expires it; the natural-colour render writes both from one band read."""
+    return f"aoi_preview/{scene_id}/{geometry_hash}.tif"
+
+
 def vsis3_uri(bucket: str, key: str) -> str:
     """The GDAL `/vsis3/` path the tiler opens for a stored COG (read path, configured by
     `gdal_s3_env`)."""
@@ -52,7 +59,7 @@ class CogStore(Protocol):
     """Where derived index COGs live. The pipeline puts, the retention job deletes (S4.3); the
     tiler reads (via GDAL, out of band)."""
 
-    def put(self, key: str, data: bytes) -> None: ...
+    def put(self, key: str, data: bytes, *, content_type: str = "image/tiff") -> None: ...
 
     def exists(self, key: str) -> bool: ...
 

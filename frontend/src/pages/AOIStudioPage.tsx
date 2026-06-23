@@ -516,6 +516,8 @@ function Studio() {
             selectedIndex={index}
             viewIndex={viewIndex}
             onViewIndexChange={setViewIndex}
+            geometry={aoi}
+            jobId={jobId}
           />
         </div>
       </section>

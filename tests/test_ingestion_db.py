@@ -27,6 +27,7 @@ from services.api.ingestion import (
     get_or_create_farm,
     get_or_create_field,
     ingest_farm,
+    ingest_farm_endpoint,
 )
 
 _TEST_DB_URL = os.environ.get(
@@ -241,6 +242,37 @@ async def test_get_or_create_farm_created_then_existing(sessionmaker_) -> None:
     assert created1 is True
     assert created2 is False
     assert await _count(sessionmaker_, Farm) == 1
+
+
+async def test_ingest_endpoint_enqueues_backfill_on_create(sessionmaker_, monkeypatch) -> None:
+    """Start-latency fix: the endpoint kicks off collection for newly ingested fields immediately
+    (no 24h wait for the daily scan), and an idempotent re-send (all-unchanged) enqueues nothing."""
+    import services.worker.tasks as tasks
+
+    enqueued: list[tuple[tuple, object]] = []
+    monkeypatch.setattr(
+        tasks.backfill_field,
+        "apply_async",
+        lambda args, countdown=None: enqueued.append((tuple(args), countdown)),
+    )
+    payload = FarmIn(
+        canonical_farm_id="FARM-BF",
+        boundary=_square(*_HARARE, 0.02),
+        fields=[FieldIn(canonical_field_id="fld-1", geometry=_square(*_HARARE, 0.008))],
+    )
+    async with sessionmaker_() as session:
+        report = await ingest_farm_endpoint(payload, session, None)
+        await session.commit()
+    field_id = report.fields[0].field_id
+    assert [c[0] for c in enqueued] == [(field_id,)]  # the new field's backfill was enqueued
+    assert enqueued[0][1] == 10  # carried the commit-race countdown
+
+    enqueued.clear()
+    async with sessionmaker_() as session:
+        again = await ingest_farm_endpoint(payload, session, None)
+        await session.commit()
+    assert again.action == "unchanged"
+    assert enqueued == []  # nothing changed -> no re-enqueue
 
 
 async def test_get_or_create_field_created_then_existing(sessionmaker_) -> None:

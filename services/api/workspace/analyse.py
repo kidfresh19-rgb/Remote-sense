@@ -89,6 +89,9 @@ class NaturalColorRequest(BaseModel):
     scene_id: str
     geometry: dict[str, Any]
     pass_date: str
+    # Which artifact to return: the 512px true-colour JPEG (default) or the georeferenced RGB
+    # reflectance GeoTIFF for download. Both are rendered and cached from one band read.
+    format: Literal["jpeg", "cog"] = "jpeg"
 
 
 class AOIPushRequest(BaseModel):
@@ -158,39 +161,53 @@ async def aoi_natural_color_endpoint(
     payload: NaturalColorRequest,
     principal: RunAnalysisPrincipal,
 ) -> Response:
-    """Render a natural-colour JPEG (512px) for one custom AOI scene. On cache hit the stored
-    JPEG is proxied from MinIO. On cache miss the render runs on the worker (CDSE B02/B03/B04
-    fetch + in-memory COG) and the result is cached with a 7-day MinIO lifecycle rule. Requires
-    `run_analysis`."""
+    """Render the natural-colour artifacts for one custom AOI scene and return the requested
+    `format`: the 512px true-colour JPEG (default) or the georeferenced RGB reflectance GeoTIFF
+    (`format="cog"`, served as a download attachment). On cache hit the stored object is proxied
+    from MinIO. On cache miss the render runs on the worker (CDSE B02/B03/B04 fetch + in-memory
+    COG) and both artifacts are cached under the `aoi_preview/` prefix (7-day lifecycle), so the
+    companion format is a cache hit afterwards. Requires `run_analysis`."""
     import base64
 
     from celery.exceptions import TimeoutError as CeleryTimeoutError
     from rs_core.geo import canonical_geometry_hash
-    from rs_core.storage import S3CogStore, aoi_preview_key
+    from rs_core.storage import S3CogStore, aoi_preview_key, aoi_rgb_cog_key
 
     from services.worker.tasks import render_natural_color_task
 
     settings = get_settings()
     geom_hash = canonical_geometry_hash(payload.geometry)
-    key = aoi_preview_key(payload.scene_id, geom_hash)
+    jpeg_key = aoi_preview_key(payload.scene_id, geom_hash)
+    cog_key = aoi_rgb_cog_key(payload.scene_id, geom_hash)
+    want_cog = payload.format == "cog"
+    target_key = cog_key if want_cog else jpeg_key
+    media_type = "image/tiff" if want_cog else "image/jpeg"
+    headers = (
+        {
+            "Content-Disposition": (
+                f'attachment; filename="rgb_{payload.scene_id}_{payload.pass_date}.tif"'
+            )
+        }
+        if want_cog
+        else None
+    )
 
-    # Cache hit: proxy the stored JPEG from MinIO
+    # Cache hit: proxy the stored object from MinIO.
+    store: S3CogStore | None
     try:
         store = S3CogStore(settings)
-        if await run_in_threadpool(store.exists, key):
-            jpeg_bytes = await run_in_threadpool(store.get_bytes, key)
-            return Response(content=jpeg_bytes, media_type="image/jpeg")
+        if await run_in_threadpool(store.exists, target_key):
+            data = await run_in_threadpool(store.get_bytes, target_key)
+            return Response(content=data, media_type=media_type, headers=headers)
     except Exception:
-        store = None  # fall through to rendering
+        store = None  # storage unavailable; fall through to rendering
 
-    # Cache miss: render on the worker and stream the result
+    # Cache miss: render on the worker (persisting both the JPEG and the COG) and stream the result.
     task = render_natural_color_task.delay(
-        payload.scene_id, payload.geometry, payload.pass_date, key
+        payload.scene_id, payload.geometry, payload.pass_date, jpeg_key, cog_key
     )
     try:
         b64_result: str = await run_in_threadpool(task.get, timeout=90)
-        jpeg_bytes = base64.b64decode(b64_result)
-        return Response(content=jpeg_bytes, media_type="image/jpeg")
     except CeleryTimeoutError as exc:
         raise HTTPException(
             status.HTTP_504_GATEWAY_TIMEOUT,
@@ -200,6 +217,26 @@ async def aoi_natural_color_endpoint(
         raise HTTPException(
             status.HTTP_502_BAD_GATEWAY, f"Natural-colour render failed: {exc}"
         ) from exc
+
+    if not want_cog:
+        return Response(content=base64.b64decode(b64_result), media_type="image/jpeg")
+
+    # The render persists the COG alongside the JPEG; read it back to stream the GeoTIFF download.
+    if store is None:
+        try:
+            store = S3CogStore(settings)
+        except Exception as exc:
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE, "object storage not available"
+            ) from exc
+    try:
+        cog_bytes = await run_in_threadpool(store.get_bytes, cog_key)
+    except Exception as exc:
+        raise HTTPException(
+            status.HTTP_502_BAD_GATEWAY,
+            "GeoTIFF render did not produce a downloadable file",
+        ) from exc
+    return Response(content=cog_bytes, media_type="image/tiff", headers=headers)
 
 
 @router.post("/analyse/aoi/series", status_code=status.HTTP_202_ACCEPTED)

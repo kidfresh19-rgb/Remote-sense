@@ -7,6 +7,9 @@ export interface NaturalColorReq {
   scene_id: string;
   geometry: Geometry;
   pass_date: string;
+  // Omitted for the filmstrip thumbnail (server defaults to the JPEG preview). The orthophoto
+  // download sets "cog" to receive the georeferenced RGB GeoTIFF instead.
+  format?: "jpeg" | "cog";
 }
 
 /**
