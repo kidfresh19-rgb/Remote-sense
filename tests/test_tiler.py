@@ -121,6 +121,7 @@ def test_export_returns_cog_bytes(monkeypatch) -> None:
 
 # --- helpers for export tests ---
 
+
 def _raise_import_error(*args: object, **kwargs: object) -> None:
     raise ImportError("boto3 not available")
 
