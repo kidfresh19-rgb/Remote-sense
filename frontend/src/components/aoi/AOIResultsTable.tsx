@@ -1,4 +1,4 @@
-import { DownloadSimple, Spinner, ChartLine, Table as TableIcon, ArrowUp, ArrowDown, ArrowsOut, ArrowsIn, X, ChartPieSlice } from "@phosphor-icons/react";
+import { DownloadSimple, Spinner, ChartLine, Table as TableIcon, ArrowUp, ArrowDown, ArrowsOut, ArrowsIn, X, ChartPieSlice, Image as ImageIcon, FileImage, Warning } from "@phosphor-icons/react";
 import { useMemo, useState, useCallback, useEffect } from "react";
 import { createPortal } from "react-dom";
 import type { Geometry } from "geojson";
@@ -57,6 +57,60 @@ export function AOIResultsTable({
   const [viewMode, setViewMode] = useState<ViewMode>("chart");
   const [expanded, setExpanded] = useState(false);
   const [overviewActive, setOverviewActive] = useState(false);
+  // Orthophoto download: which pass the analyst has focused, and which format is in flight.
+  const [selectedPassDate, setSelectedPassDate] = useState<string | null>(null);
+  const [orthoFormat, setOrthoFormat] = useState<"jpeg" | "cog" | null>(null);
+  // A failed orthophoto download surfaces here. The fetch was previously silent, so an analyst saw
+  // the button spin and then nothing; a cold render that timed out reads differently from a hard
+  // failure, and a network throw must still clear the spinner.
+  const [orthoError, setOrthoError] = useState<string | null>(null);
+
+  // Fetch the natural-colour orthophoto for one pass and save it. Mirrors the per-pass index
+  // download and the eager shape of useNaturalColorThumbnail, but carries the AOI geometry so the
+  // server re-fetches B02/B03/B04. A cold COG render can take tens of seconds; a pass whose
+  // thumbnail was already viewed is an instant cache hit (the render persists both artifacts).
+  const downloadOrthophoto = useCallback(
+    async (pass: AOISeriesPass, format: "jpeg" | "cog") => {
+      if (!geometry || !token || !pass.scene_id || !pass.pass_date) return;
+      setOrthoError(null);
+      setOrthoFormat(format);
+      try {
+        const body: NaturalColorReq = {
+          scene_id: pass.scene_id,
+          geometry,
+          pass_date: pass.pass_date,
+          format,
+        };
+        const resp = await fetch(`${config.apiBaseUrl}/analyse/aoi/natural-color`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        if (!resp.ok) {
+          // A 502/504 means the cold COG render is still holding the proxy; any other code is a
+          // genuine failure. Tell the analyst which, instead of the old silent skip.
+          setOrthoError(
+            resp.status === 502 || resp.status === 504
+              ? "Still preparing this image. Give it a moment, then try again."
+              : "Could not generate the orthophoto. Please try again.",
+          );
+          return;
+        }
+        const blob = await resp.blob();
+        const blobUrl = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = blobUrl;
+        a.download = `rgb_${pass.scene_id}_${pass.pass_date}.${format === "cog" ? "tif" : "jpg"}`;
+        a.click();
+        URL.revokeObjectURL(blobUrl);
+      } catch {
+        setOrthoError("Could not reach the server. Check your connection and try again.");
+      } finally {
+        setOrthoFormat(null);
+      }
+    },
+    [geometry, token],
+  );
 
   // Auto-enter overview when "all" is selected and at least one job has data.
   useEffect(() => {
@@ -67,6 +121,13 @@ export function AOIResultsTable({
       setOverviewActive(false);
     }
   }, [selectedIndex, hasAnyJob]);
+
+  // Clear a download error after a few seconds so a stale message does not linger.
+  useEffect(() => {
+    if (!orthoError) return;
+    const t = setTimeout(() => setOrthoError(null), 6000);
+    return () => clearTimeout(t);
+  }, [orthoError]);
 
   // Close on Escape
   useEffect(() => {
@@ -127,6 +188,18 @@ export function AOIResultsTable({
     const passes = result?.passes ?? [];
     const hasRequested = passes.some((p) => p.requested_date);
 
+    // The pass the orthophoto buttons act on: the analyst's selection, else the latest usable pass.
+    // Only exact passes have a single scene to render true-colour from (interpolated ones do not).
+    const orthoOkPasses = passes.filter((p) => p.status === "ok" && p.scene_id && p.pass_date);
+    const targetPass =
+      orthoOkPasses.find((p) => p.pass_date === selectedPassDate) ??
+      (orthoOkPasses.length
+        ? orthoOkPasses.reduce((a, b) =>
+            dateValue(b.pass_date ?? "") > dateValue(a.pass_date ?? "") ? b : a,
+          )
+        : null);
+    const targetPassDate = targetPass?.pass_date ?? null;
+
     if (!result || passes.length === 0) {
       return (
         <EmptyState
@@ -178,6 +251,46 @@ export function AOIResultsTable({
             >
               <DownloadSimple size={13} /> CSV
             </button>
+            {/* Orthophoto download — acts on the selected (or latest) usable pass. Custom AOI only:
+                whole-farm targets have no client geometry to render true-colour from. */}
+            {geometry ? (
+              <>
+                <button
+                  onClick={() => targetPass && downloadOrthophoto(targetPass, "jpeg")}
+                  disabled={!targetPass || orthoFormat !== null}
+                  className="inline-flex items-center gap-1.5 rounded-md border border-border bg-panel px-2.5 py-1 text-xs text-muted transition-colors hover:bg-panel-2 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:cursor-not-allowed disabled:opacity-40"
+                  title={
+                    targetPass
+                      ? `Download true-colour image (JPEG) for the ${formatDate(targetPassDate ?? "")} pass`
+                      : "No usable pass to download an orthophoto for"
+                  }
+                >
+                  {orthoFormat === "jpeg" ? (
+                    <Spinner size={13} className="animate-spin" />
+                  ) : (
+                    <ImageIcon size={13} />
+                  )}{" "}
+                  Image
+                </button>
+                <button
+                  onClick={() => targetPass && downloadOrthophoto(targetPass, "cog")}
+                  disabled={!targetPass || orthoFormat !== null}
+                  className="inline-flex items-center gap-1.5 rounded-md border border-border bg-panel px-2.5 py-1 text-xs text-muted transition-colors hover:bg-panel-2 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:cursor-not-allowed disabled:opacity-40"
+                  title={
+                    targetPass
+                      ? `Download georeferenced RGB GeoTIFF (QGIS-ready) for the ${formatDate(targetPassDate ?? "")} pass`
+                      : "No usable pass to download an orthophoto for"
+                  }
+                >
+                  {orthoFormat === "cog" ? (
+                    <Spinner size={13} className="animate-spin" />
+                  ) : (
+                    <FileImage size={13} />
+                  )}{" "}
+                  GeoTIFF
+                </button>
+              </>
+            ) : null}
             {/* Expand / Collapse toggle */}
             <button
               onClick={() => setExpanded((v) => !v)}
@@ -190,11 +303,33 @@ export function AOIResultsTable({
           </div>
         </div>
 
+        {orthoError ? (
+          <div
+            role="alert"
+            className="flex items-center justify-between gap-2 rounded-md border border-critical/40 bg-critical/10 px-3 py-2 text-xs text-critical"
+          >
+            <span>{orthoError}</span>
+            <button
+              onClick={() => setOrthoError(null)}
+              aria-label="Dismiss"
+              className="shrink-0 rounded text-critical/70 transition-colors hover:text-critical focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+            >
+              <X size={13} />
+            </button>
+          </div>
+        ) : null}
+
         {viewMode === "chart" ? (
           <>
             <ChartView passes={passes} index={viewIndex} />
             {geometry ? (
-              <NaturalColorFilmstrip passes={passes} geometry={geometry} token={token} />
+              <NaturalColorFilmstrip
+                passes={passes}
+                geometry={geometry}
+                token={token}
+                selectedPassDate={targetPassDate}
+                onSelectPass={setSelectedPassDate}
+              />
             ) : null}
           </>
         ) : (
@@ -204,6 +339,8 @@ export function AOIResultsTable({
             hasRequested={hasRequested}
             jobId={jobId}
             token={token}
+            selectedPassDate={geometry ? targetPassDate : null}
+            onSelectPass={geometry ? setSelectedPassDate : undefined}
           />
         )}
 
@@ -339,10 +476,14 @@ function NaturalColorFilmstrip({
   passes,
   geometry,
   token,
+  selectedPassDate,
+  onSelectPass,
 }: {
   passes: AOISeriesPass[];
   geometry: Geometry;
   token: string | null;
+  selectedPassDate: string | null;
+  onSelectPass: (date: string) => void;
 }) {
   const okPasses = passes.filter((p) => p.status === "ok" && p.pass_date && p.scene_id);
   if (okPasses.length === 0) return null;
@@ -351,7 +492,7 @@ function NaturalColorFilmstrip({
       <p className="mb-2 text-[10px] font-medium uppercase tracking-wider text-muted">
         Natural colour
         <span className="ml-1.5 font-normal normal-case text-muted/70">
-          true-colour pass preview
+          click a pass to pick it for orthophoto download
         </span>
       </p>
       <div className="flex gap-2 overflow-x-auto pb-1">
@@ -361,6 +502,8 @@ function NaturalColorFilmstrip({
             pass={pass}
             geometry={geometry}
             token={token}
+            selected={pass.pass_date === selectedPassDate}
+            onSelect={() => pass.pass_date && onSelectPass(pass.pass_date)}
           />
         ))}
       </div>
@@ -372,10 +515,14 @@ function FilmstripCell({
   pass,
   geometry,
   token,
+  selected,
+  onSelect,
 }: {
   pass: AOISeriesPass;
   geometry: Geometry;
   token: string | null;
+  selected: boolean;
+  onSelect: () => void;
 }) {
   const req = useMemo<NaturalColorReq | null>(
     () =>
@@ -391,9 +538,16 @@ function FilmstripCell({
 
   return (
     <div className="flex shrink-0 flex-col items-center gap-1">
-      <div
-        ref={ref as (el: HTMLDivElement | null) => void}
-        className="relative size-[80px] overflow-hidden rounded-md border border-border bg-panel-2"
+      <button
+        ref={ref as (el: HTMLButtonElement | null) => void}
+        type="button"
+        onClick={onSelect}
+        aria-pressed={selected}
+        title={`Select the ${pass.pass_date ? formatDate(pass.pass_date) : ""} pass for orthophoto download`}
+        className={cn(
+          "relative size-[80px] overflow-hidden rounded-md border bg-panel-2 transition-shadow focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent",
+          selected ? "border-accent ring-2 ring-accent" : "border-border hover:border-accent/50",
+        )}
       >
         {loading && !src ? (
           <div className="absolute inset-0 flex items-center justify-center">
@@ -413,8 +567,10 @@ function FilmstripCell({
             onLoad={() => setImgLoaded(true)}
           />
         ) : null}
-      </div>
-      <p className="text-[10px] text-muted">{pass.pass_date ? formatDate(pass.pass_date) : "·"}</p>
+      </button>
+      <p className={cn("text-[10px]", selected ? "font-medium text-accent" : "text-muted")}>
+        {pass.pass_date ? formatDate(pass.pass_date) : "·"}
+      </p>
     </div>
   );
 }
@@ -1262,12 +1418,16 @@ function TableView({
   hasRequested,
   jobId,
   token,
+  selectedPassDate,
+  onSelectPass,
 }: {
   passes: AOISeriesPass[];
   index: IndexKey;
   hasRequested: boolean;
   jobId?: string | null;
   token?: string | null;
+  selectedPassDate?: string | null;
+  onSelectPass?: (date: string) => void;
 }) {
   const showDl = !!(jobId && token);
   return (
@@ -1296,6 +1456,8 @@ function TableView({
               showRequested={hasRequested}
               jobId={jobId}
               token={token}
+              selected={!!p.pass_date && p.pass_date === selectedPassDate}
+              onSelectPass={onSelectPass}
             />
           ))}
         </tbody>
@@ -1338,12 +1500,16 @@ function Row({
   showRequested,
   jobId,
   token,
+  selected,
+  onSelectPass,
 }: {
   pass: AOISeriesPass;
   index: IndexKey;
   showRequested: boolean;
   jobId?: string | null;
   token?: string | null;
+  selected?: boolean;
+  onSelectPass?: (date: string) => void;
 }) {
   const [downloading, setDownloading] = useState(false);
 
@@ -1374,7 +1540,12 @@ function Row({
   const interpolated = pass.status === "interpolated";
 
   if (!ok && !interpolated) {
+    const isError = pass.status === "error";
     const hasNearest = pass.before || pass.after;
+    // A failed pass (3a at the AOI layer): one scene's read errored while the rest of the series
+    // resolved. Mark it distinctly from a genuine "no pass" so the gap is not read as missing
+    // imagery; backfill mode has no Requested column, so surface the pass date inline.
+    const errorDate = pass.pass_date ?? pass.requested_date ?? null;
     return (
       <tr className="border-b border-border/60 text-muted">
         {showRequested ? (
@@ -1384,10 +1555,17 @@ function Row({
         ) : null}
         <td className="py-1.5 pr-3" colSpan={jobId && token ? 8 : 8}>
           <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:gap-2">
-            <Badge tone="neutral" className="w-fit text-[10px] uppercase">
-              no pass
+            <Badge tone={isError ? "critical" : "neutral"} className="w-fit text-[10px] uppercase">
+              {isError ? "failed" : "no pass"}
             </Badge>
-            {hasNearest && (
+            {isError ? (
+              <span className="text-[11px] text-muted" title={pass.detail ?? undefined}>
+                {!showRequested && errorDate ? (
+                  <span className="mr-1.5 font-medium text-fg">{formatDate(errorDate)}</span>
+                ) : null}
+                {pass.detail ?? "the imagery read failed for this pass"}
+              </span>
+            ) : hasNearest ? (
               <span className="text-[11px] text-muted">
                 Nearest passes:{" "}
                 {pass.before ? (
@@ -1408,7 +1586,7 @@ function Row({
                   "none"
                 )}
               </span>
-            )}
+            ) : null}
           </div>
         </td>
         {jobId && token ? <td /> : null}
@@ -1432,8 +1610,18 @@ function Row({
     <span className="tabular-nums">{pass.pass_date ? formatDate(pass.pass_date) : "·"}</span>
   );
 
+  const selectable = ok && !!pass.scene_id && !!pass.pass_date && !!onSelectPass;
+
   return (
-    <tr className="border-b border-border/60">
+    <tr
+      className={cn(
+        "border-b border-border/60",
+        selectable && "cursor-pointer",
+        selected && "bg-accent/10",
+      )}
+      onClick={selectable ? () => onSelectPass!(pass.pass_date!) : undefined}
+      title={selectable ? "Pick this pass for orthophoto download" : undefined}
+    >
       {showRequested ? (
         <td className="py-1.5 pr-3 tabular-nums text-muted">
           {pass.requested_date ? formatDate(pass.requested_date) : "·"}

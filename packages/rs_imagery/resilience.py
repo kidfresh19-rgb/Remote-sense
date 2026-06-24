@@ -41,6 +41,14 @@ class CircuitOpenError(RuntimeError):
     """The breaker is open: CDSE has failed repeatedly and calls are paused for the cool-off."""
 
 
+class PermanentError(Exception):
+    """A final, non-retryable CDSE failure that does NOT reflect store health: the object is simply
+    missing / forbidden / cold-archived (404, AccessDenied, NoSuchKey, an LTA-offline granule).
+    Raise it past the retry loop so the call fails fast, and the breaker treats it as a health
+    success (a definitive error response means CDSE *answered*, so it is reachable) - a run of these
+    must never open the circuit on an otherwise-healthy store. Callers subclass it per read path."""
+
+
 def refill_and_consume(
     tokens: float,
     last_ms: int,
@@ -284,6 +292,12 @@ class CircuitBreaker:
             raise self._refuse()
         try:
             result = await fn(*args, **kwargs)
+        except PermanentError:
+            # A definitive negative means CDSE answered, so it is reachable: count it as a health
+            # success (never trip the breaker on missing data; break any failure streak) and
+            # re-raise for the caller. This also keeps a half-open probe from deadlocking the state.
+            self.record_success()
+            raise
         except Exception:
             self.record_failure()
             raise
@@ -296,6 +310,9 @@ class CircuitBreaker:
             raise self._refuse()
         try:
             result = fn(*args, **kwargs)
+        except PermanentError:
+            self.record_success()  # see `call`: a permanent error is a reachable-CDSE signal
+            raise
         except Exception:
             self.record_failure()
             raise

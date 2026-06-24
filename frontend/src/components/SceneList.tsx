@@ -177,11 +177,7 @@ function SceneRow({
             onClick={downloadCog}
             disabled={downloading}
             className="inline-flex size-7 items-center justify-center rounded-md border border-border bg-panel text-muted transition-colors hover:bg-panel-2 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-40 active:scale-95"
-            title={
-              index === "rgb"
-                ? "Download RGB GeoTIFF (float32 reflectance; apply 0-0.3 per-channel stretch in QGIS for true-colour view)"
-                : `Download ${index.toUpperCase()} GeoTIFF`
-            }
+            title={`Download ${index.toUpperCase()} GeoTIFF`}
           >
             <DownloadSimple size={13} />
           </button>

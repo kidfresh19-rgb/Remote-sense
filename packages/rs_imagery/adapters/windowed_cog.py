@@ -35,7 +35,7 @@ from rs_imagery.adapters.cdse_stac import (
 )
 from rs_imagery.auth import CdseOAuth2Client
 from rs_imagery.port import AccessPort
-from rs_imagery.resilience import CircuitBreaker, sync_bucket_from_settings
+from rs_imagery.resilience import CircuitBreaker, PermanentError, sync_bucket_from_settings
 from rs_imagery.types import (
     AOI,
     BandStack,
@@ -52,6 +52,49 @@ log = get_logger("rs_imagery.windowed_cog")
 
 _SCL_BAND = "SCL"
 _PROVIDER = "cdse"
+
+# A CDSE read is *permanent* when the object is genuinely unavailable - it never existed, was
+# deleted, is forbidden, or is cold-archived (LTA-offline) - as opposed to a transient timeout /
+# throttle / 5xx that a retry can clear. GDAL surfaces an HTTP failure as RasterioIOError text and
+# boto3 as a ClientError code, so the marker set covers both. Conservative by design: an unmatched
+# message defaults to transient (retry), so a recoverable read is never wrongly dropped; the cost of
+# a false "transient" is one wasted retry, the cost of a false "permanent" is a lost real scene.
+_PERMANENT_READ_MARKERS = (
+    "404",
+    "403",
+    "401",
+    "access denied",
+    "accessdenied",
+    "nosuchkey",
+    "no such key",
+    "not found",
+    "does not exist",
+)
+
+
+def _is_permanent_read_error(message: str) -> bool:
+    """True when an error message marks a permanently-unavailable object (see the marker set)."""
+    msg = message.lower()
+    return any(marker in msg for marker in _PERMANENT_READ_MARKERS)
+
+
+def _is_permanent_s3_error(exc: Exception) -> bool:
+    """True when a boto3 ClientError reports a permanent failure: a 401/403/404 HTTP status or a
+    permanent error code (NoSuchKey, AccessDenied, ...). Read defensively, so a non-ClientError
+    just falls through to transient."""
+    response = getattr(exc, "response", None)
+    if not isinstance(response, dict):
+        return False
+    status = response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+    code = str(response.get("Error", {}).get("Code", ""))
+    return status in (401, 403, 404) or _is_permanent_read_error(code)
+
+
+class PermanentReadError(PermanentError):
+    """A windowed/metadata read that failed permanently (the object is missing / forbidden /
+    cold-archived). Not a RasterioIOError, so the read-retry loop does not retry it; a
+    PermanentError, so the circuit breaker does not trip on a run of them (invariant: a missing
+    granule is not a CDSE outage)."""
 
 
 @dataclass(frozen=True)
@@ -101,6 +144,10 @@ class WindowedCogAdapter(AccessPort):
         oauth: CdseOAuth2Client | None = None,
         search_cache: RedisJsonCache | None = None,
         search_cache_ttl_s: int | None = None,
+        scene_meta_cache: RedisJsonCache | None = None,
+        scene_meta_cache_ttl_s: int | None = None,
+        scene_item_cache: RedisJsonCache | None = None,
+        scene_item_cache_ttl_s: int | None = None,
     ) -> None:
         self._settings = settings or get_settings()
         self._stac_client = stac_client
@@ -112,6 +159,25 @@ class WindowedCogAdapter(AccessPort):
             search_cache_ttl_s
             if search_cache_ttl_s is not None
             else self._settings.aoi_search_cache_ttl_s
+        )
+        # Cross-worker scene-metadata cache (immutable per scene id): a hit skips the product-XML
+        # read on every field-pass after the first that touches a shared Sentinel-2 tile. Distinct
+        # from the short-TTL search cache - scene radiometry never changes, so the TTL is generous.
+        self._scene_meta_cache = scene_meta_cache
+        self._scene_meta_cache_ttl_s = (
+            scene_meta_cache_ttl_s
+            if scene_meta_cache_ttl_s is not None
+            else self._settings.cdse_scene_meta_cache_ttl_s
+        )
+        # Cross-worker scene-item cache (immutable per scene id): a published scene's STAC item
+        # (asset hrefs + footprint) never changes, so a fanned-out per-pass task can resolve the
+        # band/metadata hrefs from here instead of re-running a one-day STAC search. search() writes
+        # every discovered item; metadata()/fetch() resolve through it on an in-process miss.
+        self._scene_item_cache = scene_item_cache
+        self._scene_item_cache_ttl_s = (
+            scene_item_cache_ttl_s
+            if scene_item_cache_ttl_s is not None
+            else self._settings.cdse_scene_item_cache_ttl_s
         )
 
     # -- lazy construction of the network-facing collaborators ------------------------------------
@@ -136,14 +202,38 @@ class WindowedCogAdapter(AccessPort):
         getter = getattr(source, "cache_stats", None)
         return getter() if callable(getter) else None
 
-    def _item(self, scene_id: str) -> StacItem:
-        try:
-            return self._items[scene_id]
-        except KeyError as exc:
-            raise LookupError(
-                f"scene {scene_id!r} is not cached; call search() before metadata()/fetch() so the "
-                "adapter can resolve its asset hrefs"
-            ) from exc
+    async def _remember(self, items: list[StacItem]) -> None:
+        """Hold each discovered item in-process and, when the cross-worker scene-item cache is
+        configured, write it through keyed by its immutable scene id. A later per-pass task on any
+        worker then resolves the asset hrefs from Redis instead of re-searching."""
+        for item in items:
+            self._items[item.scene_id] = item
+        if self._scene_item_cache is not None:
+            for item in items:
+                await self._scene_item_cache.set(
+                    item.scene_id, item.to_json_dict(), ttl_s=self._scene_item_cache_ttl_s
+                )
+
+    async def _resolve_item(self, scene_id: str) -> StacItem:
+        """The cached STAC item for `scene_id`: the in-process map first, then the cross-worker
+        scene-item cache (which repopulates the map on a hit), else `LookupError`. Lets a per-pass
+        task that skipped search still resolve asset hrefs - the search fallback in collect_field
+        covers a cold cache, so the LookupError contract is unchanged when no cache is wired."""
+        item = self._items.get(scene_id)
+        if item is not None:
+            return item
+        if self._scene_item_cache is not None:
+            cached = await self._scene_item_cache.get(scene_id)
+            if isinstance(cached, dict):
+                log.info("scene_item_cache_hit", scene_id=scene_id)
+                item = StacItem.from_json_dict(cached)
+                self._items[scene_id] = item
+                return item
+            log.info("scene_item_cache_miss", scene_id=scene_id)
+        raise LookupError(
+            f"scene {scene_id!r} is not cached; call search() before metadata()/fetch() so the "
+            "adapter can resolve its asset hrefs"
+        )
 
     # -- AccessPort ------------------------------------------------------------------------------
 
@@ -168,16 +258,14 @@ class WindowedCogAdapter(AccessPort):
             if isinstance(cached, list):
                 log.info("search_cache_hit", key=cache_key, count=len(cached))
                 items = [StacItem.from_json_dict(d) for d in cached]
-                for item in items:
-                    self._items[item.scene_id] = item
+                await self._remember(items)
                 return [item.to_scene_ref() for item in items]
             log.info("search_cache_miss", key=cache_key)
 
         items = await self._stac().search_items(
             aoi, time_range, max_scene_cloud_pct=max_scene_cloud_pct
         )
-        for item in items:
-            self._items[item.scene_id] = item
+        await self._remember(items)
 
         if self._search_cache is not None and cache_key is not None:
             await self._search_cache.set(
@@ -189,12 +277,27 @@ class WindowedCogAdapter(AccessPort):
         return [item.to_scene_ref() for item in items]
 
     async def metadata(self, scene_id: str) -> SceneMetadata:
-        item = self._item(scene_id)
+        # A scene's radiometric metadata is immutable once published, so a cross-worker cache keyed
+        # by scene id lets every field sharing this tile skip the XML read. Invariant 2 holds: the
+        # cached value was itself read from this scene's metadata, never hard-coded; a reprocessed
+        # scene gets a new id (new key). Fail-open: a miss or any Redis error reads the XML live.
+        if self._scene_meta_cache is not None:
+            cached = await self._scene_meta_cache.get(scene_id)
+            if isinstance(cached, dict):
+                log.info("scene_meta_cache_hit", scene_id=scene_id)
+                return SceneMetadata.model_validate(cached)
+            log.info("scene_meta_cache_miss", scene_id=scene_id)
+        item = await self._resolve_item(scene_id)
         href = resolve_metadata_href(item.assets)
         # The XML read is a blocking CDSE/S3 call; run it off the event loop so concurrent passes
         # (ADR 0011) are not serialised by it. The per-task memo (read_bytes) dedupes repeats.
         xml_bytes = await asyncio.to_thread(self._source().read_bytes, href)
-        return parse_scene_metadata(scene_id, xml_bytes, crs=item.crs)
+        meta = parse_scene_metadata(scene_id, xml_bytes, crs=item.crs)
+        if self._scene_meta_cache is not None:
+            await self._scene_meta_cache.set(
+                scene_id, meta.model_dump(mode="json"), ttl_s=self._scene_meta_cache_ttl_s
+            )
+        return meta
 
     async def fetch(
         self,
@@ -210,7 +313,7 @@ class WindowedCogAdapter(AccessPort):
         requested = [b for b in bands if b != _SCL_BAND]
         if not requested:
             raise ValueError("fetch needs at least one reflectance band")
-        item = self._item(scene_ref.scene_id)
+        item = await self._resolve_item(scene_ref.scene_id)
         source = self._source()
         res = (
             float(resolution_m)
@@ -445,6 +548,27 @@ class RasterioWindowSource:
     def _read_window_once(
         self, href: str, *, aoi: AOI, resolution_m: float, resampling: str = "bilinear"
     ) -> ReadWindow:
+        """One windowed read, classifying a permanent GDAL/HTTP failure (404 / AccessDenied / a
+        missing or LTA-offline granule) so the retry loop skips it (it is not a RasterioIOError) and
+        the breaker is spared (it is a PermanentError). A transient RasterioIOError is re-raised
+        as-is for the retry to handle. This is the function the retry wraps; _open_and_read does the
+        actual GDAL work so the classification stays one cheap layer above it."""
+        from rasterio.errors import RasterioIOError
+
+        try:
+            return self._open_and_read(
+                href, aoi=aoi, resolution_m=resolution_m, resampling=resampling
+            )
+        except RasterioIOError as exc:
+            if _is_permanent_read_error(str(exc)):
+                raise PermanentReadError(
+                    f"permanent CDSE read failure for {href!r}: {exc}"
+                ) from exc
+            raise
+
+    def _open_and_read(
+        self, href: str, *, aoi: AOI, resolution_m: float, resampling: str = "bilinear"
+    ) -> ReadWindow:
         import rasterio
         from rasterio.enums import Resampling
         from rasterio.warp import transform_bounds
@@ -543,8 +667,18 @@ class RasterioWindowSource:
         )
 
     def _read_s3_bytes(self, href: str) -> bytes:
+        from botocore.exceptions import ClientError
+
         bucket, _, key = href[len("s3://") :].partition("/")
-        return self._s3().get_object(Bucket=bucket, Key=key)["Body"].read()
+        try:
+            return self._s3().get_object(Bucket=bucket, Key=key)["Body"].read()
+        except ClientError as exc:
+            if _is_permanent_s3_error(exc):
+                code = exc.response.get("Error", {}).get("Code")
+                raise PermanentReadError(
+                    f"permanent CDSE metadata read failure for {href!r}: {code}"
+                ) from exc
+            raise
 
     def _read_http_bytes(self, href: str) -> bytes:
         import httpx
@@ -573,4 +707,12 @@ class RasterioWindowSource:
             stop=stop_after_attempt(4),
             reraise=True,
         )
-        return retrying(_get)
+        try:
+            return retrying(_get)
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code in (401, 403, 404):
+                raise PermanentReadError(
+                    f"permanent CDSE metadata read failure for {href!r}: "
+                    f"HTTP {exc.response.status_code}"
+                ) from exc
+            raise

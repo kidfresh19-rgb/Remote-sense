@@ -21,7 +21,12 @@ from services.api.ingestion.persistence import (
     get_or_create_farm,
     get_or_create_field,
 )
-from services.api.ingestion.service import ingest_farm, ingest_farm_endpoint, router
+from services.api.ingestion.service import (
+    _enqueue_field_backfills,
+    ingest_farm,
+    ingest_farm_endpoint,
+    router,
+)
 from services.api.ingestion.validation import (
     IngestionError,
     _as_multipolygon,
@@ -36,6 +41,7 @@ __all__ = [
     "IngestionError",
     "_as_multipolygon",
     "_check_nesting",
+    "_enqueue_field_backfills",
     "_match_existing",
     "_resolve_farm_boundary",
     "_validate_fields",

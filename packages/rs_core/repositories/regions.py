@@ -48,6 +48,51 @@ async def list_layers(session: AsyncSession) -> Sequence[RegionBoundaryLayer]:
     return (await session.execute(select(RegionBoundaryLayer))).scalars().all()
 
 
+async def get_region_layer(
+    session: AsyncSession, *, layer_id: uuid.UUID
+) -> RegionBoundaryLayer | None:
+    """One layer by id, or None. Lets a read endpoint tell an unknown layer (404) apart from a
+    layer that exists but holds no boundaries (an empty collection)."""
+    return (
+        await session.execute(select(RegionBoundaryLayer).where(RegionBoundaryLayer.id == layer_id))
+    ).scalar_one_or_none()
+
+
+async def list_region_layers_with_counts(
+    session: AsyncSession,
+) -> list[tuple[RegionBoundaryLayer, int]]:
+    """Every region-boundary layer with its boundary count, newest first. Backs the workspace map's
+    layer toggle (PRD 0002 slices 8a/8b): the seeded Natural Region layer and any analyst-uploaded
+    layers. Counting here means the frontend never fetches every boundary just to label a layer."""
+    rows = (
+        await session.execute(
+            select(RegionBoundaryLayer, func.count(RegionBoundary.id))
+            .outerjoin(RegionBoundary, RegionBoundary.layer_id == RegionBoundaryLayer.id)
+            .group_by(RegionBoundaryLayer.id)
+            .order_by(RegionBoundaryLayer.created_at.desc())
+        )
+    ).all()
+    return [(layer, count) for layer, count in rows]
+
+
+async def region_boundaries_for_layer(
+    session: AsyncSession, *, layer_id: uuid.UUID
+) -> Sequence[RegionBoundary]:
+    """One layer's boundaries, name-ordered for a stable map draw order. Returns [] for an unknown
+    or empty layer; the endpoint uses `get_region_layer` to distinguish the two."""
+    return (
+        (
+            await session.execute(
+                select(RegionBoundary)
+                .where(RegionBoundary.layer_id == layer_id)
+                .order_by(RegionBoundary.name)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+
 async def seed_natural_regions(
     session: AsyncSession,
     *,

@@ -108,17 +108,20 @@ def _build_search_cache(settings: Settings) -> RedisJsonCache | None:
     return redis_json_cache_from_settings(settings, namespace="aoi:search")
 
 
-def _build_adapter(settings: Settings, *, search_cache: RedisJsonCache | None = None) -> AccessPort:
-    """Build the configured imagery adapter. When the adapter is `windowed_cog` and a `search_cache`
-    is provided, the cache is injected so repeated searches skip the STAC catalog query (ADR 0011).
-    Other adapters (mock, server_compute) are returned without a cache — they don't hit CDSE STAC.
-    """
-    from rs_core.config import ImageryAdapter
-    from rs_imagery.adapters.windowed_cog import WindowedCogAdapter
+def _build_adapter(
+    settings: Settings, *, search_cache: RedisJsonCache | None = None
+) -> tuple[AccessPort, list[RedisJsonCache]]:
+    """Build the configured imagery adapter plus the scene caches to close at task end. Delegates to
+    the shared windowed_cog reader so the AOI Studio path attaches the same immutable cross-lane
+    scene caches (cdse:scene_meta + cdse:scene_item, Phase 2a) as the stored-collection path: an AOI
+    pass over a scene already touched by either lane skips the product-XML read, and an AOI preview
+    warms the caches for the later field collection. The injected `search_cache` (ADR 0011) still
+    skips the STAC catalog query on a repeat; it is owned and closed by the caller, so only the
+    scene caches built here are returned. Other adapters (mock, server_compute) come back with no
+    caches."""
+    from services.worker.tasks.collection import build_windowed_cog_reader
 
-    if settings.imagery_adapter is ImageryAdapter.WINDOWED_COG and search_cache is not None:
-        return WindowedCogAdapter(settings, search_cache=search_cache)
-    return get_access_adapter(settings)
+    return build_windowed_cog_reader(settings, search_cache=search_cache)
 
 
 def _band_memo_stats(adapter: AccessPort) -> dict[str, int] | None:
@@ -167,16 +170,52 @@ def _guard_aoi_size(geometry: dict[str, Any]) -> None:
         )
 
 
-def _render_rgb_jpeg(
+def _render_rgb_cog(
     bands: dict[str, np.ndarray],
     transform: Any,
     crs: Any,
+    *,
+    aoi_mask: np.ndarray | None = None,
 ) -> bytes:
-    """Render a natural-colour JPEG (512 px) from B04/B03/B02 reflectance bands via an in-memory
-    COG. The per-channel stretch matches the tiler's RGB composite range. Requires the `geo` extra
-    (rasterio + rio_tiler); raises RuntimeError when absent."""
+    """Encode B04/B03/B02 reflectance bands as a georeferenced RGB COG (band order Red=B04,
+    Green=B03, Blue=B02; float32 reflectance, no display stretch - the same contract as the
+    registered-field RGB download, so the file opens true to value in QGIS with a 0-0.3 stretch).
+    When `aoi_mask` is given, pixels outside the AOI polygon are written as NoData, so a
+    non-rectangular AOI clips to its true shape rather than shipping its bounding-box window.
+    Requires the `geo` extra (rasterio); raises RuntimeError when absent."""
     from rs_analysis.cog import rgb_raster, write_cog
 
+    return write_cog(rgb_raster(bands, aoi_mask=aoi_mask), transform=transform, crs=crs)
+
+
+def _aoi_window_mask(
+    geometry: dict[str, Any],
+    *,
+    crs: str,
+    transform: tuple[float, float, float, float, float, float],
+    shape: tuple[int, int],
+) -> np.ndarray:
+    """Boolean (H, W) mask, True inside the AOI polygon, aligned to the fetched window. The AOI
+    geometry (EPSG:4326) is reprojected to the band CRS before rasterizing, mirroring how the
+    windowed_cog adapter masks for zonal stats, so the RGB COG clips to the drawn polygon exactly
+    as the index stats do. Requires the `geo` extra (rasterio); raises RuntimeError when absent."""
+    try:
+        from rasterio.features import geometry_mask
+        from rasterio.transform import Affine
+        from rasterio.warp import transform_geom
+    except ImportError as exc:  # pragma: no cover - the host has no raster stack
+        raise RuntimeError("AOI masking needs the `geo` extra (rasterio)") from exc
+
+    geom = transform_geom("EPSG:4326", crs, geometry) if crs != "EPSG:4326" else geometry
+    # geometry_mask marks True OUTSIDE the polygon; invert so True == inside the AOI.
+    outside = geometry_mask([geom], out_shape=shape, transform=Affine(*transform), invert=False)
+    return ~outside
+
+
+def _jpeg_from_cog(cog_bytes: bytes) -> bytes:
+    """Render a natural-colour JPEG (512 px) from an in-memory RGB reflectance COG. The per-channel
+    0-0.3 stretch matches the tiler's RGB composite range. Requires the `geo` extra (rasterio +
+    rio_tiler); raises RuntimeError when absent."""
     try:
         import rasterio
         from rasterio.io import MemoryFile
@@ -185,8 +224,6 @@ def _render_rgb_jpeg(
         raise RuntimeError("raster stack not available in this context") from exc
 
     _RGB_RANGES = ((0.0, 0.3), (0.0, 0.3), (0.0, 0.3))
-    rgb = rgb_raster(bands)
-    cog_bytes = write_cog(rgb, transform=transform, crs=crs)
     with rasterio.Env(), MemoryFile(cog_bytes) as memfile:
         with Reader(memfile.name) as cog:
             image = cog.preview(max_size=512)
@@ -294,8 +331,13 @@ async def _clearest_scene_result(
     best: dict[str, Any] | None = None
     for scene in scenes:
         result = await _analyse_scene(
-            adapter, scene, aoi, index_name,
-            result_cache=result_cache, cog_store=cog_store, job_id=job_id,
+            adapter,
+            scene,
+            aoi,
+            index_name,
+            result_cache=result_cache,
+            cog_store=cog_store,
+            job_id=job_id,
         )
         if best is None or result["clear_fraction"] > best["clear_fraction"]:
             best = result
@@ -406,6 +448,27 @@ async def _analyse_aoi(
     return best
 
 
+def _isolated(
+    factory: Callable[[], Awaitable[dict[str, Any]]], label: dict[str, Any]
+) -> Callable[[], Awaitable[dict[str, Any]]]:
+    """Wrap one pass factory so a failed read becomes an `error` pass instead of sinking the whole
+    multi-pass job - 3a applied at the AOI Studio orchestration layer: one cold-archived / forbidden
+    scene must not lose every other resolved pass in the series. `label` carries the pass's identity
+    (index + scene_id or requested_date) so the results console can show which pass failed; an error
+    pass is naturally excluded from the chart, the gateway push, and the `resolved` count, which all
+    key off status ok/interpolated. CancelledError (a BaseException) is not caught, so task
+    cancellation still propagates."""
+
+    async def run() -> dict[str, Any]:
+        try:
+            return await factory()
+        except Exception as exc:
+            log.warning("aoi.pass.failed", **label, detail=str(exc), exc_info=True)
+            return {"status": "error", "detail": str(exc), **label}
+
+    return run
+
+
 async def _gather_passes(
     factories: list[Callable[[], Awaitable[dict[str, Any]]]],
     *,
@@ -451,8 +514,13 @@ async def _resolve_requested_day(
     same_day = by_day.get(day)
     if same_day:
         result = await _clearest_scene_result(
-            adapter, same_day, aoi, index_name,
-            result_cache=result_cache, cog_store=cog_store, job_id=job_id,
+            adapter,
+            same_day,
+            aoi,
+            index_name,
+            result_cache=result_cache,
+            cog_store=cog_store,
+            job_id=job_id,
         )
         result["requested_date"] = day.isoformat()
         return result
@@ -531,16 +599,19 @@ async def _analyse_aoi_series(
 
         passes = await _gather_passes(
             [
-                partial(
-                    _resolve_requested_day,
-                    adapter,
-                    by_day,
-                    aoi,
-                    index_name,
-                    day,
-                    result_cache=result_cache,
-                    cog_store=cog_store,
-                    job_id=job_id,
+                _isolated(
+                    partial(
+                        _resolve_requested_day,
+                        adapter,
+                        by_day,
+                        aoi,
+                        index_name,
+                        day,
+                        result_cache=result_cache,
+                        cog_store=cog_store,
+                        job_id=job_id,
+                    ),
+                    {"index": index_name, "requested_date": day.isoformat()},
                 )
                 for day in requested
             ],
@@ -563,9 +634,22 @@ async def _analyse_aoi_series(
 
         passes = await _gather_passes(
             [
-                partial(
-                    _analyse_scene, adapter, scene, aoi, index_name,
-                    result_cache=result_cache, cog_store=cog_store, job_id=job_id,
+                _isolated(
+                    partial(
+                        _analyse_scene,
+                        adapter,
+                        scene,
+                        aoi,
+                        index_name,
+                        result_cache=result_cache,
+                        cog_store=cog_store,
+                        job_id=job_id,
+                    ),
+                    {
+                        "index": index_name,
+                        "scene_id": scene.scene_id,
+                        "pass_date": scene.sensing_datetime.date().isoformat(),
+                    },
                 )
                 for scene in chosen
             ],
@@ -663,14 +747,17 @@ async def _analyse_aoi_series_multi(
                 index_factories.append(
                     (
                         index_name,
-                        partial(
-                            _resolve_requested_day,
-                            adapter,
-                            by_day,
-                            aoi,
-                            index_name,
-                            day,
-                            result_cache=result_cache,
+                        _isolated(
+                            partial(
+                                _resolve_requested_day,
+                                adapter,
+                                by_day,
+                                aoi,
+                                index_name,
+                                day,
+                                result_cache=result_cache,
+                            ),
+                            {"index": index_name, "requested_date": day.isoformat()},
                         ),
                     )
                 )
@@ -690,13 +777,20 @@ async def _analyse_aoi_series_multi(
                 index_factories.append(
                     (
                         index_name,
-                        partial(
-                            _analyse_scene,
-                            adapter,
-                            scene,
-                            aoi,
-                            index_name,
-                            result_cache=result_cache,
+                        _isolated(
+                            partial(
+                                _analyse_scene,
+                                adapter,
+                                scene,
+                                aoi,
+                                index_name,
+                                result_cache=result_cache,
+                            ),
+                            {
+                                "index": index_name,
+                                "scene_id": scene.scene_id,
+                                "pass_date": scene.sensing_datetime.date().isoformat(),
+                            },
                         ),
                     )
                 )
@@ -755,12 +849,14 @@ def analyse_aoi_task(geometry: dict[str, object], index_name: str) -> dict[str, 
     async def _runner() -> dict[str, object]:
         result_cache = _build_result_cache(settings)
         search_cache = _build_search_cache(settings)
-        adapter = _build_adapter(settings, search_cache=search_cache)
+        adapter, scene_caches = _build_adapter(settings, search_cache=search_cache)
         try:
             return await _analyse_aoi(
                 geometry, index_name, adapter=adapter, result_cache=result_cache
             )
         finally:
+            for scene_cache in scene_caches:
+                await scene_cache.aclose()
             if result_cache is not None:
                 await result_cache.aclose()
             if search_cache is not None:
@@ -775,12 +871,15 @@ def render_natural_color_task(
     geometry: dict[str, Any],
     pass_date: str,
     cache_key: str,
+    cog_cache_key: str | None = None,
 ) -> str:
-    """Render a natural-colour JPEG (512 px, B04/B03/B02) for one custom AOI scene and cache it in
-    MinIO at `cache_key` (7-day lifecycle). Returns a base64-encoded JPEG string (JSON-safe for the
-    Redis result backend). The scene is re-discovered by searching ±1 day around `pass_date` and
-    matching by `scene_id`. Cache write is failure-isolated: a put error logs a warning and does
-    not fail the task."""
+    """Render the natural-colour artifacts for one custom AOI scene (B04/B03/B02) and cache them in
+    MinIO under the `aoi_preview/` prefix (7-day lifecycle): always the 512 px JPEG at `cache_key`,
+    and - when `cog_cache_key` is given - the georeferenced RGB reflectance COG it was rendered
+    from, so the GeoTIFF download is a cache hit once the thumbnail has been viewed. Returns a
+    base64-encoded JPEG string (JSON-safe for the Redis result backend). The scene is re-discovered
+    by searching ±1 day around `pass_date` and matching by `scene_id`. Each cache write is
+    failure-isolated: a put error logs a warning and does not fail the task."""
     import base64
 
     settings = get_settings()
@@ -800,16 +899,39 @@ def render_natural_color_task(
         fetched = await adapter.fetch(
             scene, aoi, bands=sorted(["B02", "B03", "B04"]), resolution_m=10.0
         )
-        return _render_rgb_jpeg(fetched.data.bands, fetched.data.transform, fetched.data.crs)
+        # Clip the download to the drawn polygon: pixels in the fetched bounding-box window but
+        # outside the AOI become NoData, so the GeoTIFF is true to what the analyst selected.
+        height, width = next(iter(fetched.data.bands.values())).shape
+        mask = _aoi_window_mask(
+            geometry,
+            crs=fetched.data.crs,
+            transform=fetched.data.transform,
+            shape=(height, width),
+        )
+        return _render_rgb_cog(
+            fetched.data.bands, fetched.data.transform, fetched.data.crs, aoi_mask=mask
+        )
 
-    jpeg_bytes = asyncio.run(_run())
+    cog_bytes = asyncio.run(_run())
+    jpeg_bytes = _jpeg_from_cog(cog_bytes)
 
+    # Caching is best-effort: a store that cannot even be built (misconfigured S3) must still let
+    # the task return the rendered JPEG, exactly as the put failures below degrade rather than fail.
     try:
         store = cog_store_from_settings(settings)
-        if store is not None:
-            store.put(cache_key, jpeg_bytes, content_type="image/jpeg")
     except Exception:
-        log.warning("natural_color.cache_put.failed", scene_id=scene_id, exc_info=True)
+        log.warning("natural_color.cache_store.failed", scene_id=scene_id, exc_info=True)
+        store = None
+    if store is not None:
+        try:
+            store.put(cache_key, jpeg_bytes, content_type="image/jpeg")
+        except Exception:
+            log.warning("natural_color.cache_put.failed", scene_id=scene_id, exc_info=True)
+        if cog_cache_key is not None:
+            try:
+                store.put(cog_cache_key, cog_bytes, content_type="image/tiff")
+            except Exception:
+                log.warning("natural_color.cog_cache_put.failed", scene_id=scene_id, exc_info=True)
 
     return base64.b64encode(jpeg_bytes).decode()
 
@@ -832,10 +954,12 @@ def _run_aoi_series(
         )
         result_cache = _build_result_cache(settings)
         search_cache = _build_search_cache(settings)
-        adapter = _build_adapter(settings, search_cache=search_cache)
+        adapter, scene_caches = _build_adapter(settings, search_cache=search_cache)
         try:
             return await make_coro(adapter, result_cache)
         finally:
+            for scene_cache in scene_caches:
+                await scene_cache.aclose()
             if result_cache is not None:
                 await result_cache.aclose()
             if search_cache is not None:
@@ -1077,10 +1201,12 @@ def _run_farm_series(
 
         result_cache = _build_result_cache(settings)
         search_cache = _build_search_cache(settings)
-        adapter = _build_adapter(settings, search_cache=search_cache)
+        adapter, scene_caches = _build_adapter(settings, search_cache=search_cache)
         try:
             return await make_coro(fields, adapter, result_cache, concurrency)
         finally:
+            for scene_cache in scene_caches:
+                await scene_cache.aclose()
             if result_cache is not None:
                 await result_cache.aclose()
             if search_cache is not None:

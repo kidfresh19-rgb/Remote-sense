@@ -13,8 +13,7 @@ from rs_analysis import get_colormap
 # is NIR, which runs brighter over vegetation than the visible bands, so it gets a wider range.
 # rgb caps at 0.3 (not 1.0): Sentinel-2 BOA land reflectance sits roughly 0.03-0.20 in visible
 # bands, so 0.3 is a natural true-colour ceiling that fills the display range without blowing out
-# bright surfaces. The stored RGB COG retains raw float32 reflectance; only the preview is
-# stretched.
+# bright surfaces. The stored RGB COG keeps raw float32 reflectance; only the preview is stretched.
 _COMPOSITE_RANGES: dict[str, tuple[tuple[float, float], ...]] = {
     "rgb": ((0.0, 0.3), (0.0, 0.3), (0.0, 0.3)),
     "fcc": ((0.0, 0.45), (0.0, 0.3), (0.0, 0.3)),

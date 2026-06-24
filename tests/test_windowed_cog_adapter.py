@@ -17,10 +17,14 @@ from rs_core.cache import RedisJsonCache
 from rs_core.config import Settings
 from rs_imagery.adapters.cdse_stac import StacItem
 from rs_imagery.adapters.windowed_cog import (
+    PermanentReadError,
     RasterioWindowSource,
     ReadWindow,
     WindowedCogAdapter,
+    _is_permanent_read_error,
+    _is_permanent_s3_error,
 )
+from rs_imagery.resilience import CircuitBreaker
 from rs_imagery.types import AOI, ProcessingMode, SceneRef, TimeRange
 
 _TRANSFORM = (10.0, 0.0, 500000.0, 0.0, -10.0, 8000000.0)
@@ -420,3 +424,213 @@ async def test_multi_index_collapses_shared_reads(monkeypatch) -> None:
     assert src.reads == 3
     # Cache stats: hits = 4 (XML + B04, B08, SCL during SAVI), misses = 4 (during NDVI)
     assert src.cache_stats() == {"hits": 4, "misses": 4}
+
+
+# ----------------------------------------------------------------- scene-metadata cache (Phase 2a)
+
+
+def _scene_meta_cache(store: dict[str, str], *, fail: bool = False) -> RedisJsonCache:
+    return RedisJsonCache(_SharedFakeRedis(store, fail=fail), namespace="cdse:scene_meta")
+
+
+class _CountingMetaSource(_FakeSource):
+    """A _FakeSource that counts product-XML reads, so a scene-metadata cache hit can be proven to
+    skip the CDSE read entirely."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.byte_reads = 0
+
+    def read_bytes(self, href):  # noqa: ANN001
+        self.byte_reads += 1
+        return _mtd()
+
+
+def _meta_adapter(source: _FakeSource, cache: RedisJsonCache) -> WindowedCogAdapter:
+    return WindowedCogAdapter(
+        Settings(),
+        stac_client=_FakeStac([_item()]),  # type: ignore[arg-type]
+        window_source=source,
+        scene_meta_cache=cache,
+    )
+
+
+async def test_metadata_cache_hit_skips_xml_read_across_tasks() -> None:
+    store: dict[str, str] = {}
+    cache = _scene_meta_cache(store)
+
+    # First task: a miss reads the product XML once, then writes the parsed metadata to Redis.
+    src1 = _CountingMetaSource()
+    adapter1 = _meta_adapter(src1, cache)
+    await adapter1.search(_AOI, _RANGE)
+    meta1 = await adapter1.metadata("S2_TEST")
+    assert src1.byte_reads == 1
+    assert meta1.quantification_value == 10000.0
+    assert meta1.boa_add_offset["B04"] == -1000.0
+    assert store  # the parsed metadata is now cached for other workers
+
+    # A second task (fresh adapter + source, shared Redis) sharing the tile hits the cache: no CDSE
+    # read, identical radiometry. No prior search is even needed - metadata is scene-only.
+    src2 = _CountingMetaSource()
+    adapter2 = _meta_adapter(src2, cache)
+    meta2 = await adapter2.metadata("S2_TEST")
+    assert src2.byte_reads == 0
+    assert meta2.quantification_value == meta1.quantification_value
+    assert meta2.boa_add_offset == meta1.boa_add_offset
+    assert meta2.crs == meta1.crs
+
+
+async def test_metadata_cache_fails_open_to_live_read() -> None:
+    src = _CountingMetaSource()
+    adapter = _meta_adapter(src, _scene_meta_cache({}, fail=True))
+    await adapter.search(_AOI, _RANGE)
+    meta = await adapter.metadata("S2_TEST")  # cache.get raises -> fall open to the live XML read
+    assert src.byte_reads == 1
+    assert meta.quantification_value == 10000.0
+
+
+# -------------------------------------------------------------------- scene-item cache (Phase 2b)
+
+
+def _scene_item_cache(store: dict[str, str], *, fail: bool = False) -> RedisJsonCache:
+    return RedisJsonCache(_SharedFakeRedis(store, fail=fail), namespace="cdse:scene_item")
+
+
+def _item_adapter(
+    source: _FakeSource, stac_client: _FakeStac, cache: RedisJsonCache
+) -> WindowedCogAdapter:
+    return WindowedCogAdapter(
+        Settings(),
+        stac_client=stac_client,  # type: ignore[arg-type]
+        window_source=source,
+        scene_item_cache=cache,
+    )
+
+
+_REF = SceneRef(
+    scene_id="S2_TEST",
+    provider="cdse",
+    sensing_datetime=datetime(2023, 6, 15, 8, 0, tzinfo=UTC),
+    footprint=_AOI.geometry,
+)
+
+
+async def test_search_writes_scene_item_cache_and_pass_resolves_without_research() -> None:
+    store: dict[str, str] = {}
+    cache = _scene_item_cache(store)
+
+    # The window search (e.g. the backfill fan-out) writes every discovered item through.
+    stac1 = _FakeStac([_item()])
+    adapter1 = _item_adapter(_FakeSource(), stac1, cache)
+    await adapter1.search(_AOI, _RANGE)
+    assert stac1.searches == 1
+    assert "cdse:scene_item:S2_TEST" in store  # item persisted by immutable scene id
+
+    # A fanned-out pass on a fresh adapter (shared Redis, no prior search of its own) resolves the
+    # asset hrefs from the cache: fetch + metadata work with zero extra STAC searches (2b win).
+    src2 = _FakeSource()
+    stac2 = _FakeStac([_item()])
+    adapter2 = _item_adapter(src2, stac2, cache)
+    result = await adapter2.fetch(_REF, _AOI, bands=["B04", "B08"], resolution_m=10.0)
+    assert result.scene_id == "S2_TEST"
+    assert stac2.searches == 0  # resolved from the scene-item cache, no redundant re-search
+    meta = await adapter2.metadata("S2_TEST")
+    assert meta.quantification_value == 10000.0
+
+
+async def test_search_succeeds_when_scene_item_cache_write_fails() -> None:
+    # The write-through is fail-open: a Redis hiccup must not fail the search; the in-process map
+    # still serves this adapter's own fetches.
+    stac = _FakeStac([_item()])
+    adapter = _item_adapter(_FakeSource(), stac, _scene_item_cache({}, fail=True))
+    scenes = await adapter.search(_AOI, _RANGE)
+    assert [s.scene_id for s in scenes] == ["S2_TEST"]
+    assert stac.searches == 1
+
+
+async def test_scene_item_cache_miss_preserves_lookup_error_contract() -> None:
+    # A cold cache (here, a failing one) leaves the no-cache contract intact: a pass with no
+    # in-process item still raises LookupError, which collect_field turns into its search fallback.
+    adapter = _item_adapter(_FakeSource(), _FakeStac([_item()]), _scene_item_cache({}, fail=True))
+    with pytest.raises(LookupError):
+        await adapter.fetch(_REF, _AOI, bands=["B04", "B08"], resolution_m=10.0)
+
+
+# ----------------------------------------------- permanent-vs-transient read classification (3a)
+
+
+def test_is_permanent_read_error_classifies_messages() -> None:
+    # Unambiguous permanent markers (missing / forbidden object) classify as permanent...
+    assert _is_permanent_read_error("HTTP response code: 404")
+    assert _is_permanent_read_error("Access Denied")
+    assert _is_permanent_read_error("NoSuchKey: the specified key does not exist")
+    assert _is_permanent_read_error("403")
+    # ...while transient faults (timeouts, throttling, 5xx) stay retryable.
+    assert not _is_permanent_read_error("Connection timed out")
+    assert not _is_permanent_read_error("HTTP error 429: Too Many Requests")
+    assert not _is_permanent_read_error("502 Bad Gateway")
+
+
+def test_is_permanent_s3_error_reads_client_error_code_and_status() -> None:
+    pytest.importorskip("botocore")
+    from botocore.exceptions import ClientError
+
+    missing = ClientError(
+        {"Error": {"Code": "NoSuchKey"}, "ResponseMetadata": {"HTTPStatusCode": 404}}, "GetObject"
+    )
+    assert _is_permanent_s3_error(missing)
+    server = ClientError(
+        {"Error": {"Code": "InternalError"}, "ResponseMetadata": {"HTTPStatusCode": 500}},
+        "GetObject",
+    )
+    assert not _is_permanent_s3_error(server)  # 5xx is transient
+    assert not _is_permanent_s3_error(RuntimeError("not a ClientError"))  # defensive non-client
+
+
+class _FailingRasterioSource(RasterioWindowSource):
+    """Real source with the GDAL read (_open_and_read) stubbed to raise a chosen error, a zero-wait
+    retry, and a tunable breaker - so the classification and the breaker interaction are exercised
+    with no network and no real GDAL read."""
+
+    def __init__(self, exc: Exception, *, failure_threshold: int = 1) -> None:
+        super().__init__(_rio_settings())
+        self._exc = exc
+        self.attempts = 0
+        self._breaker = CircuitBreaker(failure_threshold=failure_threshold, reset_timeout_s=60.0)
+
+    def _make_retrying(self):  # noqa: ANN202 - mirrors the base, only the wait differs (test speed)
+        from rasterio.errors import RasterioIOError
+        from tenacity import Retrying, retry_if_exception_type, stop_after_attempt, wait_none
+
+        return Retrying(
+            retry=retry_if_exception_type(RasterioIOError),
+            wait=wait_none(),
+            stop=stop_after_attempt(4),
+            reraise=True,
+        )
+
+    def _open_and_read(self, href, *, aoi, resolution_m, resampling="bilinear"):  # noqa: ANN001
+        self.attempts += 1
+        raise self._exc
+
+
+def test_permanent_rasterio_read_fails_fast_and_spares_the_breaker() -> None:
+    pytest.importorskip("rasterio")
+    from rasterio.errors import RasterioIOError
+
+    src = _FailingRasterioSource(RasterioIOError("HTTP response code: 404"), failure_threshold=1)
+    with pytest.raises(PermanentReadError):
+        src.read_window("s3://eodata/x/B04_10m.jp2", aoi=_AOI, resolution_m=10.0)
+    assert src.attempts == 1  # classified permanent -> not retried
+    assert src._breaker.allow()  # breaker untouched despite threshold 1
+
+
+def test_transient_rasterio_read_is_retried_and_trips_the_breaker() -> None:
+    pytest.importorskip("rasterio")
+    from rasterio.errors import RasterioIOError
+
+    src = _FailingRasterioSource(RasterioIOError("Connection timed out"), failure_threshold=1)
+    with pytest.raises(RasterioIOError):
+        src.read_window("s3://eodata/x/B04_10m.jp2", aoi=_AOI, resolution_m=10.0)
+    assert src.attempts == 4  # transient -> retried to the stop limit
+    assert not src._breaker.allow()  # the exhausted transient read counted and tripped the breaker

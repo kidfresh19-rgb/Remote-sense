@@ -5,6 +5,7 @@ No Celery broker, no MinIO, no DB required -- all external deps are monkeypatche
 
 from __future__ import annotations
 
+import pytest
 from rs_core.rbac import Principal, Role
 from starlette.testclient import TestClient
 
@@ -151,6 +152,180 @@ def test_natural_color_cache_hit_returns_jpeg(monkeypatch) -> None:
     assert resp.status_code == 200
     assert resp.headers["content-type"] == "image/jpeg"
     assert resp.content == _NC_JPEG
+
+
+# ── Natural colour orthophoto GeoTIFF download (format=cog) ─────────────────────
+
+_NC_COG = b"II*\x00FAKE_COG_BYTES"  # little-endian TIFF magic + filler
+
+
+def test_natural_color_cog_cache_hit_returns_tiff(monkeypatch) -> None:
+    """A cached RGB COG is proxied as an image/tiff download attachment."""
+    import rs_core.storage as _storage
+
+    class _HitStore:
+        def __init__(self, _settings):
+            pass
+
+        def exists(self, key: str) -> bool:
+            return key.endswith(".tif")
+
+        def get_bytes(self, key: str) -> bytes:
+            return _NC_COG
+
+    monkeypatch.setattr(_storage, "S3CogStore", _HitStore)
+    _analyst()
+    try:
+        with TestClient(app) as client:
+            resp = client.post(
+                "/analyse/aoi/natural-color",
+                json={
+                    "scene_id": "S2A_TEST",
+                    "geometry": _GEOMETRY,
+                    "pass_date": "2024-10-05",
+                    "format": "cog",
+                },
+            )
+    finally:
+        _teardown()
+
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "image/tiff"
+    assert "attachment" in resp.headers["content-disposition"]
+    assert resp.headers["content-disposition"].endswith('.tif"')
+    assert resp.content == _NC_COG
+
+
+def test_natural_color_cog_cache_miss_reads_after_render(monkeypatch) -> None:
+    """On a COG cache miss the render task is enqueued; the task persists the COG, so the endpoint
+    reads it back from the store and streams it as the GeoTIFF download."""
+    import base64
+
+    import rs_core.storage as _storage
+
+    import services.worker.tasks as _tasks
+
+    class _MissThenHitStore:
+        """exists() is False (cache miss) but get_bytes() returns the COG the task just wrote."""
+
+        def __init__(self, _settings):
+            pass
+
+        def exists(self, key: str) -> bool:
+            return False
+
+        def get_bytes(self, key: str) -> bytes:
+            return _NC_COG
+
+    class _FakeResult:
+        def get(self, timeout: int = 90) -> str:
+            return base64.b64encode(_NC_JPEG).decode()
+
+    class _FakeTask:
+        @staticmethod
+        def delay(*args: object, **kwargs: object) -> _FakeResult:
+            return _FakeResult()
+
+    monkeypatch.setattr(_storage, "S3CogStore", _MissThenHitStore)
+    monkeypatch.setattr(_tasks, "render_natural_color_task", _FakeTask)
+    _analyst()
+    try:
+        with TestClient(app) as client:
+            resp = client.post(
+                "/analyse/aoi/natural-color",
+                json={
+                    "scene_id": "S2A_TEST",
+                    "geometry": _GEOMETRY,
+                    "pass_date": "2024-10-05",
+                    "format": "cog",
+                },
+            )
+    finally:
+        _teardown()
+
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "image/tiff"
+    assert resp.content == _NC_COG
+
+
+def test_render_rgb_cog_and_jpeg_from_synthetic_bands() -> None:
+    """The split render helpers turn synthetic B02/B03/B04 reflectance into a 3-band COG and a
+    JPEG rendered from it. Needs the geo extra (rasterio + rio_tiler); skips on a bare host."""
+    pytest.importorskip("rasterio")
+    pytest.importorskip("rio_tiler")
+
+    import numpy as np
+
+    from services.worker.tasks.analysis import _jpeg_from_cog, _render_rgb_cog
+
+    bands = {
+        "B04": np.full((16, 16), 0.15, dtype="float32"),
+        "B03": np.full((16, 16), 0.10, dtype="float32"),
+        "B02": np.full((16, 16), 0.05, dtype="float32"),
+    }
+    transform = (10.0, 0.0, 500000.0, 0.0, -10.0, 8030000.0)  # 10 m pixels, UTM-like origin
+    cog = _render_rgb_cog(bands, transform, "EPSG:32735")
+    assert cog[:2] in (b"II", b"MM")  # TIFF magic
+
+    jpeg = _jpeg_from_cog(cog)
+    assert jpeg[:3] == b"\xff\xd8\xff"  # JPEG magic
+
+
+def test_render_rgb_cog_clips_outside_aoi_mask_to_nodata() -> None:
+    """A mask passed to `_render_rgb_cog` writes outside-AOI pixels as NoData (NaN) in the decoded
+    COG, while inside-AOI pixels keep their reflectance. This is the radiometric contract the
+    polygon clip relies on. Needs the geo extra; skips on a bare host."""
+    pytest.importorskip("rasterio")
+
+    import numpy as np
+    from rasterio.io import MemoryFile
+
+    from services.worker.tasks.analysis import _render_rgb_cog
+
+    bands = {b: np.full((8, 8), 0.12, dtype="float32") for b in ("B02", "B03", "B04")}
+    mask = np.zeros((8, 8), dtype=bool)
+    mask[2:6, 2:6] = True  # only the central 4x4 block is inside the AOI
+    transform = (10.0, 0.0, 500000.0, 0.0, -10.0, 8030000.0)
+
+    cog = _render_rgb_cog(bands, transform, "EPSG:32735", aoi_mask=mask)
+    with MemoryFile(cog) as mem, mem.open() as src:
+        red = src.read(1)
+
+    assert np.isnan(red[0, 0])  # corner is outside the AOI -> NoData
+    assert not np.isnan(red[3, 3])  # centre is inside the AOI -> kept
+    assert red[3, 3] == pytest.approx(0.12)
+
+
+def test_aoi_window_mask_clips_to_drawn_polygon() -> None:
+    """A non-rectangular AOI yields a window mask that is True inside the polygon and False in the
+    bounding-box corners outside it, after reprojecting the lon/lat geometry to the band CRS.
+    Needs the geo extra; skips on a bare host."""
+    pytest.importorskip("rasterio")
+
+    from rasterio.warp import transform_bounds
+
+    from services.worker.tasks.analysis import _aoi_window_mask
+
+    # Right triangle in lon/lat: the hypotenuse cuts off the south-east bbox corner.
+    triangle = {
+        "type": "Polygon",
+        "coordinates": [
+            [[31.00, -17.80], [31.02, -17.80], [31.00, -17.82], [31.00, -17.80]]
+        ],
+    }
+    crs = "EPSG:32736"  # 31 E is east of 30 E
+    left, bottom, right, top = transform_bounds("EPSG:4326", crs, 31.00, -17.82, 31.02, -17.80)
+    res = 10.0
+    width = max(1, round((right - left) / res))
+    height = max(1, round((top - bottom) / res))
+    transform = (res, 0.0, left, 0.0, -res, top)
+
+    mask = _aoi_window_mask(triangle, crs=crs, transform=transform, shape=(height, width))
+
+    assert mask.shape == (height, width)
+    assert mask.any()  # the triangle covers part of the window
+    assert not mask.all()  # but not the whole bounding box -> clipping happened
+    assert not bool(mask[-1, -1])  # the south-east corner is outside the triangle
 
 
 def test_natural_color_cache_miss_enqueues_task(monkeypatch) -> None:

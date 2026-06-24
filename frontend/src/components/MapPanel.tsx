@@ -4,13 +4,20 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { Field } from "@/lib/api";
 import { saveCustomAOI } from "@/lib/customAOIs";
 import { indexMeta, type IndexKey } from "@/lib/indices";
-import { useFields, useScenes, useAnalyseAOI } from "@/lib/queries";
+import {
+  useFields,
+  useScenes,
+  useAnalyseAOI,
+  useRegionBoundaries,
+  useRegionLayers,
+} from "@/lib/queries";
 import { useWorkspace } from "@/state/workspace";
 
 import { AOIBar } from "./AOIBar";
 import { CoordinateEntryModal } from "./CoordinateEntryModal";
 import { FileUploadPanel } from "./FileUploadPanel";
 import { IndexLegend } from "./IndexLegend";
+import { RegionLayersControl } from "./RegionLayersControl";
 import { SceneCompare } from "./SceneCompare";
 import { EmptyState } from "./states";
 import { IconButton } from "./ui";
@@ -44,10 +51,26 @@ export function MapPanel({
     setCompareDate,
     customAOI,
     setCustomAOI,
+    showNaturalRegions,
+    uploadedRegionLayerId,
+    toggleNaturalRegions,
+    setUploadedRegionLayer,
   } = useWorkspace();
 
   const fields = useFields(farmId);
   const scenes = useScenes(fieldId);
+
+  // Region-boundary overlays (PRD 0002 slices 8a/8b): the seeded Natural Region layer toggles on
+  // its own id; an uploaded layer is fetched only while one is chosen. Both default off.
+  const regionLayers = useRegionLayers();
+  const seededLayerId = useMemo(
+    () => regionLayers.data?.find((l) => l.kind === "seeded")?.layer_id ?? null,
+    [regionLayers.data],
+  );
+  const naturalRegions = useRegionBoundaries(
+    showNaturalRegions ? seededLayerId : null,
+  );
+  const uploadedRegions = useRegionBoundaries(uploadedRegionLayerId);
 
   const [drawMode, setDrawMode] = useState(false);
   const [showCoords, setShowCoords] = useState(false);
@@ -166,6 +189,8 @@ export function MapPanel({
           showRgb={showRgb}
           showFcc={showFcc}
           customAOI={customAOI}
+          naturalRegions={naturalRegions.data ?? null}
+          uploadedRegions={uploadedRegions.data ?? null}
           marker={searchMarker}
           drawMode={drawMode}
           onDrawComplete={handleDrawComplete}
@@ -254,6 +279,13 @@ export function MapPanel({
         >
           <Columns size={18} />
         </IconButton>
+        <RegionLayersControl
+          layers={regionLayers.data ?? []}
+          naturalRegionsOn={showNaturalRegions}
+          onToggleNaturalRegions={toggleNaturalRegions}
+          uploadedLayerId={uploadedRegionLayerId}
+          onSelectUploaded={setUploadedRegionLayer}
+        />
       </div>
 
       {/* Clear AOI badge — centered below the toolbar */}
@@ -356,6 +388,8 @@ function SingleSceneMap({
   showRgb,
   showFcc,
   customAOI,
+  naturalRegions,
+  uploadedRegions,
   marker,
   drawMode,
   onDrawComplete,
@@ -369,6 +403,8 @@ function SingleSceneMap({
   showRgb: boolean;
   showFcc: boolean;
   customAOI: import("geojson").Geometry | null;
+  naturalRegions: import("geojson").FeatureCollection | null;
+  uploadedRegions: import("geojson").FeatureCollection | null;
   marker: [number, number] | null;
   drawMode: boolean;
   onDrawComplete: (polygon: import("geojson").Polygon) => void;
@@ -387,6 +423,8 @@ function SingleSceneMap({
     showRgb,
     showFcc,
     customAOI,
+    naturalRegions,
+    uploadedRegions,
     marker,
     drawMode,
     onDrawComplete,

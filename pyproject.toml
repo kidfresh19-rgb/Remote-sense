@@ -77,8 +77,8 @@ where = ["packages"]
 line-length = 100
 target-version = "py311"
 # azure/ is a local, git-ignored full mirror of the repo (a deploy-prep copy); never lint it.
-# build_progress_docx.py is a one-off dev utility with intentionally compact arrow chains and
-# long string literals inside docx cell content — not production code.
+# build_progress_docx.py is a one-off scratch doc-generator (not production code); linting it adds
+# noise, not value. If it ever becomes maintained tooling, move it into scripts/ and lint that.
 extend-exclude = ["azure", "build_progress_docx.py"]
 
 # Static type gate (rebuild S1.1): the production tree is mypy-clean and stays that way. Run as
