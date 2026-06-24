@@ -15,12 +15,12 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from geoalchemy2.shape import to_shape
-from rs_core import Field, cog_key, cog_store_from_settings, get_settings
+from rs_core import Field, FieldGeometryVersion, cog_key, cog_store_from_settings, get_settings
 from rs_core.logging import get_logger
 from rs_imagery import AOI, TimeRange, get_access_adapter
 from shapely.geometry import mapping
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from services.worker.celery_app import celery
@@ -31,6 +31,41 @@ log = get_logger(__name__)
 
 def _start_of_day(day: date) -> datetime:
     return datetime(day.year, day.month, day.day, tzinfo=UTC)
+
+
+async def _resolve_boundary(
+    session: AsyncSession, field_id: uuid.UUID, geometry_version: int
+) -> dict[str, Any]:
+    """The field boundary as it stood at `geometry_version` (invariant 5 / DI-5 reproducibility).
+
+    The RGB COG must cover the same ground the index COGs at this version were computed against, so
+    we read the immutable `FieldGeometryVersion` row, not `Field.boundary`. `Field.boundary` is only
+    the current outline; it diverges from older versions the moment a field is reshaped, and a
+    reshape is the very event that flags a field for backfill, so the current outline is exactly the
+    wrong geometry for the passes this task most often handles. Falls back to the current boundary
+    only when no version row exists (pre-history legacy data), logged so the gap is visible."""
+    versioned = (
+        await session.execute(
+            select(FieldGeometryVersion.boundary).where(
+                FieldGeometryVersion.field_id == field_id,
+                FieldGeometryVersion.version == geometry_version,
+            )
+        )
+    ).scalar_one_or_none()
+    if versioned is not None:
+        return mapping(to_shape(versioned))
+
+    current = (
+        await session.execute(select(Field.boundary).where(Field.id == field_id))
+    ).scalar_one_or_none()
+    if current is None:
+        raise LookupError(f"field {field_id} not found")
+    log.warning(
+        "backfill_rgb_cog.no_geometry_version",
+        field_id=str(field_id),
+        geometry_version=geometry_version,
+    )
+    return mapping(to_shape(current))
 
 
 @celery.task(name="collection.backfill_rgb_cog", bind=True, max_retries=3, default_retry_delay=120)
@@ -73,10 +108,7 @@ def backfill_rgb_cog(
         session_factory = async_sessionmaker(engine, expire_on_commit=False)
         try:
             async with session_factory() as session:
-                field = (
-                    await session.execute(select(Field).where(Field.id == uuid.UUID(field_id)))
-                ).scalar_one()
-                geometry: dict[str, Any] = mapping(to_shape(field.boundary))
+                geometry = await _resolve_boundary(session, uuid.UUID(field_id), geometry_version)
         finally:
             await engine.dispose()
 
