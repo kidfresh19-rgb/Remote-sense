@@ -266,6 +266,16 @@ export function useAnalyseFarmSeries() {
   });
 }
 
+/** Start an all-passes orthophoto bundle for a completed AOI Studio job. Resolves to
+ *  `{ bundle_job_id }`; feed that into `useAOIJob` to poll the render, then download the zip. */
+export function useStartOrthophotoBundle() {
+  const { token } = useToken();
+  return useMutation({
+    mutationFn: ({ jobId, geometry }: { jobId: string; geometry: Geometry }) =>
+      api.startOrthophotoBundle(jobId, geometry, token!),
+  });
+}
+
 /** Poll a multi-pass AOI preview job every 1.5 s until it settles to `done` or `error`. Enabled
  *  only while a job id is held; the work runs on the worker, so this is how results surface. */
 export function useAOIJob(jobId: string | null) {

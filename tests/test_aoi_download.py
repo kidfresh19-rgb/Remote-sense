@@ -196,37 +196,32 @@ def test_natural_color_cog_cache_hit_returns_tiff(monkeypatch) -> None:
     assert resp.content == _NC_COG
 
 
-def test_natural_color_cog_cache_miss_reads_after_render(monkeypatch) -> None:
-    """On a COG cache miss the render task is enqueued; the task persists the COG, so the endpoint
-    reads it back from the store and streams it as the GeoTIFF download."""
-    import base64
-
+def test_natural_color_cog_cache_miss_returns_202_job(monkeypatch) -> None:
+    """A COG cache miss no longer blocks on the render (P5): it enqueues and returns 202 with a job
+    id for the client to poll, so the request never holds a worker thread through a cold render."""
     import rs_core.storage as _storage
 
     import services.worker.tasks as _tasks
 
-    class _MissThenHitStore:
-        """exists() is False (cache miss) but get_bytes() returns the COG the task just wrote."""
-
+    class _MissStore:
         def __init__(self, _settings):
             pass
 
         def exists(self, key: str) -> bool:
             return False
 
-        def get_bytes(self, key: str) -> bytes:
+        def get_bytes(self, key: str) -> bytes:  # pragma: no cover - not reached on a miss
             return _NC_COG
 
     class _FakeResult:
-        def get(self, timeout: int = 90) -> str:
-            return base64.b64encode(_NC_JPEG).decode()
+        id = "render-job-123"
 
     class _FakeTask:
         @staticmethod
         def delay(*args: object, **kwargs: object) -> _FakeResult:
             return _FakeResult()
 
-    monkeypatch.setattr(_storage, "S3CogStore", _MissThenHitStore)
+    monkeypatch.setattr(_storage, "S3CogStore", _MissStore)
     monkeypatch.setattr(_tasks, "render_natural_color_task", _FakeTask)
     _analyst()
     try:
@@ -243,9 +238,10 @@ def test_natural_color_cog_cache_miss_reads_after_render(monkeypatch) -> None:
     finally:
         _teardown()
 
-    assert resp.status_code == 200
-    assert resp.headers["content-type"] == "image/tiff"
-    assert resp.content == _NC_COG
+    assert resp.status_code == 202
+    body = resp.json()
+    assert body["job_id"] == "render-job-123"
+    assert body["state"] == "queued"
 
 
 def test_render_rgb_cog_and_jpeg_from_synthetic_bands() -> None:
@@ -411,3 +407,180 @@ def test_natural_color_cache_miss_enqueues_task(monkeypatch) -> None:
     assert resp.status_code == 200
     assert resp.headers["content-type"] == "image/jpeg"
     assert resp.content == _NC_JPEG
+
+
+# ── All-passes orthophoto bundle (P4) ───────────────────────────────────────────
+
+
+def _ok_job_result() -> dict:
+    """A completed single-index series: two ok passes and one no_pass (which must be dropped)."""
+    return {
+        "status": "ok",
+        "index": "ndvi",
+        "mode": "dates",
+        "requested": 3,
+        "resolved": 2,
+        "passes": [
+            {"status": "ok", "scene_id": "S2A", "pass_date": "2024-10-01", "index": "ndvi"},
+            {"status": "ok", "scene_id": "S2B", "pass_date": "2024-10-11", "index": "ndvi"},
+            {"status": "no_pass", "requested_date": "2024-10-21", "index": "ndvi"},
+        ],
+    }
+
+
+def _patch_async_result(monkeypatch, state: str, result: dict | None) -> None:
+    """Stub celery.result.AsyncResult (lazy-imported by the endpoint) with a fixed state/result."""
+    import celery.result as _cr
+
+    class _AR:
+        def __init__(self, job_id: str, app=None) -> None:
+            self.id = job_id
+
+        @property
+        def state(self) -> str:
+            return state
+
+        @property
+        def result(self):
+            return result
+
+    monkeypatch.setattr(_cr, "AsyncResult", _AR)
+
+
+def _patch_bundle_apply(monkeypatch) -> list[dict]:
+    import services.worker.tasks as _tasks
+
+    calls: list[dict] = []
+    monkeypatch.setattr(
+        _tasks.bundle_aoi_orthophotos_task, "apply_async", lambda **k: calls.append(k)
+    )
+    return calls
+
+
+def test_start_orthophoto_bundle_requires_auth() -> None:
+    with TestClient(app) as client:
+        resp = client.post("/analyse/aoi/jobs/job1/orthophoto-bundle", json={"geometry": _GEOMETRY})
+    assert resp.status_code == 401
+
+
+def test_start_orthophoto_bundle_enqueues_202(monkeypatch) -> None:
+    """A completed job's ok passes (deduped, no_pass dropped) are handed to the bulk task at the
+    bundle key, and the task id is returned for polling."""
+    _patch_async_result(monkeypatch, "SUCCESS", _ok_job_result())
+    calls = _patch_bundle_apply(monkeypatch)
+    _analyst()
+    try:
+        with TestClient(app) as client:
+            resp = client.post(
+                "/analyse/aoi/jobs/job1/orthophoto-bundle", json={"geometry": _GEOMETRY}
+            )
+    finally:
+        _teardown()
+
+    assert resp.status_code == 202
+    body = resp.json()
+    assert body["state"] == "queued"
+    assert body["bundle_job_id"]
+
+    assert len(calls) == 1
+    geometry, passes, bundle_key = calls[0]["args"]
+    assert passes == [["S2A", "2024-10-01"], ["S2B", "2024-10-11"]]
+    assert calls[0]["task_id"] == body["bundle_job_id"]
+    assert bundle_key.endswith(f"{body['bundle_job_id']}.zip")
+
+
+def test_start_orthophoto_bundle_job_not_done_409(monkeypatch) -> None:
+    _patch_async_result(monkeypatch, "PENDING", None)
+    _analyst()
+    try:
+        with TestClient(app) as client:
+            resp = client.post(
+                "/analyse/aoi/jobs/job1/orthophoto-bundle", json={"geometry": _GEOMETRY}
+            )
+    finally:
+        _teardown()
+    assert resp.status_code == 409
+
+
+def test_start_orthophoto_bundle_no_ok_passes_422(monkeypatch) -> None:
+    _patch_async_result(
+        monkeypatch,
+        "SUCCESS",
+        {"status": "ok", "passes": [{"status": "no_pass", "requested_date": "2024-10-21"}]},
+    )
+    _analyst()
+    try:
+        with TestClient(app) as client:
+            resp = client.post(
+                "/analyse/aoi/jobs/job1/orthophoto-bundle", json={"geometry": _GEOMETRY}
+            )
+    finally:
+        _teardown()
+    assert resp.status_code == 422
+
+
+def test_orthophoto_bundle_download_requires_auth() -> None:
+    with TestClient(app) as client:
+        assert client.get("/analyse/aoi/orthophoto-bundle/B1/download").status_code == 401
+
+
+def test_orthophoto_bundle_download_returns_302(monkeypatch) -> None:
+    import rs_core.storage as _storage
+
+    class _HitStore:
+        def __init__(self, _settings):
+            pass
+
+        def exists(self, key: str) -> bool:
+            return True
+
+        def presigned_url(
+            self, key: str, *, filename: str | None = None, expires: int = 900
+        ) -> str:
+            return _PRESIGNED
+
+    monkeypatch.setattr(_storage, "S3CogStore", _HitStore)
+    _analyst()
+    try:
+        with TestClient(app) as client:
+            resp = client.get("/analyse/aoi/orthophoto-bundle/B1/download", follow_redirects=False)
+    finally:
+        _teardown()
+    assert resp.status_code == 302
+    assert resp.headers["location"] == _PRESIGNED
+
+
+def test_orthophoto_bundle_download_missing_is_404(monkeypatch) -> None:
+    import rs_core.storage as _storage
+
+    class _MissingStore:
+        def __init__(self, _settings):
+            pass
+
+        def exists(self, key: str) -> bool:
+            return False
+
+    monkeypatch.setattr(_storage, "S3CogStore", _MissingStore)
+    _analyst()
+    try:
+        with TestClient(app) as client:
+            resp = client.get("/analyse/aoi/orthophoto-bundle/B1/download")
+    finally:
+        _teardown()
+    assert resp.status_code == 404
+
+
+def test_orthophoto_bundle_download_no_storage_is_503(monkeypatch) -> None:
+    import rs_core.storage as _storage
+
+    def _no_boto3(_settings):
+        raise ImportError("boto3 not installed")
+
+    monkeypatch.setattr(_storage, "S3CogStore", _no_boto3)
+    _analyst()
+    try:
+        with TestClient(app) as client:
+            resp = client.get("/analyse/aoi/orthophoto-bundle/B1/download")
+    finally:
+        _teardown()
+    assert resp.status_code == 503

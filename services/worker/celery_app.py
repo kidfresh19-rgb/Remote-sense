@@ -48,6 +48,11 @@ celery.conf.task_queues = (
     Queue("interactive"),
 )
 celery.conf.task_routes = {
+    # The all-passes orthophoto bundle renders dozens of COGs; it is bulk work, not a latency-
+    # sensitive preview, so it stays on the default `celery` lane and off `interactive`. An exact
+    # task name takes precedence over the `analysis.*` glob below (Celery resolves named routes
+    # before patterns), so this override holds; the route test guards it against regressions.
+    "analysis.bundle_aoi_orthophotos": {"queue": "celery"},
     # Every ad-hoc AOI analysis (analysis.analyse_aoi*, analysis.analyse_farm_series*) is a
     # latency-sensitive preview, never persisted - all of them belong on the reserved lane.
     "analysis.*": {"queue": "interactive"},

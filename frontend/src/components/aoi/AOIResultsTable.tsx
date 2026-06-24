@@ -1,11 +1,13 @@
-import { DownloadSimple, Spinner, ChartLine, Table as TableIcon, ArrowUp, ArrowDown, ArrowsOut, ArrowsIn, X, ChartPieSlice, Image as ImageIcon, FileImage, Warning } from "@phosphor-icons/react";
-import { useMemo, useState, useCallback, useEffect } from "react";
+import { DownloadSimple, Spinner, ChartLine, Table as TableIcon, ArrowUp, ArrowDown, ArrowsOut, ArrowsIn, X, ChartPieSlice, Image as ImageIcon, FileImage, Archive } from "@phosphor-icons/react";
+import { useMemo, useState, useCallback, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import type { Geometry } from "geojson";
 import { motion, AnimatePresence } from "motion/react";
 
 import { useToken } from "@/auth/TokenProvider";
+import { api } from "@/lib/api";
 import { config } from "@/lib/config";
+import { useAOIJob, useStartOrthophotoBundle } from "@/lib/queries";
 import { useNaturalColorThumbnail, type NaturalColorReq } from "@/lib/useNaturalColorThumbnail";
 import {
   AreaChart,
@@ -64,6 +66,52 @@ export function AOIResultsTable({
   // the button spin and then nothing; a cold render that timed out reads differently from a hard
   // failure, and a network throw must still clear the spinner.
   const [orthoError, setOrthoError] = useState<string | null>(null);
+  // All-passes orthophoto bundle (P4): once started we hold the bundle job id and poll it; the zip
+  // is fetched and saved when the render settles. `bundleDoneRef` guards the one-shot download
+  // against the poll firing the "done" effect more than once for the same bundle.
+  const [bundleJobId, setBundleJobId] = useState<string | null>(null);
+  const bundleDoneRef = useRef<string | null>(null);
+  const startBundle = useStartOrthophotoBundle();
+  const bundleJob = useAOIJob(bundleJobId);
+
+  // Pull the finished zip down with the auth header (the route 302s to a presigned URL that fetch
+  // follows), then save it via a transient object URL - the same shape as the per-pass download.
+  const downloadBundleZip = useCallback(
+    async (id: string) => {
+      if (!token) return;
+      const resp = await fetch(
+        `${config.apiBaseUrl}/analyse/aoi/orthophoto-bundle/${encodeURIComponent(id)}/download`,
+        { headers: { Authorization: `Bearer ${token}` } },
+      );
+      if (!resp.ok) {
+        setOrthoError("The orthophoto bundle could not be downloaded. Please try again.");
+        return;
+      }
+      const blob = await resp.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = blobUrl;
+      a.download = `orthophotos_${id}.zip`;
+      a.click();
+      URL.revokeObjectURL(blobUrl);
+    },
+    [token],
+  );
+
+  // When the bundle job settles, save the zip once (done) or surface the failure (error), then stop
+  // polling by clearing the id.
+  useEffect(() => {
+    if (!bundleJobId) return;
+    const state = bundleJob.data?.state;
+    if (state === "done" && bundleDoneRef.current !== bundleJobId) {
+      bundleDoneRef.current = bundleJobId;
+      void downloadBundleZip(bundleJobId);
+      setBundleJobId(null);
+    } else if (state === "error") {
+      setOrthoError("Could not generate the orthophoto bundle. Please try again.");
+      setBundleJobId(null);
+    }
+  }, [bundleJob.data?.state, bundleJobId, downloadBundleZip]);
 
   // Fetch the natural-colour orthophoto for one pass and save it. Mirrors the per-pass index
   // download and the eager shape of useNaturalColorThumbnail, but carries the AOI geometry so the
@@ -74,21 +122,40 @@ export function AOIResultsTable({
       if (!geometry || !token || !pass.scene_id || !pass.pass_date) return;
       setOrthoError(null);
       setOrthoFormat(format);
-      try {
-        const body: NaturalColorReq = {
-          scene_id: pass.scene_id,
-          geometry,
-          pass_date: pass.pass_date,
-          format,
-        };
-        const resp = await fetch(`${config.apiBaseUrl}/analyse/aoi/natural-color`, {
+      const body: NaturalColorReq = {
+        scene_id: pass.scene_id,
+        geometry,
+        pass_date: pass.pass_date,
+        format,
+      };
+      const post = () =>
+        fetch(`${config.apiBaseUrl}/analyse/aoi/natural-color`, {
           method: "POST",
           headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
           body: JSON.stringify(body),
         });
+      try {
+        let resp = await post();
+        // P5: a cold GeoTIFF render returns 202 + a job id instead of holding the request open.
+        // Poll the render to completion (bounded), then re-request - now an instant cache hit.
+        if (resp.status === 202) {
+          const { job_id: renderJobId } = (await resp.json()) as { job_id: string };
+          let settled = false;
+          for (let i = 0; i < 40 && !settled; i++) {
+            await new Promise((r) => setTimeout(r, 1500));
+            const job = await api.aoiJob(renderJobId, token);
+            if (job.state === "done") settled = true;
+            else if (job.state === "error") break;
+          }
+          if (!settled) {
+            setOrthoError("Still preparing this image. Give it a moment, then try again.");
+            return;
+          }
+          resp = await post();
+        }
         if (!resp.ok) {
-          // A 502/504 means the cold COG render is still holding the proxy; any other code is a
-          // genuine failure. Tell the analyst which, instead of the old silent skip.
+          // A 502/504 means the cold render is still in flight; any other code is a genuine
+          // failure. Tell the analyst which, instead of the old silent skip.
           setOrthoError(
             resp.status === 502 || resp.status === 504
               ? "Still preparing this image. Give it a moment, then try again."
@@ -288,6 +355,45 @@ export function AOIResultsTable({
                     <FileImage size={13} />
                   )}{" "}
                   GeoTIFF
+                </button>
+                {/* All-passes orthophoto bundle: one zip of true-colour GeoTIFFs for every usable
+                    pass. The render runs on the bulk lane; we poll its job and save the zip when
+                    done. Disabled while a bundle is in flight or there is no usable pass. */}
+                <button
+                  onClick={() => {
+                    if (!jobId || !geometry || orthoOkPasses.length === 0) return;
+                    setOrthoError(null);
+                    startBundle.mutate(
+                      { jobId, geometry },
+                      {
+                        onSuccess: (d) => setBundleJobId(d.bundle_job_id),
+                        onError: () =>
+                          setOrthoError(
+                            "Could not start the orthophoto bundle. Please try again.",
+                          ),
+                      },
+                    );
+                  }}
+                  disabled={
+                    orthoOkPasses.length === 0 || startBundle.isPending || bundleJobId !== null
+                  }
+                  className="inline-flex items-center gap-1.5 rounded-md border border-border bg-panel px-2.5 py-1 text-xs text-muted transition-colors hover:bg-panel-2 hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:cursor-not-allowed disabled:opacity-40"
+                  title={
+                    orthoOkPasses.length
+                      ? `Download a zip of true-colour GeoTIFFs for all ${orthoOkPasses.length} usable passes`
+                      : "No usable pass to bundle orthophotos for"
+                  }
+                >
+                  {startBundle.isPending || bundleJobId !== null ? (
+                    <Spinner size={13} className="animate-spin" />
+                  ) : (
+                    <Archive size={13} />
+                  )}{" "}
+                  {bundleJobId !== null &&
+                  bundleJob.data?.progress?.done != null &&
+                  bundleJob.data?.progress?.total != null
+                    ? `Bundling ${bundleJob.data.progress.done}/${bundleJob.data.progress.total}`
+                    : "Download all"}
                 </button>
               </>
             ) : null}

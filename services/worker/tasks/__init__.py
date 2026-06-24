@@ -19,6 +19,7 @@ from services.worker.tasks.analysis import (
     render_natural_color_task,
 )
 from services.worker.tasks.backfill_rgb import backfill_rgb_cog
+from services.worker.tasks.bundle import bundle_aoi_orthophotos_task
 from services.worker.tasks.collection import (
     CORE_INDICES,
     CollectionSummary,
@@ -44,6 +45,7 @@ __all__ = [
     "CollectionSummary",
     "analyse_aoi_series_multi_task",
     "backfill_rgb_cog",
+    "bundle_aoi_orthophotos_task",
     "analyse_aoi_series_task",
     "analyse_aoi_task",
     "analyse_farm_series_multi_task",

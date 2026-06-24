@@ -13,7 +13,7 @@ from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Response, status
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel, model_validator
 from rs_core import Settings, get_settings
 from rs_core.logging import get_logger
@@ -28,6 +28,10 @@ router = APIRouter(tags=["workspace"])
 # A batch is an analyst typing in a handful of dates, not a bulk import - cap it so one request
 # can never fan out to an unbounded number of reads. The backfill cap lives on the worker.
 MAX_BATCH_DATES = 24
+
+# The all-passes orthophoto bundle renders one RGB COG per usable pass into an in-memory zip;
+# cap the pass count (~ a year of Sentinel-2 same-day passes) to bound the worker's memory.
+MAX_BUNDLE_PASSES = 60
 
 
 def _require_exactly_one_index(index: str | None, indices: list[str] | None) -> None:
@@ -100,6 +104,13 @@ class AOIPushRequest(BaseModel):
     (status='interpolated') are included."""
 
     canonical_farm_id: str
+
+
+class OrthophotoBundleRequest(BaseModel):
+    """The drawn AOI geometry for an all-passes orthophoto bundle. The passes are read server-side
+    from the completed series job, so only the geometry (which a preview never persists) is sent."""
+
+    geometry: dict[str, Any]
 
 
 class AOISeriesRequest(BaseModel):
@@ -192,20 +203,36 @@ async def aoi_natural_color_endpoint(
         else None
     )
 
-    # Cache hit: proxy the stored object from MinIO.
+    # Cache hit (either format): proxy the stored object from MinIO. Fast - no render.
     store: S3CogStore | None
     try:
         store = S3CogStore(settings)
-        if await run_in_threadpool(store.exists, target_key):
-            data = await run_in_threadpool(store.get_bytes, target_key)
-            return Response(content=data, media_type=media_type, headers=headers)
     except Exception:
         store = None  # storage unavailable; fall through to rendering
+    if store is not None and await run_in_threadpool(store.exists, target_key):
+        data = await run_in_threadpool(store.get_bytes, target_key)
+        return Response(content=data, media_type=media_type, headers=headers)
 
-    # Cache miss: render on the worker (persisting both the JPEG and the COG) and stream the result.
+    # The GeoTIFF download is served from the cache only; without object storage the COG can never
+    # be read back, so fail fast rather than enqueue a render whose output we could never serve.
+    if want_cog and store is None:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "object storage not available")
+
+    # Cache miss: render on the worker, persisting BOTH the JPEG and the COG from one band read.
     task = render_natural_color_task.delay(
         payload.scene_id, payload.geometry, payload.pass_date, jpeg_key, cog_key
     )
+
+    if want_cog:
+        # A cold COG render can take ~90 s. Do not hold a Starlette threadpool thread waiting on it:
+        # hand back the job id with 202, let the client poll GET /analyse/aoi/jobs/{id}, then
+        # re-request once it is done - which is then the cache hit served above.
+        return JSONResponse(
+            status_code=status.HTTP_202_ACCEPTED,
+            content={"job_id": task.id, "state": "queued"},
+        )
+
+    # JPEG path (lazy filmstrip thumbnails): the inline wait is fine and keeps the hook simple.
     try:
         b64_result: str = await run_in_threadpool(task.get, timeout=90)
     except CeleryTimeoutError as exc:
@@ -217,26 +244,7 @@ async def aoi_natural_color_endpoint(
         raise HTTPException(
             status.HTTP_502_BAD_GATEWAY, f"Natural-colour render failed: {exc}"
         ) from exc
-
-    if not want_cog:
-        return Response(content=base64.b64decode(b64_result), media_type="image/jpeg")
-
-    # The render persists the COG alongside the JPEG; read it back to stream the GeoTIFF download.
-    if store is None:
-        try:
-            store = S3CogStore(settings)
-        except Exception as exc:
-            raise HTTPException(
-                status.HTTP_503_SERVICE_UNAVAILABLE, "object storage not available"
-            ) from exc
-    try:
-        cog_bytes = await run_in_threadpool(store.get_bytes, cog_key)
-    except Exception as exc:
-        raise HTTPException(
-            status.HTTP_502_BAD_GATEWAY,
-            "GeoTIFF render did not produce a downloadable file",
-        ) from exc
-    return Response(content=cog_bytes, media_type="image/tiff", headers=headers)
+    return Response(content=base64.b64decode(b64_result), media_type="image/jpeg")
 
 
 @router.post("/analyse/aoi/series", status_code=status.HTTP_202_ACCEPTED)
@@ -405,6 +413,101 @@ def _all_passes(job_result: dict[str, Any]) -> list[dict[str, Any]]:
                 passes.extend(series.get("passes", []))
         return passes
     return list(job_result.get("passes", []))
+
+
+@router.post("/analyse/aoi/jobs/{job_id}/orthophoto-bundle", status_code=status.HTTP_202_ACCEPTED)
+async def start_orthophoto_bundle_endpoint(
+    job_id: str,
+    payload: OrthophotoBundleRequest,
+    principal: RunAnalysisPrincipal,
+) -> dict[str, Any]:
+    """Bundle every usable pass of a completed AOI Studio job into a zip of georeferenced RGB
+    orthophoto GeoTIFFs - the all-passes companion to the single-pass download. The ok passes
+    are read from the job result, then a bulk render+zip task is enqueued (off the interactive lane)
+    and its id returned immediately: poll `GET /analyse/aoi/jobs/{bundle_job_id}` for progress, then
+    `GET /analyse/aoi/orthophoto-bundle/{bundle_job_id}/download` once done. Nothing is persisted
+    (invariant 6). Requires `run_analysis`. 409 if the job is not done; 422 if it has no usable pass
+    or more than the bundle cap."""
+    import uuid
+
+    from celery.result import AsyncResult
+    from rs_core.storage import aoi_bundle_zip_key
+
+    from services.worker.celery_app import celery
+    from services.worker.tasks import bundle_aoi_orthophotos_task
+
+    def _get_result() -> dict[str, Any] | None:
+        r = AsyncResult(job_id, app=celery)
+        return r.result if r.state == "SUCCESS" else None  # type: ignore[return-value]
+
+    job_result = await run_in_threadpool(_get_result)
+    if job_result is None:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "job is not done yet or was not found; only completed jobs can be bundled",
+        )
+
+    # One render per (scene_id, pass_date): an all-indices job repeats each scene once per index, so
+    # dedupe to avoid rendering and zipping the same orthophoto several times.
+    seen: set[tuple[str, str]] = set()
+    passes: list[list[str]] = []
+    for p in _all_passes(job_result):
+        if p.get("status") != "ok":
+            continue
+        scene_id = p.get("scene_id")
+        pass_date = p.get("pass_date")
+        if not scene_id or not pass_date or (scene_id, pass_date) in seen:
+            continue
+        seen.add((scene_id, pass_date))
+        passes.append([scene_id, pass_date])
+
+    if not passes:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "no usable passes to bundle; run an analysis with at least one resolved pass first",
+        )
+    if len(passes) > MAX_BUNDLE_PASSES:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            f"too many passes to bundle at once (max {MAX_BUNDLE_PASSES}); narrow the date range",
+        )
+
+    # The task id IS the bundle id, so the download route reconstructs the storage key from the path
+    # without any server-side mapping. Pre-generate it to derive the key before enqueueing.
+    bundle_job_id = str(uuid.uuid4())
+    bundle_key = aoi_bundle_zip_key(bundle_job_id)
+    bundle_aoi_orthophotos_task.apply_async(
+        task_id=bundle_job_id, args=[payload.geometry, passes, bundle_key]
+    )
+    log.info("aoi.bundle.dispatch", job_id=job_id, bundle_job_id=bundle_job_id, passes=len(passes))
+    return {"bundle_job_id": bundle_job_id, "state": "queued"}
+
+
+@router.get("/analyse/aoi/orthophoto-bundle/{bundle_job_id}/download")
+async def orthophoto_bundle_download_endpoint(
+    bundle_job_id: str,
+    principal: RunAnalysisPrincipal,
+) -> Response:
+    """Proxy the finished all-passes orthophoto zip as a download attachment (302 to a presigned
+    URL). 404 until the bundle task has written it (still running, failed, or its TTL expired).
+    Requires `run_analysis`."""
+    from rs_core.storage import S3CogStore, aoi_bundle_zip_key
+
+    settings = get_settings()
+    try:
+        store = S3CogStore(settings)
+    except ImportError as exc:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "object storage not available"
+        ) from exc
+
+    key = aoi_bundle_zip_key(bundle_job_id)
+    if not await run_in_threadpool(store.exists, key):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "bundle not ready or expired")
+
+    filename = f"orthophotos_{bundle_job_id}.zip"
+    url = await run_in_threadpool(store.presigned_url, key, filename=filename)
+    return RedirectResponse(url, status_code=status.HTTP_302_FOUND)
 
 
 @router.post("/analyse/aoi/jobs/{job_id}/push")

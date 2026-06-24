@@ -231,6 +231,36 @@ def _jpeg_from_cog(cog_bytes: bytes) -> bytes:
     return image.render(img_format="JPEG", quality=85)
 
 
+async def _render_clipped_rgb_cog(
+    adapter: AccessPort, scene_id: str, geometry: dict[str, Any], pass_date: str
+) -> bytes:
+    """Fetch B04/B03/B02 for one custom-AOI scene and render the georeferenced RGB reflectance COG
+    clipped to the drawn polygon (pixels inside the fetched bounding-box window but outside the AOI
+    become NoData). The scene is re-discovered by searching +/-1 day around `pass_date` and matching
+    by `scene_id`. Shared by the single-pass natural-colour render and the all-passes bundle so both
+    write byte-identical COGs to `aoi_rgb_cog_key`. Requires the `geo` extra (rasterio)."""
+    aoi = AOI(geometry=geometry, crs="EPSG:4326")
+    target = date.fromisoformat(pass_date)
+    search_range = TimeRange(
+        start=_start_of_day(target) - timedelta(days=1),
+        end=_start_of_day(target) + timedelta(days=2),
+    )
+    scenes = await adapter.search(aoi, search_range, max_scene_cloud_pct=100.0)
+    scene = next((s for s in scenes if s.scene_id == scene_id), None)
+    if scene is None:
+        raise ValueError(f"scene {scene_id!r} not found around {pass_date!r}")
+    fetched = await adapter.fetch(
+        scene, aoi, bands=sorted(["B02", "B03", "B04"]), resolution_m=10.0
+    )
+    height, width = next(iter(fetched.data.bands.values())).shape
+    mask = _aoi_window_mask(
+        geometry, crs=fetched.data.crs, transform=fetched.data.transform, shape=(height, width)
+    )
+    return _render_rgb_cog(
+        fetched.data.bands, fetched.data.transform, fetched.data.crs, aoi_mask=mask
+    )
+
+
 async def _analyse_scene(
     adapter: AccessPort,
     scene: SceneRef,
@@ -886,31 +916,7 @@ def render_natural_color_task(
 
     async def _run() -> bytes:
         adapter = get_access_adapter(settings)
-        aoi = AOI(geometry=geometry, crs="EPSG:4326")
-        target = date.fromisoformat(pass_date)
-        search_range = TimeRange(
-            start=_start_of_day(target) - timedelta(days=1),
-            end=_start_of_day(target) + timedelta(days=2),
-        )
-        scenes = await adapter.search(aoi, search_range, max_scene_cloud_pct=100.0)
-        scene = next((s for s in scenes if s.scene_id == scene_id), None)
-        if scene is None:
-            raise ValueError(f"scene {scene_id!r} not found around {pass_date!r}")
-        fetched = await adapter.fetch(
-            scene, aoi, bands=sorted(["B02", "B03", "B04"]), resolution_m=10.0
-        )
-        # Clip the download to the drawn polygon: pixels in the fetched bounding-box window but
-        # outside the AOI become NoData, so the GeoTIFF is true to what the analyst selected.
-        height, width = next(iter(fetched.data.bands.values())).shape
-        mask = _aoi_window_mask(
-            geometry,
-            crs=fetched.data.crs,
-            transform=fetched.data.transform,
-            shape=(height, width),
-        )
-        return _render_rgb_cog(
-            fetched.data.bands, fetched.data.transform, fetched.data.crs, aoi_mask=mask
-        )
+        return await _render_clipped_rgb_cog(adapter, scene_id, geometry, pass_date)
 
     cog_bytes = asyncio.run(_run())
     jpeg_bytes = _jpeg_from_cog(cog_bytes)

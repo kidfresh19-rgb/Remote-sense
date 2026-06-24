@@ -34,6 +34,13 @@ def aoi_rgb_cog_key(scene_id: str, geometry_hash: str) -> str:
     return f"aoi_preview/{scene_id}/{geometry_hash}.tif"
 
 
+def aoi_bundle_zip_key(bundle_id: str) -> str:
+    """A zip of every usable pass's RGB orthophoto for one AOI Studio run (the all-passes download).
+    Shares the `aoi_preview/` prefix so the same 7-day lifecycle rule expires it without new infra;
+    `bundle_id` is the bundle task id, so the download route rebuilds the key from the path."""
+    return f"aoi_preview/bundle/{bundle_id}.zip"
+
+
 def vsis3_uri(bucket: str, key: str) -> str:
     """The GDAL `/vsis3/` path the tiler opens for a stored COG (read path, configured by
     `gdal_s3_env`)."""

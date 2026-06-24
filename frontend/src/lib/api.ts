@@ -236,6 +236,13 @@ export interface AOIJobEnqueued {
   state: string;
 }
 
+/** Response of POST /analyse/aoi/jobs/{id}/orthophoto-bundle: the all-passes zip render was queued.
+ *  Poll `aoiJob(bundle_job_id)` for progress, then download via the bundle download route. */
+export interface OrthophotoBundleEnqueued {
+  bundle_job_id: string;
+  state: string;
+}
+
 export interface AOIPushRequest {
   canonical_farm_id: string;
 }
@@ -447,6 +454,13 @@ export const api = {
     ),
   aoiJob: (jobId: string, token: string, signal?: AbortSignal) =>
     get<AOIJob>(`/analyse/aoi/jobs/${encodeURIComponent(jobId)}`, token, signal),
+  startOrthophotoBundle: (jobId: string, geometry: Geometry, token: string) =>
+    send<OrthophotoBundleEnqueued>(
+      "POST",
+      `/analyse/aoi/jobs/${encodeURIComponent(jobId)}/orthophoto-bundle`,
+      token,
+      { geometry },
+    ),
   pushAOIResults: (jobId: string, req: AOIPushRequest, token: string) =>
     send<AOIPushResult>(
       "POST",
