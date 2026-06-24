@@ -1,4 +1,4 @@
-﻿"""Collection orchestration (Phase 3): turn a field + time range into per-pass index results
+"""Collection orchestration (Phase 3): turn a field + time range into per-pass index results
 by driving the AccessPort and the analysis engine. This is the body the Celery backfill /
 forward-fill tasks call; kept as a plain async function so it is testable against the mock
 adapter with no broker and no DB.
