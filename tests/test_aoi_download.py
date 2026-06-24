@@ -296,6 +296,51 @@ def test_render_rgb_cog_clips_outside_aoi_mask_to_nodata() -> None:
     assert red[3, 3] == pytest.approx(0.12)
 
 
+def test_dn_zero_pixels_are_nodata_in_rgb_cog() -> None:
+    """DN == 0 is NoData (invariant 2): pixels at DN zero must arrive as NaN in the render bands
+    and survive as NoData in the written COG. This verifies the reflectance-conversion -> rgb_raster
+    -> write_cog chain holds the contract end-to-end. Needs the geo extra; skips on a bare host."""
+    pytest.importorskip("rasterio")
+
+    import numpy as np
+    from rasterio.io import MemoryFile
+    from rs_analysis.reflectance import stack_to_reflectance
+
+    from services.worker.tasks.analysis import (  # noqa: PLC0415
+        _render_rgb_cog,
+    )
+
+    # Build DN arrays: most pixels at a healthy value, the top-left 2x2 block at DN == 0 (NoData).
+    size = 8
+    dn_b04 = np.full((size, size), 1500, dtype="float32")
+    dn_b03 = np.full((size, size), 1000, dtype="float32")
+    dn_b02 = np.full((size, size), 600, dtype="float32")
+    dn_b04[:2, :2] = 0
+    dn_b03[:2, :2] = 0
+    dn_b02[:2, :2] = 0
+
+    # Baseline 04.00 radiometric parameters (same as the mock adapter).
+    reflectance = stack_to_reflectance(
+        {"B04": dn_b04, "B03": dn_b03, "B02": dn_b02},
+        add_offset=-1000.0,
+        quantification=10000.0,
+    )
+
+    # Sanity: the conversion must have produced NaN for the zero-DN patch.
+    assert np.isnan(reflectance["B04"][:2, :2]).all(), (
+        "stack_to_reflectance did not NaN DN==0 pixels"
+    )
+
+    transform = (10.0, 0.0, 500000.0, 0.0, -10.0, 8030000.0)
+    cog = _render_rgb_cog(reflectance, transform, "EPSG:32735")
+
+    with MemoryFile(cog) as mem, mem.open() as src:
+        red = src.read(1)
+
+    assert np.isnan(red[:2, :2]).all(), "DN==0 patch must be NoData (NaN) in the written COG"
+    assert not np.isnan(red[2:, 2:]).any(), "non-NoData pixels must have valid reflectance values"
+
+
 def test_aoi_window_mask_clips_to_drawn_polygon() -> None:
     """A non-rectangular AOI yields a window mask that is True inside the polygon and False in the
     bounding-box corners outside it, after reprojecting the lon/lat geometry to the band CRS.
@@ -309,9 +354,7 @@ def test_aoi_window_mask_clips_to_drawn_polygon() -> None:
     # Right triangle in lon/lat: the hypotenuse cuts off the south-east bbox corner.
     triangle = {
         "type": "Polygon",
-        "coordinates": [
-            [[31.00, -17.80], [31.02, -17.80], [31.00, -17.82], [31.00, -17.80]]
-        ],
+        "coordinates": [[[31.00, -17.80], [31.02, -17.80], [31.00, -17.82], [31.00, -17.80]]],
     }
     crs = "EPSG:32736"  # 31 E is east of 30 E
     left, bottom, right, top = transform_bounds("EPSG:4326", crs, 31.00, -17.82, 31.02, -17.80)
