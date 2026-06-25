@@ -469,3 +469,103 @@ class FarmRegionAssignment(Base):
     assigned_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+
+# Ward Watch enrollment plot vocabularies (PRD 0003 §8.2). These mirror the values in
+# rs_core.enrollment - the 0028 proxy-AOI primitive (FieldSizeClass, PROXY_GEOMETRY_SOURCE),
+# currently on the feat/ward-watch-proxy-aoi branch. ⚑ CONFIRM: collapse to one source of truth when
+# 0028 merges so the size-class enum and these validation sets cannot drift. Stored as strings and
+# validated in code, in the house style (cf. RegionBoundary.source, SyncOutbox.status).
+PLOT_SIZE_CLASSES: tuple[str, ...] = ("backyard", "small_holding", "medium", "large")
+PLOT_GEOMETRY_SOURCES: tuple[str, ...] = ("officer_proxy", "surveyed", "gateway", "drawn")
+
+
+class Household(Base):
+    """A communal household enrolled by an AGRITEX officer (PRD 0003 §8). Ward Watch captures it
+    offline and syncs it to the gateway, which stays the identity authority (invariant 6): the
+    gateway-assigned `canonical_household_id` is the cross-system join key, set once the enrollment
+    syncs (null until then), while `client_uuid` is the offline client's own stable id for that
+    sync. A ward is a region boundary (ADR 0010), so the assignment is a nullable FK to
+    `region_boundary` plus a free `ward_name` label usable before ward boundaries are loaded
+    (0027)."""
+
+    __tablename__ = "household"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    client_uuid: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), unique=True, index=True)
+    canonical_household_id: Mapped[str | None] = mapped_column(
+        String(128), unique=True, nullable=True
+    )
+    ward_boundary_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("region_boundary.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    ward_name: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    village: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    officer_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    plots: Mapped[list[Plot]] = relationship(
+        back_populates="household", cascade="all, delete-orphan"
+    )
+
+
+class Plot(Base):
+    """One intercropped plot of a household - the Ward Watch analysis unit (PRD 0003 §8). Geometry
+    is canonical WGS84 (SRID 4326); `geometry_source` records how it was drawn (`officer_proxy` for
+    a pin + size-class proxy, the common communal case, versus a surveyed or gateway boundary).
+    `size_class` and `planting_window` are declared at enrollment; `dominant_crop` is derived from
+    the stored crop mix (`rs_core.cropmix`) and cached here for cohort keying (0032). The full mix
+    lives in `crop_mix`."""
+
+    __tablename__ = "plot"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    client_uuid: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), unique=True, index=True)
+    household_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("household.id", ondelete="CASCADE"), index=True
+    )
+
+    boundary: Mapped[WKBElement] = mapped_column(_MULTIPOLYGON_4326)
+    geometry_source: Mapped[str] = mapped_column(String(32))
+    area_m2: Mapped[float | None] = mapped_column(Float, nullable=True)
+    size_class: Mapped[str | None] = mapped_column(String(32), nullable=True)
+
+    planting_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    planting_window: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    dominant_crop: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    household: Mapped[Household] = relationship(back_populates="plots")
+    crop_mix: Mapped[list[CropMixEntry]] = relationship(
+        back_populates="plot", cascade="all, delete-orphan"
+    )
+
+
+class CropMixEntry(Base):
+    """One crop's share of a plot's intercrop mix (PRD 0003 §8.3). The full mix is stored (every
+    crop and weight), even though v1 cohorts on the plot's `dominant_crop`; `crop` is a canonical
+    declared crop (`rs_core.crops`), validated at ingestion, never free text. Unique per (plot,
+    crop)."""
+
+    __tablename__ = "crop_mix_entry"
+    __table_args__ = (UniqueConstraint("plot_id", "crop", name="uq_crop_mix_plot_crop"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    plot_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("plot.id", ondelete="CASCADE"), index=True
+    )
+    crop: Mapped[str] = mapped_column(String(64))
+    weight_pct: Mapped[float] = mapped_column(Float)
+
+    plot: Mapped[Plot] = relationship(back_populates="crop_mix")
