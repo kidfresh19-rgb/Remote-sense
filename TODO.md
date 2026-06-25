@@ -44,3 +44,23 @@ Three open items to resolve before merge, each embedded in its gating slice file
   `packages/rs_core/rbac.py` - `upload_region_boundary` admin-only; `create_region_cluster`,
   `create_cohort`, `manage_cohort` analyst; `view_group` at viewer level. Engineering sign-off
   (owner/engineer); no agronomy dependency.
+
+---
+
+## 📌 PRD 0003 — Ward Watch (foundation built; remaining work gated)
+
+Spec: `docs/prd/0003-ward-watch.md`. The pure + model foundation is built on
+`feat/ward-watch-movement-lens` (0029 model + migration, 0032 pure strata, 0033 movement lens, 0034
+fallback ladder, 0035 phenology verification, plus 0036/0039 pure cores) and 0028 proxy-AOI on
+`feat/ward-watch-proxy-aoi`. The items below are DEFERRED pending an external/owner decision - skip
+for now, revisit when the decision lands:
+- [ ] **0027 — gateway inbound data contract** (PRD §12): how households / declared crop mix /
+  planting window arrive from the gateway. Invariant-6-adjacent and ADR-worthy; owner decision.
+  Blocks 0031 (household ingestion), which in turn blocks the live-membership half of 0032 and 0037.
+- [ ] **0038 — diagnosis schema** (PRD §12, `needs-info`): the controlled-vocabulary diagnosis form
+  is the ground-truth flywheel's data contract; settle the vocab before building.
+- [ ] **0041 — Ward Watch RBAC roles** (PRD §12, `needs-info`): ward/district/province/ministry role
+  hierarchy over `rs_core/rbac.py`; settle once for PRD 0002 + 0003.
+
+Frontend surfaces (0030 enrollment client, 0040 dashboards) await their backend plus the product
+surface call.
