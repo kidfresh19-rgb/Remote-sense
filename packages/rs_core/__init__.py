@@ -35,6 +35,8 @@ from rs_core.models import (
 )
 from rs_core.rbac import Permission, Principal, Role, permissions_for
 from rs_core.repositories import (
+    ClusterMemberStanding,
+    ClusterStats,
     FarmAnalyticsAnomalies,
     FarmAnalyticsSummary,
     FarmAnalyticsTimeSeriesPoint,
@@ -42,6 +44,7 @@ from rs_core.repositories import (
     advance_cursor,
     delete_annotation,
     ensure_collection_state,
+    get_cluster_stats,
     get_collection_state,
     get_farm_analytics_anomalies,
     get_farm_analytics_summary,
@@ -107,7 +110,10 @@ __all__ = [
     "advance_cursor",
     "delete_annotation",
     "ensure_collection_state",
+    "get_cluster_stats",
     "get_collection_state",
+    "ClusterMemberStanding",
+    "ClusterStats",
     "FarmAnalyticsAnomalies",
     "FarmAnalyticsSummary",
     "FarmAnalyticsTimeSeriesPoint",

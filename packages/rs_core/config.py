@@ -168,6 +168,16 @@ class Settings(BaseSettings):
     # benchmarked within its dominant NR until the dominant share drops below this, then analysis
     # layer breaks out a per-NR view. Agronomy-scientist confirms the default before launch.
     region_dominant_nr_threshold: float = 0.85
+    # Comparison engine - group reference pass + standing (PRD 0002 slice 2a, backlog 0003). The
+    # group reference pass is the most recent date a quorum of members holds a clear read, each
+    # member aligned to its nearest clear pass within +/- the window; a usable read must meet the
+    # per-AOI clear floor (mirrors the as-of view, S3.1). Standing needs at least the min cohort of
+    # same-crop peers to rank on raw NDVI, else it falls back to the crop-aware status distribution.
+    # All four are config, never hard-coded into the selection.
+    cluster_reference_quorum: float = 0.5
+    cluster_reference_window_days: int = 14
+    cluster_clear_fraction_floor: float = 0.5
+    cluster_standing_min_cohort: int = 4
 
     # Weather access layer (improvement plan Tier 1, ADR 0004). Active adapter is a config switch.
     weather_adapter: WeatherAdapter = WeatherAdapter.MOCK

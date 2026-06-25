@@ -37,6 +37,11 @@ from rs_core.repositories.collection_state import (
     processed_scene_ids,
     record_forward_fill_poll,
 )
+from rs_core.repositories.comparison import (
+    ClusterMemberStanding,
+    ClusterStats,
+    get_cluster_stats,
+)
 from rs_core.repositories.health import pipeline_health
 from rs_core.repositories.interpretations import (
     get_interpretation,
@@ -73,6 +78,8 @@ __all__ = [
     # and its mutable-column set are unit-tested with no database (tests/test_repositories.py).
     "_ANALYSIS_MUTABLE",
     "_analysis_upsert_stmt",
+    "ClusterMemberStanding",
+    "ClusterStats",
     "FarmAnalyticsAnomalies",
     "FarmAnalyticsSummary",
     "FarmAnalyticsTimeSeriesPoint",
@@ -84,6 +91,7 @@ __all__ = [
     "delete_annotation",
     "ensure_collection_state",
     "get_assignments_for_farm",
+    "get_cluster_stats",
     "get_collection_state",
     "get_layer_by_identity",
     "get_region_layer",
