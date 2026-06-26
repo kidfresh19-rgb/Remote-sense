@@ -47,20 +47,34 @@ Three open items to resolve before merge, each embedded in its gating slice file
 
 ---
 
-## 📌 PRD 0003 — Ward Watch (foundation built; remaining work gated)
+## 📌 PRD 0003 — Ward Watch (backend foundation built; ingestion + frontend gated)
 
-Spec: `docs/prd/0003-ward-watch.md`. The pure + model foundation is built on
-`feat/ward-watch-movement-lens` (0029 model + migration, 0032 pure strata, 0033 movement lens, 0034
-fallback ladder, 0035 phenology verification, plus 0036/0039 pure cores) and 0028 proxy-AOI on
-`feat/ward-watch-proxy-aoi`. The items below are DEFERRED pending an external/owner decision - skip
-for now, revisit when the decision lands:
-- [ ] **0027 — gateway inbound data contract** (PRD §12): how households / declared crop mix /
-  planting window arrive from the gateway. Invariant-6-adjacent and ADR-worthy; owner decision.
-  Blocks 0031 (household ingestion), which in turn blocks the live-membership half of 0032 and 0037.
-- [ ] **0038 — diagnosis schema** (PRD §12, `needs-info`): the controlled-vocabulary diagnosis form
-  is the ground-truth flywheel's data contract; settle the vocab before building.
-- [ ] **0041 — Ward Watch RBAC roles** (PRD §12, `needs-info`): ward/district/province/ministry role
-  hierarchy over `rs_core/rbac.py`; settle once for PRD 0002 + 0003.
+Spec: `docs/prd/0003-ward-watch.md` (on the `docs/ward-watch` branch). The full backend foundation is
+built and pushed on `feat/ward-watch-movement-lens`:
+- **Pure / model cores:** 0029 household/plot/crop-mix model + migration, 0032 cohort-key + planting
+  strata, 0033 movement lens, 0034 fallback ladder, 0035 phenology verification, 0036 triage ranking,
+  0039 food-security rollups.
+- **Adapters / infra:** 0028 proxy-AOI primitive (`rs_core/proxy_aoi.py`, which supersedes the
+  standalone `feat/ward-watch-proxy-aoi` branch, now deletable), 0027 ward administrative boundary
+  layer (`seed_ward.py` + region-repo extensions), 0041 RBAC roles + permissions (`rs_core/rbac.py`,
+  behind ⚑ CONFIRM mappings), and the 0036/0039 read endpoints (`/ward-watch/triage`,
+  `/ward-watch/rollups`).
 
-Frontend surfaces (0030 enrollment client, 0040 dashboards) await their backend plus the product
-surface call.
+Remaining work is gated on a decision. Skip until it lands:
+- [ ] **Gateway inbound data contract** (PRD §12.1; owner decision + light ADR): which fields the
+  gateway exposes for declared crop mix, planting window, drone refs, and the identity join key. This
+  is the critical-path blocker. It gates **0031 household ingestion**, which is the
+  `DbHouseholdAssessor` seam in `ward_watch.py` (the endpoints serve an empty queue / rollup until it
+  lands), and 0031 in turn gates the live-membership half of 0032 and 0037. (Note: this is PRD §12.1,
+  NOT backlog 0027 - 0027 is the now-built ward boundary layer.)
+- [ ] **0038 diagnosis schema** (PRD §12.9, `needs-info`): the controlled-vocabulary field-diagnosis
+  form is the flywheel's data contract. Settle the vocab before building.
+- [ ] **0041 owner sign-off** (PRD §12.7): confirm the role-to-permission mapping and wire server-side
+  ward-scoping into the triage endpoint (the ⚑ CONFIRM in `ward_watch.py`). Settle once for PRD 0002
+  and 0003.
+- [ ] **Tuning + procurement** (PRD §12.2/3/5/6): `N_min` plus the fallback thresholds, minimum usable
+  pixel count plus erosion buffer, the planting-window capture mechanism, and authoritative
+  ward-boundary data procurement.
+
+Frontend surfaces (0030 enrollment client, 0040 dashboards) now have a real backend wire contract to
+build against. They await the product-surface call.
