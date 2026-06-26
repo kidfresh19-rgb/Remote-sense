@@ -19,7 +19,13 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from rs_core.models import Farm, FarmRegionAssignment, RegionBoundary, RegionBoundaryLayer
+from rs_core.models import (
+    Farm,
+    FarmRegionAssignment,
+    Household,
+    RegionBoundary,
+    RegionBoundaryLayer,
+)
 from rs_core.regions import (
     ParsedRegionFeature,
     RegionSource,
@@ -357,3 +363,103 @@ async def create_uploaded_layer(
         )
     await session.flush()
     return layer
+
+
+async def seed_ward_boundaries(
+    session: AsyncSession,
+    *,
+    name: str,
+    source: str,
+    year: int | None,
+    version: str,
+    crs: str,
+    features: Sequence[ParsedRegionFeature],
+    publishing_authority: str | None = None,
+    citation: str | None = None,
+    naming_column: str | None = None,
+    acquisition_date: date | None = None,
+    acquisition_path: str | None = None,
+    file_path: str | None = None,
+) -> RegionBoundaryLayer:
+    """Seed a read-only ward administrative boundary layer. Idempotent on (source, year, version):
+    re-running with the same provenance is a no-op; a new version string supersedes the candidate.
+    Ward boundaries do not carry NR composition (they are a different administrative layer); the
+    Household.ward_boundary_id FK links a household to its ward boundary after assignment."""
+    existing = await get_layer_by_identity(session, source=source, year=year, version=version)
+    if existing is not None:
+        return existing
+
+    layer = RegionBoundaryLayer(
+        name=name,
+        source=source,
+        year=year,
+        version=version,
+        publishing_authority=publishing_authority,
+        citation=citation,
+        naming_column=naming_column,
+        crs=crs,
+        acquisition_date=acquisition_date,
+        acquisition_path=acquisition_path,
+        file_path=file_path,
+        read_only=True,
+    )
+    session.add(layer)
+    await session.flush()
+
+    for feature in features:
+        session.add(
+            RegionBoundary(
+                layer_id=layer.id,
+                name=feature.name,
+                boundary=from_shape(feature.geometry, srid=4326),
+                source=RegionSource.SEEDED.value,
+                creator=None,
+                nr_composition={},
+                dominant_nr=None,
+            )
+        )
+    await session.flush()
+    return layer
+
+
+async def assign_households_to_ward_by_name(
+    session: AsyncSession,
+    *,
+    layer_id: uuid.UUID,
+    household_id: uuid.UUID | None = None,
+) -> int:
+    """Assign households to their ward boundary by matching Household.ward_name to
+    RegionBoundary.name (case-insensitive) within `layer_id`. `household_id` set: one household;
+    None: every household with a non-null ward_name. Returns the number of assignments written.
+
+    Name-match is the reliable path in the communal context: officers declare their ward at
+    enrollment (PRD 0003 §8). Centroid-containment is deferred to after 0031 (plot analysis)
+    provides plot centroids for every household."""
+    boundaries = (
+        await session.execute(
+            select(RegionBoundary.id, RegionBoundary.name).where(
+                RegionBoundary.layer_id == layer_id
+            )
+        )
+    ).all()
+    name_to_id: dict[str, uuid.UUID] = {b.name.lower(): b.id for b in boundaries}
+    if not name_to_id:
+        return 0
+
+    stmt = select(Household).where(Household.ward_name.is_not(None))
+    if household_id is not None:
+        stmt = stmt.where(Household.id == household_id)
+    households = (await session.execute(stmt)).scalars().all()
+
+    written = 0
+    for household in households:
+        if household.ward_name is None:
+            continue
+        boundary_id = name_to_id.get(household.ward_name.lower())
+        if boundary_id is None:
+            continue
+        household.ward_boundary_id = boundary_id
+        written += 1
+
+    await session.flush()
+    return written

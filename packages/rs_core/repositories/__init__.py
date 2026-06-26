@@ -47,6 +47,7 @@ from rs_core.repositories.interpretations import (
     review_interpretation,
 )
 from rs_core.repositories.regions import (
+    assign_households_to_ward_by_name,
     create_drawn_region,
     create_uploaded_layer,
     get_assignments_for_farm,
@@ -58,6 +59,7 @@ from rs_core.repositories.regions import (
     recompute_farm_region_assignments,
     region_boundaries_for_layer,
     seed_natural_regions,
+    seed_ward_boundaries,
 )
 from rs_core.repositories.scenes import upsert_scene_metadata
 from rs_core.repositories.sync import (
@@ -76,6 +78,7 @@ __all__ = [
     "FarmAnalyticsTimeSeriesPoint",
     "FarmAnomaly",
     "advance_cursor",
+    "assign_households_to_ward_by_name",
     "create_drawn_region",
     "create_uploaded_layer",
     "delete_annotation",
@@ -108,6 +111,7 @@ __all__ = [
     "record_push",
     "review_interpretation",
     "seed_natural_regions",
+    "seed_ward_boundaries",
     "upsert_analysis",
     "upsert_scene_metadata",
 ]
