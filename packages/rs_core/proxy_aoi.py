@@ -25,6 +25,9 @@ _S2_PIXEL_M = 10.0
 _EROSION_BUFFER_M = _S2_PIXEL_M
 # Minimum usable pixel count below which a per-plot stat is flagged low quality (PRD 0003 §4).
 MIN_USABLE_PIXELS = 3
+# The geometry-source tag every proxy AOI carries (PRD 0003 §8.2). The single source of truth the
+# Plot model's geometry-source vocabulary (rs_core.models) reuses, so the two cannot drift.
+PROXY_GEOMETRY_SOURCE = "officer_proxy"
 
 
 class SizeClass(StrEnum):
@@ -128,6 +131,6 @@ def proxy_aoi(
     return ProxyAOI(
         geometry=mapping(square_4326),
         area_m2=area_m2,
-        geometry_source="officer_proxy",
+        geometry_source=PROXY_GEOMETRY_SOURCE,
         usable_pixel_count=_estimate_usable_pixels(area_m2),
     )

@@ -37,6 +37,7 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from rs_core.db import Base
+from rs_core.proxy_aoi import PROXY_GEOMETRY_SOURCE, SizeClass
 
 _MULTIPOLYGON_4326 = Geometry(geometry_type="MULTIPOLYGON", srid=4326, spatial_index=True)
 
@@ -471,13 +472,14 @@ class FarmRegionAssignment(Base):
     )
 
 
-# Ward Watch enrollment plot vocabularies (PRD 0003 §8.2). These mirror the values in
-# rs_core.enrollment - the 0028 proxy-AOI primitive (FieldSizeClass, PROXY_GEOMETRY_SOURCE),
-# currently on the feat/ward-watch-proxy-aoi branch. ⚑ CONFIRM: collapse to one source of truth when
-# 0028 merges so the size-class enum and these validation sets cannot drift. Stored as strings and
-# validated in code, in the house style (cf. RegionBoundary.source, SyncOutbox.status).
-PLOT_SIZE_CLASSES: tuple[str, ...] = ("backyard", "small_holding", "medium", "large")
-PLOT_GEOMETRY_SOURCES: tuple[str, ...] = ("officer_proxy", "surveyed", "gateway", "drawn")
+# Ward Watch enrollment plot vocabularies (PRD 0003 §8.2), stored as strings and validated
+# in code, house style (cf. RegionBoundary.source, SyncOutbox.status). Size classes derive
+# from the 0028 proxy-AOI primitive (rs_core.proxy_aoi.SizeClass) and the proxy geometry
+# source from its PROXY_GEOMETRY_SOURCE, so the enrollment enum and these sets are one
+# source of truth and cannot drift. The other geometry sources are the non-proxy ways a plot
+# boundary is captured: surveyed, gateway-supplied, or officer-drawn.
+PLOT_SIZE_CLASSES: tuple[str, ...] = tuple(sc.value for sc in SizeClass)
+PLOT_GEOMETRY_SOURCES: tuple[str, ...] = (PROXY_GEOMETRY_SOURCE, "surveyed", "gateway", "drawn")
 
 
 class Household(Base):
