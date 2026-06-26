@@ -108,6 +108,19 @@ from services.api.workspace.regions import (
 from services.api.workspace.regions import (
     router as regions_router,
 )
+from services.api.workspace.ward_watch import (
+    FoodSecurityRollupOut,
+    HouseholdAssessment,
+    RollupNodeOut,
+    TriageRowOut,
+    rank_triage,
+    roll_up,
+    ward_watch_rollups_endpoint,
+    ward_watch_triage_endpoint,
+)
+from services.api.workspace.ward_watch import (
+    router as ward_watch_router,
+)
 
 # Sub-routers in the original registration order, so the OpenAPI path listing stays familiar.
 router = APIRouter()
@@ -118,6 +131,7 @@ router.include_router(interpretations_router)
 router.include_router(annotations_router)
 router.include_router(analyse_router)
 router.include_router(regions_router)
+router.include_router(ward_watch_router)
 
 __all__ = [
     "AOIAnalysisRequest",
@@ -131,6 +145,8 @@ __all__ = [
     "CollectDatesRequest",
     "FarmOut",
     "FieldOut",
+    "FoodSecurityRollupOut",
+    "HouseholdAssessment",
     "InterpretationOut",
     "InterpretationReview",
     "PublishEnqueuedOut",
@@ -143,10 +159,12 @@ __all__ = [
     "RegionUploadOut",
     "ResolvedPass",
     "ReviewQueueItem",
+    "RollupNodeOut",
     "RunAnalysisPrincipal",
     "SceneOut",
     "SessionDep",
     "TimeseriesPoint",
+    "TriageRowOut",
     "ViewPrincipal",
     "analyse_aoi_endpoint",
     "analyse_aoi_series_endpoint",
@@ -177,9 +195,13 @@ __all__ = [
     "region_layer_boundaries_endpoint",
     "publish_farm_endpoint",
     "publish_status_endpoint",
+    "rank_triage",
     "review_interpretation_endpoint",
     "review_queue",
     "review_queue_endpoint",
+    "roll_up",
     "router",
     "upload_region_layer_endpoint",
+    "ward_watch_rollups_endpoint",
+    "ward_watch_triage_endpoint",
 ]
