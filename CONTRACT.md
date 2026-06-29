@@ -55,6 +55,33 @@ Resolved from the live OpenAPI snapshot (21 paths) and the router sources.
 
 This shape does not appear in the served OpenAPI, so it is pinned by `tests/contract/test_outbound_payload.py`.
 
+### ADDITIVE INBOUND (read-only, we call the gateway)
+
+Ward Watch reads gateway-held household declarations (declared crop mix, planting window, drone
+references, and the canonical identity join key) through the same `GatewayPort` (ADR 0013, PRD 0003
+§12.1, backlog 0026). This is **additive**: it adds a new outbound *call from us*; it changes no
+frozen route and no served schema, so it does not appear in `contract/openapi.before.json`. It is
+pinned by `tests/contract/test_inbound_declarations.py` (wire shape) and
+`tests/test_agritrack_inbound.py` (transport), not by the openapi diff.
+
+| Caller | Target | Auth | Request -> Response |
+|---|---|---|---|
+| `rs_sync` `GatewayPort.fetch_household_declarations` (AgriTrack adapter) | `GET {RS_AGRITRACK_BASE_URL}/integrations/households/declarations` ⚑ | `X-Api-Key` (reused) | `DeclarationsQuery` (ward / household ids / since) -> `HouseholdDeclarationBatch` |
+
+**CANDIDATE (`gw-inbound/v1`), not yet confirmed by the gateway team.** The models are tolerant
+(`extra="ignore"`, nullable throughout); an unknown or empty value is treated as absent, never a
+hard failure (receiver-tolerance rule). No new credentials: the read reuses `RS_AGRITRACK_BASE_URL`
+and `RS_AGRITRACK_API_KEY`. Geometry-free (invariant 6): plot geometry comes from enrollment / the
+proxy-AOI primitive, not this contract. The documented wire example is
+`contract/fixtures/gateway_inbound_declarations.example.json`.
+
+> ⚑ CONFIRM with the gateway team before relying on it in production: the GET path and query-param
+> names, and the field names / units / nullability for crop mix (`crop`, `weight_pct`), planting
+> (`planting_date`, `declared_window`), drone references (`ref`, `captured_at`, `provider`,
+> `sensor`), and the join key (`canonical_household_id` / `canonical_plot_id` / `client_uuid`).
+> Rename behind the port and bump the contract version when confirmed; consumers stay tolerant
+> until then.
+
 ### INTERNAL-IMPROVABLE (browser BFF, `workspace.py`, we own both ends)
 
 `GET /farms` · `POST /farms/{canonical_farm_id}/publish` · `GET /farms/{canonical_farm_id}/publish/status` ·
