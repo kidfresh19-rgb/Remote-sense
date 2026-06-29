@@ -37,6 +37,11 @@ from services.worker.tasks.interpret import interpret_field_pass_task
 from services.worker.tasks.maintenance import ensure_analysis_partitions_task, prune_cogs_task
 from services.worker.tasks.regions import recompute_farm_region_assignments_task
 from services.worker.tasks.sync import publish_farm_task
+from services.worker.tasks.ward_watch import (
+    ingest_household_plots,
+    ingest_household_plots_task,
+    reconcile_ward_declarations_task,
+)
 
 __all__ = [
     "CORE_INDICES",
@@ -54,12 +59,15 @@ __all__ = [
     "ensure_analysis_partitions_task",
     "field_to_aoi",
     "forward_fill_field",
+    "ingest_household_plots",
+    "ingest_household_plots_task",
     "interpret_field_pass_task",
     "plan_backfill_scenes",
     "prepare_and_run",
     "prune_cogs_task",
     "publish_farm_task",
     "recompute_farm_region_assignments_task",
+    "reconcile_ward_declarations_task",
     "render_natural_color_task",
     "run_collection",
     "scan_and_enqueue",
