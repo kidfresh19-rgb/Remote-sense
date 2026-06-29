@@ -43,6 +43,12 @@ from rs_core.repositories.comparison import (
     get_cluster_stats,
 )
 from rs_core.repositories.health import pipeline_health
+from rs_core.repositories.households import (
+    HouseholdDeclarationValue,
+    PlotDeclarationValue,
+    ReconcileResult,
+    reconcile_household_declarations,
+)
 from rs_core.repositories.interpretations import (
     get_interpretation,
     get_interpretation_by_id,
@@ -51,7 +57,14 @@ from rs_core.repositories.interpretations import (
     published_narratives_for_farm,
     review_interpretation,
 )
+from rs_core.repositories.plot_analyses import (
+    _PLOT_ANALYSIS_MUTABLE,
+    _plot_analysis_upsert_stmt,
+    plot_index_series,
+    upsert_plot_analysis,
+)
 from rs_core.repositories.regions import (
+    assign_households_by_centroid,
     assign_households_to_ward_by_name,
     create_drawn_region,
     create_uploaded_layer,
@@ -78,13 +91,19 @@ __all__ = [
     # and its mutable-column set are unit-tested with no database (tests/test_repositories.py).
     "_ANALYSIS_MUTABLE",
     "_analysis_upsert_stmt",
+    "_PLOT_ANALYSIS_MUTABLE",
+    "_plot_analysis_upsert_stmt",
     "ClusterMemberStanding",
     "ClusterStats",
     "FarmAnalyticsAnomalies",
     "FarmAnalyticsSummary",
     "FarmAnalyticsTimeSeriesPoint",
     "FarmAnomaly",
+    "HouseholdDeclarationValue",
+    "PlotDeclarationValue",
+    "ReconcileResult",
     "advance_cursor",
+    "assign_households_by_centroid",
     "assign_households_to_ward_by_name",
     "create_drawn_region",
     "create_uploaded_layer",
@@ -111,9 +130,11 @@ __all__ = [
     "mark_backfill_complete",
     "natural_region_polygons",
     "pipeline_health",
+    "plot_index_series",
     "processed_scene_ids",
     "published_narratives_for_farm",
     "recompute_farm_region_assignments",
+    "reconcile_household_declarations",
     "region_boundaries_for_layer",
     "record_forward_fill_poll",
     "record_push",
@@ -121,5 +142,6 @@ __all__ = [
     "seed_natural_regions",
     "seed_ward_boundaries",
     "upsert_analysis",
+    "upsert_plot_analysis",
     "upsert_scene_metadata",
 ]

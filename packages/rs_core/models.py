@@ -505,6 +505,10 @@ class Household(Base):
         index=True,
     )
     ward_name: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    # Natural Region (AEZ) the household centroid falls in, set by centroid assignment once plot
+    # geometry exists (0031). Carried for the 0032 cohort key, which strata on the NR ASSIGNMENT
+    # (never a gateway-supplied region string, invariant 6 / ADR 0010).
+    dominant_nr: Mapped[str | None] = mapped_column(String(64), nullable=True)
     village: Mapped[str | None] = mapped_column(String(256), nullable=True)
     officer_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
 
@@ -571,3 +575,63 @@ class CropMixEntry(Base):
     weight_pct: Mapped[float] = mapped_column(Float)
 
     plot: Mapped[Plot] = relationship(back_populates="crop_mix")
+
+
+class PlotAnalysis(Base):
+    """Per-plot zonal index result for Ward Watch (PRD 0003 §4, backlog 0031): the Ward Watch
+    analogue of `Analysis`, but keyed to a `plot` (our identity, invariant 6) rather than a
+    gateway-owned `field`. Produced by running the unchanged analysis engine over the plot's proxy
+    geometry, so every row carries the scene provenance tuple (invariant 5), the per-AOI
+    `clear_fraction` (invariant 3), and the §4 pixel-quality honesty flag: `low_pixel_quality` is
+    set when the clear-pixel `pixels` count falls below `proxy_aoi.MIN_USABLE_PIXELS`, so a 2-pixel
+    plot (or a mostly-cloudy pass) is marked and never read as a confident statistic.
+
+    The plot's single stored boundary is the geometry reference (plots carry no geometry_version
+    yet, so it is absent from the identity). Non-partitioned in v1 - Ward Watch volume sits far
+    below the farm fleet that drove `analysis` partitioning (S4.1) - and the identity upsert keeps
+    it additive and idempotent: one row per (plot, index, pass date, formula version)."""
+
+    __tablename__ = "plot_analysis"
+    __table_args__ = (
+        UniqueConstraint(
+            "plot_id",
+            "index_name",
+            "pass_date",
+            "formula_version",
+            name="uq_plot_analysis_identity",
+        ),
+        Index("ix_plot_analysis_plot_index_date", "plot_id", "index_name", "pass_date"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    # No standalone index on plot_id: the composite ix_plot_analysis_plot_index_date leads with it
+    # (mirrors how Analysis leans on ix_analysis_field_index_date), and every read is plot-scoped.
+    plot_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("plot.id", ondelete="CASCADE")
+    )
+    scene_id: Mapped[str] = mapped_column(String(256))
+    pass_date: Mapped[date] = mapped_column(Date)
+    index_name: Mapped[str] = mapped_column(String(32))
+
+    mean: Mapped[float | None] = mapped_column(Float, nullable=True)
+    min_val: Mapped[float | None] = mapped_column(Float, nullable=True)
+    max_val: Mapped[float | None] = mapped_column(Float, nullable=True)
+    p10: Mapped[float | None] = mapped_column(Float, nullable=True)
+    p90: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    clear_fraction: Mapped[float] = mapped_column(Float)
+    resolution_m: Mapped[float] = mapped_column(Float)
+    # Clear-pixel count after SCL masking + the §4 honesty flag derived from it.
+    pixels: Mapped[int] = mapped_column(Integer)
+    low_pixel_quality: Mapped[bool] = mapped_column(Boolean)
+
+    # Provenance tuple (invariant 5); plots have a single boundary, so no geometry_version.
+    formula_version: Mapped[str] = mapped_column(String(32))
+    provider: Mapped[str] = mapped_column(String(64))
+    provider_scene_id: Mapped[str] = mapped_column(String(256))
+    processing_mode: Mapped[str] = mapped_column(String(32))
+
+    confidence: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    plot: Mapped[Plot] = relationship()

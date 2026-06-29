@@ -8,6 +8,7 @@ overwrite. Reference geometry is owned by remote-sense and never pushed (invaria
 from __future__ import annotations
 
 import uuid
+from collections import defaultdict
 from collections.abc import Sequence
 from datetime import date
 
@@ -15,6 +16,7 @@ from geoalchemy2.shape import from_shape
 from geoalchemy2.shape import to_shape as wkb_to_shape
 from shapely.geometry import MultiPolygon
 from shapely.geometry.base import BaseGeometry
+from shapely.ops import unary_union
 from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,6 +25,7 @@ from rs_core.models import (
     Farm,
     FarmRegionAssignment,
     Household,
+    Plot,
     RegionBoundary,
     RegionBoundaryLayer,
 )
@@ -459,6 +462,87 @@ async def assign_households_to_ward_by_name(
         if boundary_id is None:
             continue
         household.ward_boundary_id = boundary_id
+        written += 1
+
+    await session.flush()
+    return written
+
+
+async def _boundary_candidates_with_names(
+    session: AsyncSession, layer_id: uuid.UUID
+) -> tuple[list[tuple[uuid.UUID, BaseGeometry]], dict[uuid.UUID, str]]:
+    """One layer's boundaries as the `(boundary_id, WGS84 polygon)` list `assign_centroid` consumes,
+    plus a `{boundary_id: name}` map so a hit can be turned back into the ward / NR name."""
+    boundaries = (
+        (await session.execute(select(RegionBoundary).where(RegionBoundary.layer_id == layer_id)))
+        .scalars()
+        .all()
+    )
+    candidates = [(b.id, wkb_to_shape(b.boundary)) for b in boundaries]
+    names = {b.id: b.name for b in boundaries}
+    return candidates, names
+
+
+async def _household_centroids(
+    session: AsyncSession, household_ids: Sequence[uuid.UUID]
+) -> dict[uuid.UUID, tuple[float, float]]:
+    """Representative `(lon, lat)` per household: the centroid of the union of its plot geometries.
+    A household with no plot geometry yet is absent from the map (nothing to place on)."""
+    rows = (
+        await session.execute(
+            select(Plot.household_id, Plot.boundary).where(Plot.household_id.in_(household_ids))
+        )
+    ).all()
+    geoms: dict[uuid.UUID, list[BaseGeometry]] = defaultdict(list)
+    for household_id, boundary in rows:
+        if boundary is not None:
+            geoms[household_id].append(wkb_to_shape(boundary))
+    centroids: dict[uuid.UUID, tuple[float, float]] = {}
+    for household_id, plot_geoms in geoms.items():
+        point = unary_union(plot_geoms).centroid
+        centroids[household_id] = (point.x, point.y)
+    return centroids
+
+
+async def assign_households_by_centroid(
+    session: AsyncSession,
+    *,
+    ward_layer_id: uuid.UUID,
+    nr_layer_id: uuid.UUID,
+    edge_tolerance_m: float,
+    household_id: uuid.UUID | None = None,
+) -> int:
+    """Assign households to their ward (administrative layer) and Natural Region (AEZ layer) by the
+    centroid of the union of their plot geometries - the centroid-containment path 0027 deferred
+    until 0031 materialised plot geometry. Sets `Household.ward_boundary_id` (and `ward_name` only
+    when it was unset, never clobbering an officer's enrollment declaration) and
+    `Household.dominant_nr` (for the 0032 cohort key). A household with no plot geometry is skipped.
+    Returns the number assigned. All point-in-polygon and distance work happens in the working UTM
+    zone inside `assign_centroid` (§2). No geometry leaves remote-sense (invariant 6)."""
+    ward_candidates, ward_names = await _boundary_candidates_with_names(session, ward_layer_id)
+    nr_candidates, nr_names = await _boundary_candidates_with_names(session, nr_layer_id)
+
+    stmt = select(Household)
+    if household_id is not None:
+        stmt = stmt.where(Household.id == household_id)
+    households = (await session.execute(stmt)).scalars().all()
+    if not households:
+        return 0
+    centroids = await _household_centroids(session, [h.id for h in households])
+
+    written = 0
+    for household in households:
+        centroid = centroids.get(household.id)
+        if centroid is None:
+            continue
+        lon, lat = centroid
+        ward = assign_centroid(lon, lat, ward_candidates, edge_tolerance_m=edge_tolerance_m)
+        if ward is not None:
+            household.ward_boundary_id = ward.region_boundary_id
+            if household.ward_name is None:
+                household.ward_name = ward_names.get(ward.region_boundary_id)
+        nr = assign_centroid(lon, lat, nr_candidates, edge_tolerance_m=edge_tolerance_m)
+        household.dominant_nr = nr_names.get(nr.region_boundary_id) if nr is not None else None
         written += 1
 
     await session.flush()
