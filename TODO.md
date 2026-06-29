@@ -47,7 +47,7 @@ Three open items to resolve before merge, each embedded in its gating slice file
 
 ---
 
-## 📌 PRD 0003 — Ward Watch (backend foundation built; ingestion + frontend gated)
+## 📌 PRD 0003 — Ward Watch (backend foundation built; ingestion unblocked; frontend awaits surface call)
 
 Spec: `docs/prd/0003-ward-watch.md` (on the `docs/ward-watch` branch). The full backend foundation is
 built and pushed on `feat/ward-watch-movement-lens`:
@@ -59,14 +59,19 @@ built and pushed on `feat/ward-watch-movement-lens`:
   layer (`seed_ward.py` + region-repo extensions), 0041 RBAC roles + permissions (`rs_core/rbac.py`,
   behind ⚑ CONFIRM mappings), and the 0036/0039 read endpoints (`/ward-watch/triage`,
   `/ward-watch/rollups`).
+- **Gateway inbound contract:** 0026 candidate gateway inbound declarations contract
+  (`gw-inbound/v1`, `packages/rs_sync/inbound.py`) + the read-only
+  `GatewayPort.fetch_household_declarations` (synthetic on the recording sink, real read-only GET on
+  the AgriTrack adapter), tolerant behind the port. Recorded in `CONTRACT.md` (ADDITIVE INBOUND
+  section) + `contract/fixtures/gateway_inbound_declarations.example.json`. Field names + GET path are
+  ⚑ CONFIRM pending the gateway team (PRD §12.1).
 
-Remaining work is gated on a decision. Skip until it lands:
-- [ ] **Gateway inbound data contract** (PRD §12.1; owner decision + light ADR): which fields the
-  gateway exposes for declared crop mix, planting window, drone refs, and the identity join key. This
-  is the critical-path blocker. It gates **0031 household ingestion**, which is the
-  `DbHouseholdAssessor` seam in `ward_watch.py` (the endpoints serve an empty queue / rollup until it
-  lands), and 0031 in turn gates the live-membership half of 0032 and 0037. (Note: this is PRD §12.1,
-  NOT backlog 0027 - 0027 is the now-built ward boundary layer.)
+Remaining work:
+- [ ] **0031 household ingestion** (`ready-for-agent`, now UNBLOCKED by 0026): map fetched
+  declarations onto `Household`/`Plot`/`CropMixEntry` and run the existing analysis pipeline - this
+  fills the `DbHouseholdAssessor` seam in `ward_watch.py` (the endpoints serve an empty queue / rollup
+  until it lands), and gates the live-membership half of 0032 and 0037. It can build against synthetic
+  + candidate declarations now; the gateway field-name confirmation (⚑ CONFIRM) is not a prerequisite.
 - [ ] **0038 diagnosis schema** (PRD §12.9, `needs-info`): the controlled-vocabulary field-diagnosis
   form is the flywheel's data contract. Settle the vocab before building.
 - [ ] **0041 owner sign-off** (PRD §12.7): confirm the role-to-permission mapping and wire server-side
