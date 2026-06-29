@@ -18,6 +18,7 @@ from typing import Any
 import httpx
 from pydantic import BaseModel
 
+from rs_sync.inbound import DeclarationsQuery, HouseholdDeclarationBatch
 from rs_sync.payload import GatewayPayload, IndexResult
 from rs_sync.port import GatewayPort, PushResult
 from rs_sync.resilience import (
@@ -27,6 +28,9 @@ from rs_sync.resilience import (
 )
 
 _RESULTS_PATH = "/integrations/satellite/results"
+# CONFIRM (PRD 0003 §12.1): the real read-only path the gateway exposes Ward Watch household
+# declarations on, and the query-param names below. Candidate until the gateway team confirms.
+_DECLARATIONS_PATH = "/integrations/households/declarations"
 
 # classification -> the contract's stress_level (their side maps stress_level onto classification).
 _STRESS = {"healthy": "none", "moderate": "low", "stressed": "moderate", "critical": "high"}
@@ -285,6 +289,7 @@ class AgriTrackGatewayPort(GatewayPort):
         if not api_key:
             raise ValueError("AgriTrackGatewayPort needs RS_AGRITRACK_API_KEY")
         self._url = base_url.rstrip("/") + _RESULTS_PATH
+        self._declarations_url = base_url.rstrip("/") + _DECLARATIONS_PATH
         self._api_key = api_key
         self._client = client
         self._timeout = timeout
@@ -294,6 +299,41 @@ class AgriTrackGatewayPort(GatewayPort):
 
     def destination_key(self) -> str:
         return self._url
+
+    async def fetch_household_declarations(
+        self, query: DeclarationsQuery
+    ) -> HouseholdDeclarationBatch:
+        """Read-only GET of Ward Watch household declarations (additive, ADR 0013), authenticated
+        with the same `X-Api-Key` as the push and retried on transient failures. Tolerant of unknown
+        fields (`extra="ignore"`); a persistent transport/HTTP error propagates so the caller can
+        decide - a read failure must never masquerade as 'no declarations'."""
+        if self._client is not None:
+            return await self._fetch_with_client(self._client, query)
+        timeout = httpx.Timeout(self._timeout, connect=min(self._timeout, 10.0))
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            return await self._fetch_with_client(client, query)
+
+    async def _fetch_with_client(
+        self, client: httpx.AsyncClient, query: DeclarationsQuery
+    ) -> HouseholdDeclarationBatch:
+        params: dict[str, Any] = {}
+        if query.ward_name is not None:
+            params["ward"] = query.ward_name  # CONFIRM gateway query-param names
+        if query.canonical_household_ids is not None:
+            params["household_id"] = query.canonical_household_ids
+        if query.since is not None:
+            params["since"] = query.since.isoformat()
+        headers = {"X-Api-Key": self._api_key, "Accept": "application/json"}
+        async for attempt in push_retrying(max_attempts=self._max_attempts, backoff=self._backoff):
+            with attempt:
+                response = await client.get(
+                    self._declarations_url,
+                    params=params,
+                    headers=headers,
+                    timeout=self._timeout,
+                )
+                response.raise_for_status()
+        return HouseholdDeclarationBatch.model_validate(response.json())
 
     async def push(self, payload: GatewayPayload) -> PushResult:
         try:

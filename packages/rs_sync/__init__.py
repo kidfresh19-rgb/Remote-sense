@@ -15,6 +15,17 @@ from rs_sync.agritrack import (
     to_satellite_results,
 )
 from rs_sync.exporters import analyses_to_csv, index_geotiff
+from rs_sync.inbound import (
+    GATEWAY_INBOUND_CONTRACT_VERSION,
+    DeclarationsQuery,
+    DeclaredCrop,
+    DroneReference,
+    HouseholdDeclaration,
+    HouseholdDeclarationBatch,
+    PlantingDeclaration,
+    PlotDeclaration,
+    synthetic_declarations,
+)
 from rs_sync.payload import (
     PAYLOAD_VERSION,
     AnalysisRow,
@@ -46,4 +57,13 @@ __all__ = [
     "narrative_signature",
     "GatewayPort",
     "PushResult",
+    "GATEWAY_INBOUND_CONTRACT_VERSION",
+    "DeclaredCrop",
+    "DeclarationsQuery",
+    "DroneReference",
+    "HouseholdDeclaration",
+    "HouseholdDeclarationBatch",
+    "PlantingDeclaration",
+    "PlotDeclaration",
+    "synthetic_declarations",
 ]

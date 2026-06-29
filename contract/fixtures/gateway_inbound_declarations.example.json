@@ -1,0 +1,55 @@
+{
+  "_comment": "CANDIDATE (gw-inbound/v1) Ward Watch gateway inbound declarations wire example (PRD 0003 12.1, backlog 0026, ADR 0013). Field names, units, nullability, and the GET path are NOT yet confirmed by the gateway team; this documents what we read tolerantly behind the GatewayPort. The 'unknown_gateway_field' keys exist only to prove extra=ignore and are not part of the contract.",
+  "contract_version": "gw-inbound/v1",
+  "unknown_gateway_field": "ignored at the batch level",
+  "declarations": [
+    {
+      "canonical_household_id": "HH-1001",
+      "client_uuid": "11111111-1111-4111-8111-111111111111",
+      "ward_name": "Ward 7",
+      "village": "Chikomba",
+      "unknown_gateway_field": "ignored at the household level",
+      "plots": [
+        {
+          "canonical_plot_id": "PL-1001-A",
+          "client_uuid": "aaaaaaaa-1111-4111-8111-111111111111",
+          "crop_mix": [
+            { "crop": "maize", "weight_pct": 60.0, "unknown_gateway_field": "ignored" },
+            { "crop": "cowpea", "weight_pct": 40.0 }
+          ],
+          "planting": { "planting_date": "2025-11-20", "declared_window": "early" },
+          "drone_refs": [
+            {
+              "ref": "drone://flight/2026-01-14/HH-1001",
+              "captured_at": "2026-01-14",
+              "provider": "agritrack-drone",
+              "sensor": "rgb"
+            }
+          ]
+        },
+        {
+          "canonical_plot_id": "PL-1001-B",
+          "client_uuid": "bbbbbbbb-1111-4111-8111-111111111111",
+          "crop_mix": [{ "crop": "groundnut", "weight_pct": 100.0 }],
+          "planting": { "planting_date": "2025-12-05" },
+          "drone_refs": []
+        }
+      ]
+    },
+    {
+      "canonical_household_id": "HH-1002",
+      "client_uuid": "22222222-2222-4222-8222-222222222222",
+      "ward_name": "Ward 7",
+      "village": null,
+      "plots": [
+        {
+          "canonical_plot_id": null,
+          "client_uuid": "cccccccc-2222-4222-8222-222222222222",
+          "crop_mix": [],
+          "planting": null,
+          "drone_refs": []
+        }
+      ]
+    }
+  ]
+}

@@ -6,6 +6,12 @@ from __future__ import annotations
 
 import httpx
 
+from rs_sync.inbound import (
+    DeclarationsQuery,
+    HouseholdDeclaration,
+    HouseholdDeclarationBatch,
+    synthetic_declarations,
+)
 from rs_sync.payload import GatewayPayload
 from rs_sync.port import GatewayPort, PushResult
 from rs_sync.resilience import (
@@ -19,10 +25,15 @@ class RecordingGatewayPort(GatewayPort):
     """In-memory adapter: records every pushed payload and replays a configurable outcome. Dedupes
     by idempotency key so a re-push is a no-op (R-2). Used in tests and as a dry-run sink."""
 
-    def __init__(self, *, ok: bool = True) -> None:
+    def __init__(
+        self, *, ok: bool = True, declarations: HouseholdDeclarationBatch | None = None
+    ) -> None:
         self._ok = ok
         self.pushed: list[GatewayPayload] = []
         self.keys: set[str] = set()
+        # Inbound side (ADR 0013): a synthetic declarations batch, injectable so a test can pin its
+        # own. Defaults to the shared two-household fixture (one full, one sparse).
+        self._declarations = declarations if declarations is not None else synthetic_declarations()
 
     async def push(self, payload: GatewayPayload) -> PushResult:
         if payload.idempotency_key in self.keys:
@@ -33,6 +44,27 @@ class RecordingGatewayPort(GatewayPort):
             ok=self._ok,
             status="ok" if self._ok else "rejected",
             detail=None if self._ok else "rejected",
+        )
+
+    async def fetch_household_declarations(
+        self, query: DeclarationsQuery
+    ) -> HouseholdDeclarationBatch:
+        """Replay the synthetic batch filtered by the query (in-memory, zero network), so a test can
+        assert ward / id scoping without a real gateway."""
+
+        def keep(hh: HouseholdDeclaration) -> bool:
+            if query.ward_name is not None and hh.ward_name != query.ward_name:
+                return False
+            if (
+                query.canonical_household_ids is not None
+                and hh.canonical_household_id not in query.canonical_household_ids
+            ):
+                return False
+            return True
+
+        return HouseholdDeclarationBatch(
+            contract_version=self._declarations.contract_version,
+            declarations=[hh for hh in self._declarations.declarations if keep(hh)],
         )
 
 

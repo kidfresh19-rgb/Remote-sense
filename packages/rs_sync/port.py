@@ -7,6 +7,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
+from rs_sync.inbound import DeclarationsQuery, HouseholdDeclarationBatch
 from rs_sync.payload import GatewayPayload
 
 
@@ -28,6 +29,15 @@ class GatewayPort(ABC):
     async def push(self, payload: GatewayPayload) -> PushResult:
         """Deliver one farm's additive payload. Must be safe to retry with the same payload (the
         idempotency key dedupes on the gateway side)."""
+
+    async def fetch_household_declarations(
+        self, query: DeclarationsQuery
+    ) -> HouseholdDeclarationBatch:
+        """Read-only inbound (additive, ADR 0013): a household's declared crop mix, planting window,
+        and drone references, keyed by the canonical household id. Optional capability - the default
+        raises so a push-only adapter stays valid without a body; adapters that speak the inbound
+        contract (the mock sink, the real gateway) override it. Never mutates the gateway."""
+        raise NotImplementedError(f"{type(self).__name__} does not expose household declarations")
 
     def destination_key(self) -> str:
         """A stable identifier for *where* this port delivers, folded into the outbox idempotency
