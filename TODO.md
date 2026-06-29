@@ -47,7 +47,7 @@ Three open items to resolve before merge, each embedded in its gating slice file
 
 ---
 
-## 📌 PRD 0003 — Ward Watch (backend foundation built; ingestion unblocked; frontend awaits surface call)
+## 📌 PRD 0003 — Ward Watch (backend foundation + ingestion built; cohort assembly 0032 + frontend next)
 
 Spec: `docs/prd/0003-ward-watch.md` (on the `docs/ward-watch` branch). The full backend foundation is
 built and pushed on `feat/ward-watch-movement-lens`:
@@ -65,13 +65,18 @@ built and pushed on `feat/ward-watch-movement-lens`:
   the AgriTrack adapter), tolerant behind the port. Recorded in `CONTRACT.md` (ADDITIVE INBOUND
   section) + `contract/fixtures/gateway_inbound_declarations.example.json`. Field names + GET path are
   ⚑ CONFIRM pending the gateway team (PRD §12.1).
+- **Per-household ingestion:** 0031 the per-plot `PlotAnalysis` store (provenance + clear_fraction +
+  the §4 `low_pixel_quality` flag) written by a worker task that reuses the existing AOI engine; the
+  0026 declarations reconcile (`canonical_household_id` + `dominant_crop` + `planting_window`); and the
+  centroid ward + NR placement 0027 deferred (`assign_households_by_centroid` + `Household.dominant_nr`).
+  Migration 0012. Operates on existing geometry-bearing Plot rows; reconcile is geometry-free.
 
 Remaining work:
-- [ ] **0031 household ingestion** (`ready-for-agent`, now UNBLOCKED by 0026): map fetched
-  declarations onto `Household`/`Plot`/`CropMixEntry` and run the existing analysis pipeline - this
-  fills the `DbHouseholdAssessor` seam in `ward_watch.py` (the endpoints serve an empty queue / rollup
-  until it lands), and gates the live-membership half of 0032 and 0037. It can build against synthetic
-  + candidate declarations now; the gateway field-name confirmation (⚑ CONFIRM) is not a prerequisite.
+- [ ] **0032 live cohort assembly + movement lens** (now UNBLOCKED by 0031): fill the
+  `DbHouseholdAssessor` seam in `ward_watch.py` - assemble each household's cohort (the `strata`
+  `CohortKey` over `dominant_crop` / `dominant_nr` / ward / planting window), run the movement lens
+  over the stored per-plot series, apply the fallback ladder. This is what makes the triage queue /
+  rollups non-empty. Also gates 0037 (visit package).
 - [ ] **0038 diagnosis schema** (PRD §12.9, `needs-info`): the controlled-vocabulary field-diagnosis
   form is the flywheel's data contract. Settle the vocab before building.
 - [ ] **0041 owner sign-off** (PRD §12.7): confirm the role-to-permission mapping and wire server-side
