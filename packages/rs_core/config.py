@@ -179,6 +179,18 @@ class Settings(BaseSettings):
     cluster_clear_fraction_floor: float = 0.5
     cluster_standing_min_cohort: int = 4
 
+    # Ward Watch cohort movement lens (PRD 0003 §6.2/6.3, backlog 0032). The triage queue and
+    # rollups assemble each household's plots into peer cohorts (dominant crop, NR, ward, planting
+    # window), climb the fallback ladder until a cohort holds at least `ward_cohort_n_min` members,
+    # then run the robust lens: a plot whose half-window NDVI median drops by at least
+    # `ward_movement_decline_threshold` is declining. A pass must clear `ward_clear_fraction_floor`
+    # to enter the series. All three are config, never hard-coded into the assembly.
+    # ⚑ CONFIRM (PRD §12.2): N_min ~20-30 and the decline threshold are literature starting values;
+    # calibrate per Natural Region in Phase 5.
+    ward_cohort_n_min: int = 20
+    ward_movement_decline_threshold: float = 0.05
+    ward_clear_fraction_floor: float = 0.5
+
     # Weather access layer (improvement plan Tier 1, ADR 0004). Active adapter is a config switch.
     weather_adapter: WeatherAdapter = WeatherAdapter.MOCK
     weather_api_url: str = ""  # real provider base URL (e.g. Open-Meteo); empty for mock

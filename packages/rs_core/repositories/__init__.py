@@ -85,6 +85,10 @@ from rs_core.repositories.sync import (
     get_outbox,
     record_push,
 )
+from rs_core.repositories.ward_cohorts import (
+    HouseholdCohortAssessment,
+    assess_household_cohorts,
+)
 
 __all__ = [
     # The two underscore names are part of the tested surface: the upsert statement builder
@@ -99,10 +103,12 @@ __all__ = [
     "FarmAnalyticsSummary",
     "FarmAnalyticsTimeSeriesPoint",
     "FarmAnomaly",
+    "HouseholdCohortAssessment",
     "HouseholdDeclarationValue",
     "PlotDeclarationValue",
     "ReconcileResult",
     "advance_cursor",
+    "assess_household_cohorts",
     "assign_households_by_centroid",
     "assign_households_to_ward_by_name",
     "create_drawn_region",

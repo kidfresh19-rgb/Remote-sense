@@ -4,12 +4,11 @@ only - additive, not the frozen AgriTrack contract.
 
 Both endpoints project a per-household ASSESSMENT (movement label, robust deviation, cohort level
 and the honesty flags) through the pure cohort-engine cores (`rs_core.triage`, `rs_core.rollups`).
-The
-assessment itself - running the movement lens over each household's per-plot index series within its
-cohort - is produced by a `HouseholdAssessor`. The DB-backed assessor is the seam backlog 0031 fills
-once per-household ingestion lands (it is gated on the 0027 gateway inbound contract); until then it
-yields nothing, so these endpoints return an empty queue / empty rollup against real data. The wire
-contract, RBAC and projection are real now, which is what the dashboards (0040) build against.
+The assessment itself - assembling each household's plots into peer cohorts and running the movement
+lens over their stored per-plot index series - is produced by a `HouseholdAssessor`. The DB-backed
+assessor (backlog 0032) does this live via `rs_core.repositories.assess_household_cohorts`, so the
+queue and rollups are non-empty over real ingested data (0031). A household with no Natural Region
+assignment, ward, or assessable plot series is simply absent (honest empty, never fabricated).
 
 # CONFIRM (0041): RBAC is the generic `view` permission for now. Ward Watch officer/ward scoping -
 an officer sees only their own ward's queue, enforced server-side rather than via a client `ward`
@@ -22,8 +21,10 @@ from typing import Annotated, Protocol
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
+from rs_core import get_settings
 from rs_core.cohorts import CohortLevel
 from rs_core.movement import MovementLabel
+from rs_core.repositories import assess_household_cohorts
 from rs_core.rollups import HouseholdLabel, RollupNode, roll_up_food_security
 from rs_core.triage import DEFAULT_QUEUE_CAP, TriageCandidate, build_triage_queue
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -31,6 +32,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from services.api.workspace.deps import ReadSessionDep, ViewPrincipal
 
 router = APIRouter(tags=["ward-watch"])
+
+# ⚑ CONFIRM (PRD §12.6): the administrative hierarchy above ward (district, province) is not yet
+# sourced - ward-boundary procurement is an open item, and a household carries only its ward and its
+# (agro-ecological) Natural Region. Rather than fabricate a province from the NR, the rollup reports
+# these levels as a single "unassigned" node so the dashboard is honest that only the ward rollup is
+# live today; district / province light up when the boundary layers land.
+_UNASSIGNED_ADMIN = "unassigned"
 
 
 @dataclass(frozen=True)
@@ -64,14 +72,39 @@ class HouseholdAssessor(Protocol):
 
 
 class DbHouseholdAssessor:
-    """The default DB-backed assessor. ⚑ CONFIRM (0031): assembling each household's per-plot index
-    series, running the movement lens within its cohort, and stamping the pixel-quality flag is the
-    ingestion slice 0031, gated on the 0027 gateway inbound contract. Until it lands there are no
-    per-household series to classify, so this returns no assessments and the endpoints serve an
-    empty queue / rollup over real data rather than a fabricated one."""
+    """The default DB-backed assessor (backlog 0032). Assembles each household's plots into peer
+    cohorts (dominant crop, NR assignment, ward, planting window), climbs the small-cohort fallback
+    ladder, and runs the robust movement lens over the stored per-plot index series, summarising a
+    household by its most severe plot. The cohort tuning (N_min, decline threshold, clear floor) is
+    read from settings (⚑ CONFIRM PRD §12.2). District / province are not yet sourced, so they carry
+    the honest `_UNASSIGNED_ADMIN` placeholder (see module note); ward and the cohort signal are
+    real."""
 
     async def assess(self, session: AsyncSession, *, ward: str | None) -> list[HouseholdAssessment]:
-        return []
+        settings = get_settings()
+        assessed = await assess_household_cohorts(
+            session,
+            ward=ward,
+            n_min=settings.ward_cohort_n_min,
+            decline_threshold=settings.ward_movement_decline_threshold,
+            clear_floor=settings.ward_clear_fraction_floor,
+        )
+        return [
+            HouseholdAssessment(
+                household_id=a.household_id,
+                village=a.village,
+                ward=a.ward,
+                district=_UNASSIGNED_ADMIN,
+                province=_UNASSIGNED_ADMIN,
+                dominant_crop=a.dominant_crop,
+                label=a.label,
+                robust_deviation=a.robust_deviation,
+                cohort_level=a.cohort_level,
+                cohort_meets_quorum=a.cohort_meets_quorum,
+                low_pixel_quality=a.low_pixel_quality,
+            )
+            for a in assessed
+        ]
 
 
 def get_household_assessor() -> HouseholdAssessor:

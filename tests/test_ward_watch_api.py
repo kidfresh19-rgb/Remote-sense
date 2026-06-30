@@ -1,7 +1,8 @@
 """Tests for the Ward Watch read endpoints (backlog 0036 + 0039): the triage and rollup projections,
 and the endpoint functions called directly with a seeded assessor (HTTP auth is covered by
-test_api_auth). The DB-backed assessor is the 0031 seam and yields nothing until ingestion lands, so
-the real ranking/rollup logic is exercised through injected assessments. Zero network."""
+test_api_auth). The real cohort-assembly assessor needs PostGIS and is tested in
+test_ward_watch_cohorts_db; here the ranking/rollup projection logic is exercised through injected
+assessments. Zero network."""
 
 from __future__ import annotations
 
@@ -11,9 +12,7 @@ from rs_core.movement import MovementLabel
 from rs_core.rbac import Principal, Role
 
 from services.api.workspace.ward_watch import (
-    DbHouseholdAssessor,
     HouseholdAssessment,
-    get_household_assessor,
     rank_triage,
     roll_up,
     ward_watch_rollups_endpoint,
@@ -123,15 +122,6 @@ async def test_rollups_endpoint_projects_seeded_assessments() -> None:
     assessor = _FakeAssessor([_assess(f"s-{i}", MovementLabel.SYSTEMIC) for i in range(3)])
     out = await ward_watch_rollups_endpoint(principal=_VIEWER, session=None, assessor=assessor)
     assert out.by_province[0].systemic == 3
-
-
-async def test_default_db_assessor_is_empty_until_ingestion() -> None:
-    # The 0031 seam: no per-household series exist yet, so the endpoints serve empty over real data.
-    assert await DbHouseholdAssessor().assess(None, ward=None) == []
-    rows = await ward_watch_triage_endpoint(
-        principal=_VIEWER, session=None, assessor=get_household_assessor(), ward=None, cap=15
-    )
-    assert rows == []
 
 
 def test_rank_triage_empty() -> None:

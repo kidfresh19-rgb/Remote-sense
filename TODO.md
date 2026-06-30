@@ -47,7 +47,7 @@ Three open items to resolve before merge, each embedded in its gating slice file
 
 ---
 
-## 📌 PRD 0003 — Ward Watch (backend foundation + ingestion built; cohort assembly 0032 + frontend next)
+## 📌 PRD 0003 — Ward Watch (backend foundation + ingestion + cohort assembly built; frontend next)
 
 Spec: `docs/prd/0003-ward-watch.md` (on the `docs/ward-watch` branch). The full backend foundation is
 built and pushed on `feat/ward-watch-movement-lens`:
@@ -72,11 +72,13 @@ built and pushed on `feat/ward-watch-movement-lens`:
   Migration 0012. Operates on existing geometry-bearing Plot rows; reconcile is geometry-free.
 
 Remaining work:
-- [ ] **0032 live cohort assembly + movement lens** (now UNBLOCKED by 0031): fill the
-  `DbHouseholdAssessor` seam in `ward_watch.py` - assemble each household's cohort (the `strata`
-  `CohortKey` over `dominant_crop` / `dominant_nr` / ward / planting window), run the movement lens
-  over the stored per-plot series, apply the fallback ladder. This is what makes the triage queue /
-  rollups non-empty. Also gates 0037 (visit package).
+- [x] **0032 live cohort assembly + movement lens** (built 2026-06-30): `DbHouseholdAssessor` in
+  `ward_watch.py` now assembles each household's plots into peer cohorts (`rs_core/cohort_assembly.py`
+  pure + `rs_core/repositories/ward_cohorts.py` DB), climbing the fallback ladder and running the
+  movement lens over the stored per-plot series, so the triage queue / rollups are non-empty. Member
+  is the plot, household = its most severe plot. Live compute behind the unchanged materialization
+  seam (no cohort table). District/province carry an `"unassigned"` placeholder (PRD §12.6 not yet
+  sourced) and the district ladder rung is skipped, never fabricated. Unblocks 0037 (visit package).
 - [ ] **0038 diagnosis schema** (PRD §12.9, `needs-info`): the controlled-vocabulary field-diagnosis
   form is the flywheel's data contract. Settle the vocab before building.
 - [ ] **0041 owner sign-off** (PRD §12.7): confirm the role-to-permission mapping and wire server-side
