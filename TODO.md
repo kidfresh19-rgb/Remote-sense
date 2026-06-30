@@ -87,8 +87,13 @@ Remaining work:
   alert hints and recommended officer questions. Seams: `previous_visits` (0038), `drone_reference`
   (gateway drone storage), and the moisture/red-edge hints stay dormant until NDMI/NDRE ingestion
   widens (a 0031 follow-up). The cockpit visit screen (frontend) awaits the product-surface call.
-- [ ] **0038 diagnosis schema** (PRD §12.9, `needs-info`): the controlled-vocabulary field-diagnosis
-  form is the flywheel's data contract. Settle the vocab before building.
+- [~] **0038 diagnosis capture flywheel** (backend built 2026-06-30; capture form frontend deferred):
+  the `Diagnosis` model + migration 0013, controlled vocabularies (`rs_core/diagnosis.py`:
+  condition / cause / action, observed crop reuses `rs_core/crops.py`), `POST /ward-watch/diagnosis`
+  (RECORD_DIAGNOSIS, 422 on bad vocab, 404 on unknown plot, officer = verified token subject) and
+  `GET /ward-watch/diagnoses` (the labelled set for export). Recorded diagnoses now fill the 0037
+  visit-package `previous_visits`. ⚑ CONFIRM the condition/cause/action vocabularies with the
+  agronomy-scientist (PRD §12.9) before the form ships - built as a candidate, swap on confirm.
 - [ ] **0041 owner sign-off** (PRD §12.7): confirm the role-to-permission mapping and wire server-side
   ward-scoping into the triage endpoint (the ⚑ CONFIRM in `ward_watch.py`). Settle once for PRD 0002
   and 0003.

@@ -635,3 +635,36 @@ class PlotAnalysis(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     plot: Mapped[Plot] = relationship()
+
+
+class Diagnosis(Base):
+    """An officer's field diagnosis for one plot - a labelled ground-truth point for the flywheel
+    (PRD 0003 §0, backlog 0038): plot -> observed crop -> condition -> cause -> recommended action.
+    Provenance (invariant 5 / §1.5) ties the label to the `scene_id` it was observed against; a plot
+    carries a single boundary, so the plot is the geometry reference (no geometry_version, as for
+    `PlotAnalysis`). The controlled-vocab fields (`rs_core.diagnosis`, `rs_core.crops`) are
+    validated at the API, never free text; `notes` is the only free text. `officer_id` is the
+    verified token subject, never client input (cf. `Annotation.author`), and the store is shaped
+    for later export as training labels."""
+
+    __tablename__ = "diagnosis"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    plot_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("plot.id", ondelete="CASCADE"), index=True
+    )
+    # The pass the observation corresponds to (provenance §1.5); nullable - an officer may diagnose
+    # without pinning a specific scene.
+    scene_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    observed_on: Mapped[date] = mapped_column(Date)
+
+    observed_crop: Mapped[str] = mapped_column(String(64))
+    condition: Mapped[str] = mapped_column(String(32))
+    cause: Mapped[str] = mapped_column(String(32))
+    recommended_action: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    officer_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    plot: Mapped[Plot] = relationship()

@@ -31,6 +31,7 @@ from rs_core.alert_hints import AlertHint, HintInputs, assess_alert_hints, recom
 from rs_core.cohorts import CohortLevel
 from rs_core.models import Household, Plot
 from rs_core.movement import MovementLabel
+from rs_core.repositories.diagnoses import diagnoses_for_household
 from rs_core.repositories.plot_analyses import plot_index_series
 from rs_core.repositories.ward_cohorts import (
     DEFAULT_PLOT_INDEX,
@@ -85,10 +86,26 @@ class VisitAssessment:
 
 
 @dataclass(frozen=True)
+class VisitDiagnosis:
+    """One past field diagnosis on this household (backlog 0038), newest first - the visit history.
+    Controlled-vocab condition / cause / action plus the observed crop and any free-text note."""
+
+    diagnosis_id: str
+    plot_id: str
+    observed_on: date
+    observed_crop: str
+    condition: str
+    cause: str
+    recommended_action: str | None
+    notes: str | None
+    officer_id: str | None
+
+
+@dataclass(frozen=True)
 class HouseholdVisitPackage:
     """Everything for one household's visit screen (PRD §7.3). `alert_hints` are prioritisation
-    hints, never diagnoses; `previous_visits` and `drone_reference` are seams (0038 / gateway drone
-    storage)."""
+    hints, never diagnoses; `previous_visits` is the household's recorded diagnoses (0038);
+    `drone_reference` is a seam until a gateway-provided drone ref is stored."""
 
     household_id: str
     village: str | None
@@ -99,7 +116,7 @@ class HouseholdVisitPackage:
     assessment: VisitAssessment | None
     alert_hints: list[AlertHint]
     recommended_questions: list[str]
-    previous_visits: list[Any] = field(default_factory=list)
+    previous_visits: list[VisitDiagnosis] = field(default_factory=list)
     drone_reference: str | None = None
 
 
@@ -215,6 +232,22 @@ async def get_household_visit_package(
     )
     hints = assess_alert_hints(inputs, decline_threshold=decline_threshold)
 
+    diagnoses = await diagnoses_for_household(session, household.id)
+    previous_visits = [
+        VisitDiagnosis(
+            diagnosis_id=str(d.id),
+            plot_id=str(d.plot_id),
+            observed_on=d.observed_on,
+            observed_crop=d.observed_crop,
+            condition=d.condition,
+            cause=d.cause,
+            recommended_action=d.recommended_action,
+            notes=d.notes,
+            officer_id=d.officer_id,
+        )
+        for d in diagnoses
+    ]
+
     return HouseholdVisitPackage(
         household_id=resolved_id,
         village=household.village,
@@ -225,4 +258,5 @@ async def get_household_visit_package(
         assessment=assessment,
         alert_hints=hints,
         recommended_questions=recommended_questions([h.category for h in hints]),
+        previous_visits=previous_visits,
     )

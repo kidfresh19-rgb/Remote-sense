@@ -42,6 +42,11 @@ from rs_core.repositories.comparison import (
     ClusterStats,
     get_cluster_stats,
 )
+from rs_core.repositories.diagnoses import (
+    diagnoses_for_household,
+    list_diagnoses,
+    record_diagnosis,
+)
 from rs_core.repositories.health import pipeline_health
 from rs_core.repositories.households import (
     HouseholdDeclarationValue,
@@ -92,6 +97,7 @@ from rs_core.repositories.ward_cohorts import (
 from rs_core.repositories.ward_visit import (
     HouseholdVisitPackage,
     VisitAssessment,
+    VisitDiagnosis,
     VisitPlot,
     VisitTrendPoint,
     get_household_visit_package,
@@ -116,6 +122,7 @@ __all__ = [
     "PlotDeclarationValue",
     "ReconcileResult",
     "VisitAssessment",
+    "VisitDiagnosis",
     "VisitPlot",
     "VisitTrendPoint",
     "advance_cursor",
@@ -126,6 +133,9 @@ __all__ = [
     "create_drawn_region",
     "create_uploaded_layer",
     "delete_annotation",
+    "diagnoses_for_household",
+    "list_diagnoses",
+    "record_diagnosis",
     "ensure_collection_state",
     "get_assignments_for_farm",
     "get_cluster_stats",

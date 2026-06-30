@@ -16,7 +16,9 @@ param - lands with the 0041 role hierarchy."""
 
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass
+from datetime import date
 from typing import Annotated, Any, Protocol
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -24,18 +26,29 @@ from pydantic import BaseModel
 from rs_core import get_settings
 from rs_core.alert_hints import AlertHint
 from rs_core.cohorts import CohortLevel
+from rs_core.diagnosis import validate_diagnosis
+from rs_core.models import Diagnosis, Plot
 from rs_core.movement import MovementLabel
 from rs_core.repositories import (
     HouseholdVisitPackage,
+    VisitDiagnosis,
     VisitPlot,
     assess_household_cohorts,
     get_household_visit_package,
+    list_diagnoses,
+    record_diagnosis,
 )
 from rs_core.rollups import HouseholdLabel, RollupNode, roll_up_food_security
 from rs_core.triage import DEFAULT_QUEUE_CAP, TriageCandidate, build_triage_queue
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from services.api.workspace.deps import ReadSessionDep, ViewPrincipal
+from services.api.workspace.deps import (
+    ReadSessionDep,
+    RecordDiagnosisPrincipal,
+    SessionDep,
+    ViewPrincipal,
+)
 
 router = APIRouter(tags=["ward-watch"])
 
@@ -300,10 +313,24 @@ class AlertHintOut(BaseModel):
     framing: str
 
 
+class PreviousVisitOut(BaseModel):
+    """One past field diagnosis on this household (0038), the visit history newest-first."""
+
+    diagnosis_id: str
+    plot_id: str
+    observed_on: str
+    observed_crop: str
+    condition: str
+    cause: str
+    recommended_action: str | None
+    notes: str | None
+    officer_id: str | None
+
+
 class VisitPackageOut(BaseModel):
     """The physical-visit package for one household (PRD §7.3): context, per-plot imagery references
-    and index trend, the movement assessment, alert hints and the officer's questions.
-    `previous_visits` and `drone_reference` are seams (the 0038 flywheel / a gateway drone ref)."""
+    and index trend, the movement assessment, alert hints, the officer's questions, and the
+    household's recorded diagnoses (`previous_visits`, 0038). `drone_reference` is a seam."""
 
     household_id: str
     village: str | None
@@ -314,7 +341,7 @@ class VisitPackageOut(BaseModel):
     assessment: VisitAssessmentOut | None
     alert_hints: list[AlertHintOut]
     recommended_questions: list[str]
-    previous_visits: list[Any]
+    previous_visits: list[PreviousVisitOut]
     drone_reference: str | None
 
 
@@ -350,6 +377,20 @@ def _plot_out(plot: VisitPlot) -> VisitPlotOut:
     )
 
 
+def _previous_visit_out(visit: VisitDiagnosis) -> PreviousVisitOut:
+    return PreviousVisitOut(
+        diagnosis_id=visit.diagnosis_id,
+        plot_id=visit.plot_id,
+        observed_on=visit.observed_on.isoformat(),
+        observed_crop=visit.observed_crop,
+        condition=visit.condition,
+        cause=visit.cause,
+        recommended_action=visit.recommended_action,
+        notes=visit.notes,
+        officer_id=visit.officer_id,
+    )
+
+
 def _visit_out(package: HouseholdVisitPackage) -> VisitPackageOut:
     """Shape the assembled package onto the wire response."""
     assessment = package.assessment
@@ -373,7 +414,7 @@ def _visit_out(package: HouseholdVisitPackage) -> VisitPackageOut:
         ),
         alert_hints=[_hint_out(h) for h in package.alert_hints],
         recommended_questions=package.recommended_questions,
-        previous_visits=package.previous_visits,
+        previous_visits=[_previous_visit_out(v) for v in package.previous_visits],
         drone_reference=package.drone_reference,
     )
 
@@ -398,3 +439,105 @@ async def ward_watch_visit_endpoint(
     if package is None:
         raise HTTPException(status_code=404, detail="household not found")
     return _visit_out(package)
+
+
+class DiagnosisIn(BaseModel):
+    """The officer's field diagnosis to record (backlog 0038). `observed_crop` / `condition` /
+    `cause` are controlled vocabularies (required); `recommended_action` is an optional controlled
+    value; `notes` is the only free text. `scene_id` is the pass observed against (provenance);
+    `observed_on` defaults to today. The recording officer is the verified token subject, not the
+    client's."""
+
+    plot_id: str
+    observed_crop: str
+    condition: str
+    cause: str
+    recommended_action: str | None = None
+    notes: str | None = None
+    scene_id: str | None = None
+    observed_on: date | None = None
+
+
+class DiagnosisOut(BaseModel):
+    """A stored field diagnosis - one labelled ground-truth point for the flywheel (0038)."""
+
+    id: str
+    plot_id: str
+    observed_on: str
+    observed_crop: str
+    condition: str
+    cause: str
+    recommended_action: str | None
+    notes: str | None
+    scene_id: str | None
+    officer_id: str | None
+    created_at: str
+
+
+@router.post("/ward-watch/diagnosis", status_code=201)
+async def ward_watch_record_diagnosis_endpoint(
+    payload: DiagnosisIn,
+    principal: RecordDiagnosisPrincipal,
+    session: SessionDep,
+) -> DiagnosisOut:
+    """Record one officer field diagnosis (PRD 0003 §0, backlog 0038): a controlled-vocab labelled
+    point linked to the plot + the scene observed against. 422 on a bad controlled value or plot id,
+    404 when the plot is not held; the officer is the verified token subject."""
+    try:
+        plot_uuid = uuid.UUID(payload.plot_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="plot_id must be a uuid") from exc
+    try:
+        fields = validate_diagnosis(
+            observed_crop=payload.observed_crop,
+            condition=payload.condition,
+            cause=payload.cause,
+            recommended_action=payload.recommended_action,
+            notes=payload.notes,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    plot = (await session.execute(select(Plot).where(Plot.id == plot_uuid))).scalar_one_or_none()
+    if plot is None:
+        raise HTTPException(status_code=404, detail="plot not found")
+
+    diagnosis = await record_diagnosis(
+        session,
+        plot_id=plot_uuid,
+        fields=fields,
+        observed_on=payload.observed_on or date.today(),
+        scene_id=payload.scene_id,
+        officer_id=principal.subject,
+    )
+    await session.commit()
+    return _diagnosis_out(diagnosis)
+
+
+@router.get("/ward-watch/diagnoses")
+async def ward_watch_diagnoses_endpoint(
+    principal: ViewPrincipal,
+    session: ReadSessionDep,
+    ward: str | None = None,
+    limit: Annotated[int, Query(ge=1, le=2000)] = 500,
+) -> list[DiagnosisOut]:
+    """The recorded diagnoses as a labelled set for export (PRD 0003 §0, backlog 0038), newest
+    observation first; `ward` scopes to one ward. This is the flywheel's read side."""
+    rows = await list_diagnoses(session, ward=ward, limit=limit)
+    return [_diagnosis_out(d) for d in rows]
+
+
+def _diagnosis_out(diagnosis: Diagnosis) -> DiagnosisOut:
+    return DiagnosisOut(
+        id=str(diagnosis.id),
+        plot_id=str(diagnosis.plot_id),
+        observed_on=diagnosis.observed_on.isoformat(),
+        observed_crop=diagnosis.observed_crop,
+        condition=diagnosis.condition,
+        cause=diagnosis.cause,
+        recommended_action=diagnosis.recommended_action,
+        notes=diagnosis.notes,
+        scene_id=diagnosis.scene_id,
+        officer_id=diagnosis.officer_id,
+        created_at=diagnosis.created_at.isoformat(),
+    )

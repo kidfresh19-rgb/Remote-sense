@@ -28,5 +28,8 @@ CreateRegionClusterPrincipal = Annotated[
 UploadRegionBoundaryPrincipal = Annotated[
     Principal, Depends(require(Permission.UPLOAD_REGION_BOUNDARY))
 ]
+# Ward Watch field-diagnosis capture (backlog 0038). RECORD_DIAGNOSIS is the ward-officer permission
+# (rs_core.rbac); ⚑ CONFIRM the role mapping with the owner alongside the other Ward Watch perms.
+RecordDiagnosisPrincipal = Annotated[Principal, Depends(require(Permission.RECORD_DIAGNOSIS))]
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
 ReadSessionDep = Annotated[AsyncSession, Depends(get_read_session)]
