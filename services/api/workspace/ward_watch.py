@@ -10,20 +10,24 @@ assessor (backlog 0032) does this live via `rs_core.repositories.assess_househol
 queue and rollups are non-empty over real ingested data (0031). A household with no Natural Region
 assignment, ward, or assessable plot series is simply absent (honest empty, never fabricated).
 
-# CONFIRM (0041): RBAC is the generic `view` permission for now. Ward Watch officer/ward scoping -
-an officer sees only their own ward's queue, enforced server-side rather than via a client `ward`
-param - lands with the 0041 role hierarchy."""
+RBAC is the settled 0041 role hierarchy (owner-signed-off 2026-06-30): the queue and visit need
+VIEW_TRIAGE_QUEUE, the rollup and diagnosis export need VIEW_FOOD_SECURITY_ROLLUP, capture needs
+RECORD_DIAGNOSIS. Ward scoping is server-side, not a trusted client `ward`: a ward officer's queue
+is auto-scoped to the wards of the households they enrolled (`officer_wards`), and the `ward` query
+param may only narrow within those wards, never widen them. Supervisors keep the optional cross-ward
+filter. See `resolve_triage_ward_scope`."""
 
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date
 from typing import Annotated, Any, Protocol
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from rs_core import get_settings
+from rs_core import Principal, Role, get_settings
 from rs_core.alert_hints import AlertHint
 from rs_core.cohorts import CohortLevel
 from rs_core.diagnosis import validate_diagnosis
@@ -36,6 +40,7 @@ from rs_core.repositories import (
     assess_household_cohorts,
     get_household_visit_package,
     list_diagnoses,
+    officer_wards,
     record_diagnosis,
 )
 from rs_core.rollups import HouseholdLabel, RollupNode, roll_up_food_security
@@ -47,7 +52,8 @@ from services.api.workspace.deps import (
     ReadSessionDep,
     RecordDiagnosisPrincipal,
     SessionDep,
-    ViewPrincipal,
+    ViewFoodSecurityRollupPrincipal,
+    ViewTriageQueuePrincipal,
 )
 
 router = APIRouter(tags=["ward-watch"])
@@ -86,7 +92,7 @@ class HouseholdAssessor(Protocol):
     testable with seeded assessments today."""
 
     async def assess(
-        self, session: AsyncSession, *, ward: str | None
+        self, session: AsyncSession, *, wards: Sequence[str] | None
     ) -> list[HouseholdAssessment]: ...
 
 
@@ -99,11 +105,13 @@ class DbHouseholdAssessor:
     the honest `_UNASSIGNED_ADMIN` placeholder (see module note); ward and the cohort signal are
     real."""
 
-    async def assess(self, session: AsyncSession, *, ward: str | None) -> list[HouseholdAssessment]:
+    async def assess(
+        self, session: AsyncSession, *, wards: Sequence[str] | None
+    ) -> list[HouseholdAssessment]:
         settings = get_settings()
         assessed = await assess_household_cohorts(
             session,
-            ward=ward,
+            wards=wards,
             n_min=settings.ward_cohort_n_min,
             decline_threshold=settings.ward_movement_decline_threshold,
             clear_floor=settings.ward_clear_fraction_floor,
@@ -131,6 +139,32 @@ def get_household_assessor() -> HouseholdAssessor:
 
 
 AssessorDep = Annotated[HouseholdAssessor, Depends(get_household_assessor)]
+
+# Server-side ward scoping (backlog 0041). Supervisors see across wards; a ward officer is scoped to
+# their own. Keyed on the role so an officer can never widen scope with a client `ward` param.
+_CROSS_WARD_ROLES = frozenset({Role.DISTRICT_AGRONOMIST, Role.MINISTRY, Role.ADMIN})
+
+
+def narrow_officer_scope(officer_wards_: list[str], requested_ward: str | None) -> list[str]:
+    """An officer is scoped to their own wards; a client `ward` may only narrow within them, never
+    widen. A requested ward the officer does not hold yields an empty scope (an empty queue)."""
+    if requested_ward is None:
+        return officer_wards_
+    want = requested_ward.strip().casefold()
+    return [ward for ward in officer_wards_ if ward.casefold() == want]
+
+
+async def resolve_triage_ward_scope(
+    session: AsyncSession, principal: Principal, requested_ward: str | None
+) -> Sequence[str] | None:
+    """The wards a triage read is scoped to (0041). A supervisor (district / ministry / admin) keeps
+    the optional single-ward filter: `ward` narrows to one ward, absent means all wards (None). A
+    ward officer is auto-scoped to their enrolled wards (`officer_wards`) and the client `ward` may
+    only narrow within them; an officer who has enrolled nobody gets an empty scope, which the
+    assessor reads as an empty queue (honest empty, never all wards)."""
+    if principal.roles & _CROSS_WARD_ROLES:
+        return [requested_ward] if requested_ward is not None else None
+    return narrow_officer_scope(await officer_wards(session, principal.subject), requested_ward)
 
 
 class TriageRowOut(BaseModel):
@@ -242,28 +276,32 @@ def roll_up(assessments: list[HouseholdAssessment]) -> FoodSecurityRollupOut:
 
 @router.get("/ward-watch/triage")
 async def ward_watch_triage_endpoint(
-    principal: ViewPrincipal,
+    principal: ViewTriageQueuePrincipal,
     session: ReadSessionDep,
     assessor: AssessorDep,
     ward: str | None = None,
     cap: Annotated[int, Query(ge=1, le=100)] = DEFAULT_QUEUE_CAP,
 ) -> list[TriageRowOut]:
     """The capped, ranked weekly officer queue (PRD 0003 §7.1). Ordered by movement-label severity
-    then robust deviation; every row carries the cohort level used and the pixel-quality flag. The
-    `ward` filter is a placeholder for the 0041 server-side ward scoping (see module note)."""
-    assessments = await assessor.assess(session, ward=ward)
+    then robust deviation; every row carries the cohort level used and the pixel-quality flag. A
+    ward officer is auto-scoped server-side to their own wards (0041); a supervisor may filter to
+    one ward with `ward`, or omit it for all wards."""
+    wards = await resolve_triage_ward_scope(session, principal, ward)
+    assessments = await assessor.assess(session, wards=wards)
     return rank_triage(assessments, cap=cap)
 
 
 @router.get("/ward-watch/rollups")
 async def ward_watch_rollups_endpoint(
-    principal: ViewPrincipal,
+    principal: ViewFoodSecurityRollupPrincipal,
     session: ReadSessionDep,
     assessor: AssessorDep,
 ) -> FoodSecurityRollupOut:
     """Food-security rollups (PRD 0003 §10): idiosyncratic and systemic counts per ward, district
-    and province, read from the same labels the officer queue uses - no parallel statistics path."""
-    assessments = await assessor.assess(session, ward=None)
+    and province, read from the same labels the officer queue uses - no parallel statistics path. A
+    cross-ward supervisor view (district / ministry); the ward tally is live, district / province
+    light up when those boundary layers land (see module note)."""
+    assessments = await assessor.assess(session, wards=None)
     return roll_up(assessments)
 
 
@@ -422,12 +460,14 @@ def _visit_out(package: HouseholdVisitPackage) -> VisitPackageOut:
 @router.get("/ward-watch/visit/{household_id}")
 async def ward_watch_visit_endpoint(
     household_id: str,
-    principal: ViewPrincipal,
+    principal: ViewTriageQueuePrincipal,
     session: ReadSessionDep,
 ) -> VisitPackageOut:
     """One household's physical-visit package (PRD 0003 §7.3): context, per-plot orthophoto refs and
     index trend, the cohort movement assessment, index-grounded alert hints (framed as hints, not
-    diagnoses) and the officer's recommended questions. 404 when the household is not held."""
+    diagnoses) and the officer's recommended questions. 404 when the household is not held. Reached
+    by drilling from the (ward-scoped) triage queue, so it shares VIEW_TRIAGE_QUEUE; per-household
+    ward enforcement on the direct id is a 0041 follow-up."""
     settings = get_settings()
     package = await get_household_visit_package(
         session,
@@ -516,13 +556,15 @@ async def ward_watch_record_diagnosis_endpoint(
 
 @router.get("/ward-watch/diagnoses")
 async def ward_watch_diagnoses_endpoint(
-    principal: ViewPrincipal,
+    principal: ViewFoodSecurityRollupPrincipal,
     session: ReadSessionDep,
     ward: str | None = None,
     limit: Annotated[int, Query(ge=1, le=2000)] = 500,
 ) -> list[DiagnosisOut]:
     """The recorded diagnoses as a labelled set for export (PRD 0003 §0, backlog 0038), newest
-    observation first; `ward` scopes to one ward. This is the flywheel's read side."""
+    observation first; `ward` scopes to one ward. This is the flywheel's read side - a district /
+    ministry calibration export (VIEW_FOOD_SECURITY_ROLLUP), not the officer capture path; officers
+    see a household's own diagnosis history through the visit package's `previous_visits`."""
     rows = await list_diagnoses(session, ward=ward, limit=limit)
     return [_diagnosis_out(d) for d in rows]
 

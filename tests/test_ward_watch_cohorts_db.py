@@ -20,10 +20,13 @@ from rs_core.cohorts import CohortLevel
 from rs_core.db import Base
 from rs_core.models import Household, Plot, PlotAnalysis
 from rs_core.movement import MovementLabel
-from rs_core.repositories import assess_household_cohorts
+from rs_core.rbac import Principal, Role
+from rs_core.repositories import assess_household_cohorts, officer_wards
 from shapely.geometry import MultiPolygon, Polygon
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+from services.api.workspace.ward_watch import resolve_triage_ward_scope
 
 _TEST_DB_URL = os.environ.get(
     "RS_TEST_DATABASE_URL", "postgresql+psycopg://rs:rs@localhost:5432/remote_sense"
@@ -70,6 +73,7 @@ async def _seed_household(
     window: str = "main",
     low_pixels: bool = False,
     lon: float = 30.0,
+    officer_id: str | None = None,
 ) -> None:
     """A household with one cohort-keyed plot carrying a stored NDVI series."""
     household = Household(
@@ -78,6 +82,7 @@ async def _seed_household(
         ward_name=ward,
         dominant_nr=nr,
         village="Chivhu",
+        officer_id=officer_id,
     )
     session.add(household)
     await session.flush()
@@ -142,13 +147,72 @@ async def test_ward_filter_scopes_the_result(maker_) -> None:
     async with maker_() as session:
         await _seed_household(session, canonical="HH-W7", series=STABLE, ward="Ward 7")
         await _seed_household(session, canonical="HH-W8", series=STABLE, ward="Ward 8")
+        await _seed_household(session, canonical="HH-W9", series=STABLE, ward="Ward 9")
         await session.commit()
 
     async with maker_() as session:
-        only_w7 = await assess_household_cohorts(
-            session, ward="ward 7", n_min=1, decline_threshold=0.1, clear_floor=0.5
+        # A list of wards scopes with IN (case-insensitive), so a multi-ward officer is covered.
+        scoped = await assess_household_cohorts(
+            session, wards=["ward 7", "ward 8"], n_min=1, decline_threshold=0.1, clear_floor=0.5
         )
-    assert [a.household_id for a in only_w7] == ["HH-W7"]
+        assert {a.household_id for a in scoped} == {"HH-W7", "HH-W8"}
+        # An empty scope (an officer who has enrolled nobody) reads nothing, never all wards.
+        assert (
+            await assess_household_cohorts(session, wards=[], n_min=1, decline_threshold=0.1) == []
+        )
+        # No scope reads every ward.
+        every = await assess_household_cohorts(
+            session, wards=None, n_min=1, decline_threshold=0.1, clear_floor=0.5
+        )
+        assert {a.household_id for a in every} == {"HH-W7", "HH-W8", "HH-W9"}
+
+
+async def test_officer_wards_derive_from_enrolled_households(maker_) -> None:
+    async with maker_() as session:
+        await _seed_household(
+            session, canonical="A-W7", series=STABLE, ward="Ward 7", officer_id="OFF-A"
+        )
+        await _seed_household(
+            session, canonical="A-W7b", series=STABLE, ward="Ward 7", officer_id="OFF-A"
+        )
+        await _seed_household(
+            session, canonical="A-W8", series=STABLE, ward="Ward 8", officer_id="OFF-A"
+        )
+        await _seed_household(
+            session, canonical="B-W9", series=STABLE, ward="Ward 9", officer_id="OFF-B"
+        )
+        await session.commit()
+
+    async with maker_() as session:
+        assert await officer_wards(session, "OFF-A") == ["Ward 7", "Ward 8"]  # distinct, sorted
+        assert await officer_wards(session, "OFF-B") == ["Ward 9"]
+        assert await officer_wards(session, "OFF-NOBODY") == []  # honest empty
+
+
+async def test_resolve_ward_scope_auto_scopes_officer_to_enrolled_wards(maker_) -> None:
+    async with maker_() as session:
+        await _seed_household(
+            session, canonical="A-W7", series=STABLE, ward="Ward 7", officer_id="OFF-A"
+        )
+        await _seed_household(
+            session, canonical="A-W8", series=STABLE, ward="Ward 8", officer_id="OFF-A"
+        )
+        await _seed_household(
+            session, canonical="B-W9", series=STABLE, ward="Ward 9", officer_id="OFF-B"
+        )
+        await session.commit()
+
+    officer_a = Principal(subject="OFF-A", roles=frozenset({Role.WARD_OFFICER}))
+    async with maker_() as session:
+        # No client ward -> the officer's own wards; officer B's ward 9 is never in scope.
+        assert sorted(await resolve_triage_ward_scope(session, officer_a, None)) == [
+            "Ward 7",
+            "Ward 8",
+        ]
+        # A client `ward` may only narrow within the officer's wards...
+        assert await resolve_triage_ward_scope(session, officer_a, "ward 7") == ["Ward 7"]
+        # ...and can never widen into a ward the officer does not hold.
+        assert await resolve_triage_ward_scope(session, officer_a, "ward 9") == []
 
 
 async def test_household_without_natural_region_is_excluded(maker_) -> None:

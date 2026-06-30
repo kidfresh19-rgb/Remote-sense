@@ -52,6 +52,7 @@ from rs_core.repositories.households import (
     HouseholdDeclarationValue,
     PlotDeclarationValue,
     ReconcileResult,
+    officer_wards,
     reconcile_household_declarations,
 )
 from rs_core.repositories.interpretations import (
@@ -157,6 +158,7 @@ __all__ = [
     "list_review_queue",
     "mark_backfill_complete",
     "natural_region_polygons",
+    "officer_wards",
     "pipeline_health",
     "plot_index_series",
     "processed_scene_ids",

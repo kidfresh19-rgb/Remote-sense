@@ -40,6 +40,9 @@ _TEST_DB_URL = os.environ.get(
     "RS_TEST_DATABASE_URL", "postgresql+psycopg://rs:rs@localhost:5432/remote_sense"
 )
 _OFFICER = Principal(subject="AGRITEX-1", roles=frozenset({Role.WARD_OFFICER}))
+# The diagnosis labelled-set export is a district / ministry calibration read (VIEW_FOOD_SECURITY_
+# ROLLUP), distinct from the officer capture path (RECORD_DIAGNOSIS).
+_DISTRICT = Principal(subject="DISTRICT-1", roles=frozenset({Role.DISTRICT_AGRONOMIST}))
 
 
 def _square_mp(lon: float, lat: float, side: float) -> MultiPolygon:
@@ -198,7 +201,7 @@ async def test_diagnosis_endpoint_lists_labelled_set(maker_) -> None:
 
     async with maker_() as session:
         rows = await ward_watch_diagnoses_endpoint(
-            principal=_OFFICER, session=session, ward=None, limit=500
+            principal=_DISTRICT, session=session, ward=None, limit=500
         )
     assert len(rows) == 1
     assert rows[0].cause == "low_soil_fertility"

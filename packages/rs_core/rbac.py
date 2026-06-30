@@ -25,10 +25,11 @@ class Permission(StrEnum):
     UPLOAD_REGION_BOUNDARY = "upload_region_boundary"  # admin: bulk multi-feature boundary upload
     CREATE_COHORT = "create_cohort"  # analyst: define a peer cohort
     MANAGE_COHORT = "manage_cohort"  # analyst: edit / delete a peer cohort
-    # Ward Watch (PRD 0003, backlog 0041). ⚑ CONFIRM role-to-permission mapping with owner before
-    # wiring enrollment (0030), triage (0036), and dashboard (0040) endpoints. Proposed defaults:
-    # enroll + triage + diagnose for officers (within their ward); read + rollup for higher tiers.
-    # Settle jointly with PRD 0002 RBAC open item (PRD 0003 §12.7).
+    # Ward Watch (PRD 0003, backlog 0041). Role-to-permission mapping signed off 2026-06-30 (owner
+    # sign-off, Mishael Gwede) - the settled least-privilege model: enroll + triage + diagnose for
+    # officers (server-side ward-scoped, never a client `ward`); view + triage + rollup for the
+    # district tier; view + rollup for ministry. Settled jointly with the PRD 0002 RBAC open item
+    # (PRD 0003 §12.7); an access-control decision, no agronomy dependency.
     ENROLL_HOUSEHOLD = "enroll_household"  # officer: register household + plot offline
     VIEW_TRIAGE_QUEUE = "view_triage_queue"  # officer + district: weekly ranked distress queue
     RECORD_DIAGNOSIS = "record_diagnosis"  # officer: field-diagnosis capture (flywheel)
@@ -40,7 +41,7 @@ class Role(StrEnum):
     ANALYST = "analyst"
     PUBLISHER = "publisher"
     ADMIN = "admin"
-    # Ward Watch roles (PRD 0003 §3, backlog 0041). ⚑ CONFIRM mapping with owner.
+    # Ward Watch roles (PRD 0003 §3, backlog 0041); mapping signed off 2026-06-30 (owner).
     WARD_OFFICER = "ward_officer"  # AGRITEX officer: enroll, triage, diagnose (ward-scoped)
     DISTRICT_AGRONOMIST = "district_agronomist"  # read + rollup, no enrollment/diagnosis
     MINISTRY = "ministry"  # read-only, widest rollup view
@@ -78,7 +79,8 @@ ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
         }
     ),
     Role.ADMIN: frozenset(Permission),
-    # Ward Watch roles. ⚑ CONFIRM with owner before wiring 0030/0036/0040.
+    # Ward Watch roles, owner-signed-off 2026-06-30 (see the Permission note above): officers enroll
+    # + triage + diagnose; district views + triages + rollups; ministry views + rollups.
     Role.WARD_OFFICER: frozenset(
         {
             Permission.VIEW,

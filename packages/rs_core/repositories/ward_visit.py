@@ -221,7 +221,7 @@ async def get_household_visit_package(
     if household.ward_name:
         cohort = await assess_household_cohorts(
             session,
-            ward=household.ward_name,
+            wards=[household.ward_name],
             index_name=index_name,
             n_min=n_min,
             decline_threshold=decline_threshold,

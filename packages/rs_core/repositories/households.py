@@ -114,6 +114,28 @@ async def _apply_plot_declaration(
     return changed
 
 
+async def officer_wards(session: AsyncSession, officer_id: str) -> list[str]:
+    """The distinct wards an officer is responsible for, derived from the households they enrolled
+    (`Household.officer_id`, set once at enrollment and indexed). This is the server-side ward scope
+    for the Ward Watch triage queue (backlog 0041): an officer sees only their own wards, never a
+    client-supplied `ward`. Returns the ward labels deduped and sorted; an officer who has enrolled
+    nobody yet gets an empty list, which the assessor reads as an empty queue (honest empty, never
+    all wards). When an authoritative officer->ward assignment lands (PRD 0003 §12 open item 8) this
+    is the single function that changes - the call sites keep reading a list of wards."""
+    rows = (
+        (
+            await session.execute(
+                select(Household.ward_name)
+                .where(Household.officer_id == officer_id, Household.ward_name.is_not(None))
+                .distinct()
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return sorted({ward for ward in rows if ward})
+
+
 async def reconcile_household_declarations(
     session: AsyncSession, declarations: Sequence[HouseholdDeclarationValue]
 ) -> ReconcileResult:

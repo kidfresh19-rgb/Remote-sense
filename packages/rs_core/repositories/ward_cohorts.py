@@ -13,6 +13,7 @@ keys on the Natural Region ASSIGNMENT, never a gateway region string (invariant 
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 from sqlalchemy import func, select
@@ -103,7 +104,7 @@ async def _plot_series(
 
 
 async def _cached_household_assessments(
-    session: AsyncSession, *, ward: str | None, index_name: str
+    session: AsyncSession, *, wards: Sequence[str] | None, index_name: str
 ) -> list[HouseholdCohortAssessment] | None:
     """The materialization seam (mirrors `comparison._cached_cluster_stats`, the ~200-farm seam
     carried unchanged): v1 has no cache table, so this always misses and live assembly runs. When a
@@ -115,22 +116,24 @@ async def _cached_household_assessments(
 async def assess_household_cohorts(
     session: AsyncSession,
     *,
-    ward: str | None = None,
+    wards: Sequence[str] | None = None,
     index_name: str = DEFAULT_PLOT_INDEX,
     n_min: int = DEFAULT_WARD_COHORT_N_MIN,
     decline_threshold: float = DEFAULT_WARD_DECLINE_THRESHOLD,
     clear_floor: float = DEFAULT_WARD_CLEAR_FLOOR,
 ) -> list[HouseholdCohortAssessment]:
-    """Assess every in-scope household live (backlog 0032). Checks the (always-empty in v1) cache,
-    then falls back to live compute - the seam where a materialized cache slots in without touching
+    """Assess every in-scope household live (backlog 0032). `wards` is the server-side officer scope
+    (0041): None reads all wards, a list scopes to those wards, and an empty list reads nothing (an
+    officer who has enrolled nobody - honest empty). Checks the (always-empty in v1) cache, then
+    falls back to live compute - the seam where a materialized cache slots in without touching
     callers. `n_min`, `decline_threshold` and `clear_floor` are configurable, never hard-coded into
     the assembly."""
-    cached = await _cached_household_assessments(session, ward=ward, index_name=index_name)
+    cached = await _cached_household_assessments(session, wards=wards, index_name=index_name)
     if cached is not None:
         return cached
     return await _compute_household_cohorts(
         session,
-        ward=ward,
+        wards=wards,
         index_name=index_name,
         n_min=n_min,
         decline_threshold=decline_threshold,
@@ -141,7 +144,7 @@ async def assess_household_cohorts(
 async def _compute_household_cohorts(
     session: AsyncSession,
     *,
-    ward: str | None,
+    wards: Sequence[str] | None,
     index_name: str,
     n_min: int,
     decline_threshold: float,
@@ -152,12 +155,13 @@ async def _compute_household_cohorts(
     or ward, or no plot with a declared crop + planting window and at least two clear passes, has
     nothing to cohort on and is simply absent from the result (honest empty, never fabricated)."""
     household_stmt = select(Household)
-    if ward is not None:
-        # Placeholder ward filter; 0041 replaces it with server-side officer scoping
-        # (see the ward_watch module note).
-        household_stmt = household_stmt.where(
-            func.lower(Household.ward_name) == ward.strip().lower()
-        )
+    if wards is not None:
+        # Server-side officer ward scoping (0041): scope to the given wards. An empty scope - an
+        # officer who has enrolled nobody - reads nothing (honest empty), never all wards.
+        if not wards:
+            return []
+        scoped = [ward.strip().lower() for ward in wards]
+        household_stmt = household_stmt.where(func.lower(Household.ward_name).in_(scoped))
     households = (await session.execute(household_stmt)).scalars().all()
     in_scope = {h.id: h for h in households if h.dominant_nr and h.ward_name}
     if not in_scope:
