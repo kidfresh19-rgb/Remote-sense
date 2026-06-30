@@ -89,6 +89,13 @@ from rs_core.repositories.ward_cohorts import (
     HouseholdCohortAssessment,
     assess_household_cohorts,
 )
+from rs_core.repositories.ward_visit import (
+    HouseholdVisitPackage,
+    VisitAssessment,
+    VisitPlot,
+    VisitTrendPoint,
+    get_household_visit_package,
+)
 
 __all__ = [
     # The two underscore names are part of the tested surface: the upsert statement builder
@@ -105,10 +112,15 @@ __all__ = [
     "FarmAnomaly",
     "HouseholdCohortAssessment",
     "HouseholdDeclarationValue",
+    "HouseholdVisitPackage",
     "PlotDeclarationValue",
     "ReconcileResult",
+    "VisitAssessment",
+    "VisitPlot",
+    "VisitTrendPoint",
     "advance_cursor",
     "assess_household_cohorts",
+    "get_household_visit_package",
     "assign_households_by_centroid",
     "assign_households_to_ward_by_name",
     "create_drawn_region",

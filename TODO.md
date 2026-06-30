@@ -79,6 +79,14 @@ Remaining work:
   is the plot, household = its most severe plot. Live compute behind the unchanged materialization
   seam (no cohort table). District/province carry an `"unassigned"` placeholder (PRD §12.6 not yet
   sourced) and the district ladder rung is skipped, never fabricated. Unblocks 0037 (visit package).
+- [~] **0037 physical-visit package** (backend built 2026-06-30; cockpit frontend deferred): the
+  alert-hint engine (`rs_core/alert_hints.py`, PRD §7.2 spectral signature to category hint, framed
+  as hints not diagnoses, thresholds CONFIRM) and the endpoint `GET /ward-watch/visit/{household_id}`
+  (`rs_core/repositories/ward_visit.py`): household context, per-plot index trend + orthophoto
+  reference (geometry + latest scene/date, read the AOI-Studio way), the cohort movement assessment,
+  alert hints and recommended officer questions. Seams: `previous_visits` (0038), `drone_reference`
+  (gateway drone storage), and the moisture/red-edge hints stay dormant until NDMI/NDRE ingestion
+  widens (a 0031 follow-up). The cockpit visit screen (frontend) awaits the product-surface call.
 - [ ] **0038 diagnosis schema** (PRD §12.9, `needs-info`): the controlled-vocabulary field-diagnosis
   form is the flywheel's data contract. Settle the vocab before building.
 - [ ] **0041 owner sign-off** (PRD §12.7): confirm the role-to-permission mapping and wire server-side

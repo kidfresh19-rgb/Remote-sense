@@ -44,9 +44,11 @@ class PlotObservation:
 class CohortAssessment:
     """One household's triage signal: the movement label and robust deviation of its most severe
     plot, the cohort level that plot's lens actually used and whether the cohort cleared quorum, and
-    that plot's pixel-quality flag. `dominant_crop` is the cohort crop of the contributing plot."""
+    that plot's pixel-quality flag. `plot_id` identifies that contributing plot (the visit package
+    reads its series for the alert hints); `dominant_crop` is its cohort crop."""
 
     household_id: str
+    plot_id: str
     dominant_crop: str
     label: MovementLabel
     robust_deviation: float
@@ -177,6 +179,7 @@ def assemble_household_assessments(
         assessments.append(
             CohortAssessment(
                 household_id=household_id,
+                plot_id=obs.plot_id,
                 dominant_crop=obs.key.dominant_crop,
                 label=label,
                 robust_deviation=deviation,

@@ -17,14 +17,20 @@ param - lands with the 0041 role hierarchy."""
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Annotated, Protocol
+from typing import Annotated, Any, Protocol
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from rs_core import get_settings
+from rs_core.alert_hints import AlertHint
 from rs_core.cohorts import CohortLevel
 from rs_core.movement import MovementLabel
-from rs_core.repositories import assess_household_cohorts
+from rs_core.repositories import (
+    HouseholdVisitPackage,
+    VisitPlot,
+    assess_household_cohorts,
+    get_household_visit_package,
+)
 from rs_core.rollups import HouseholdLabel, RollupNode, roll_up_food_security
 from rs_core.triage import DEFAULT_QUEUE_CAP, TriageCandidate, build_triage_queue
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -246,3 +252,149 @@ async def ward_watch_rollups_endpoint(
     and province, read from the same labels the officer queue uses - no parallel statistics path."""
     assessments = await assessor.assess(session, ward=None)
     return roll_up(assessments)
+
+
+class VisitTrendPointOut(BaseModel):
+    """One stored pass on a plot's index trend, with the §4 flag for low-confidence points."""
+
+    pass_date: str
+    ndvi_mean: float | None
+    clear_fraction: float
+    low_pixel_quality: bool
+
+
+class VisitPlotOut(BaseModel):
+    """One plot for the visit screen. `geometry` (GeoJSON) plus `latest_scene_id` +
+    `latest_pass_date` are the inputs the cockpit feeds the natural-colour (RGB-COG) preview, so the
+    orthophoto loads the same way AOI Studio loads it (PRD §7.3)."""
+
+    plot_id: str
+    dominant_crop: str | None
+    planting_window: str | None
+    size_class: str | None
+    area_m2: float | None
+    geometry: dict[str, Any]
+    latest_scene_id: str | None
+    latest_pass_date: str | None
+    trend: list[VisitTrendPointOut]
+
+
+class VisitAssessmentOut(BaseModel):
+    """The household's cohort movement assessment (the same signal the triage queue ranks on)."""
+
+    label: str
+    robust_deviation: float
+    cohort_level: str
+    cohort_meets_quorum: bool
+    low_pixel_quality: bool
+
+
+class AlertHintOut(BaseModel):
+    """One index-grounded alert hint - a prioritisation hint, never a diagnosis (PRD §7.2).
+    `framing` carries that caveat so the UI cannot present it as a verdict."""
+
+    category: str
+    headline: str
+    signature: str
+    strength: float
+    framing: str
+
+
+class VisitPackageOut(BaseModel):
+    """The physical-visit package for one household (PRD §7.3): context, per-plot imagery references
+    and index trend, the movement assessment, alert hints and the officer's questions.
+    `previous_visits` and `drone_reference` are seams (the 0038 flywheel / a gateway drone ref)."""
+
+    household_id: str
+    village: str | None
+    ward: str | None
+    dominant_nr: str | None
+    dominant_crop: str | None
+    plots: list[VisitPlotOut]
+    assessment: VisitAssessmentOut | None
+    alert_hints: list[AlertHintOut]
+    recommended_questions: list[str]
+    previous_visits: list[Any]
+    drone_reference: str | None
+
+
+def _hint_out(hint: AlertHint) -> AlertHintOut:
+    return AlertHintOut(
+        category=hint.category.value,
+        headline=hint.headline,
+        signature=hint.signature,
+        strength=hint.strength,
+        framing=hint.framing,
+    )
+
+
+def _plot_out(plot: VisitPlot) -> VisitPlotOut:
+    return VisitPlotOut(
+        plot_id=plot.plot_id,
+        dominant_crop=plot.dominant_crop,
+        planting_window=plot.planting_window,
+        size_class=plot.size_class,
+        area_m2=plot.area_m2,
+        geometry=plot.geometry,
+        latest_scene_id=plot.latest_scene_id,
+        latest_pass_date=plot.latest_pass_date.isoformat() if plot.latest_pass_date else None,
+        trend=[
+            VisitTrendPointOut(
+                pass_date=point.pass_date.isoformat(),
+                ndvi_mean=point.ndvi_mean,
+                clear_fraction=point.clear_fraction,
+                low_pixel_quality=point.low_pixel_quality,
+            )
+            for point in plot.trend
+        ],
+    )
+
+
+def _visit_out(package: HouseholdVisitPackage) -> VisitPackageOut:
+    """Shape the assembled package onto the wire response."""
+    assessment = package.assessment
+    return VisitPackageOut(
+        household_id=package.household_id,
+        village=package.village,
+        ward=package.ward,
+        dominant_nr=package.dominant_nr,
+        dominant_crop=package.dominant_crop,
+        plots=[_plot_out(p) for p in package.plots],
+        assessment=(
+            VisitAssessmentOut(
+                label=assessment.label.value,
+                robust_deviation=assessment.robust_deviation,
+                cohort_level=assessment.cohort_level.value,
+                cohort_meets_quorum=assessment.cohort_meets_quorum,
+                low_pixel_quality=assessment.low_pixel_quality,
+            )
+            if assessment is not None
+            else None
+        ),
+        alert_hints=[_hint_out(h) for h in package.alert_hints],
+        recommended_questions=package.recommended_questions,
+        previous_visits=package.previous_visits,
+        drone_reference=package.drone_reference,
+    )
+
+
+@router.get("/ward-watch/visit/{household_id}")
+async def ward_watch_visit_endpoint(
+    household_id: str,
+    principal: ViewPrincipal,
+    session: ReadSessionDep,
+) -> VisitPackageOut:
+    """One household's physical-visit package (PRD 0003 §7.3): context, per-plot orthophoto refs and
+    index trend, the cohort movement assessment, index-grounded alert hints (framed as hints, not
+    diagnoses) and the officer's recommended questions. 404 when the household is not held."""
+    settings = get_settings()
+    package = await get_household_visit_package(
+        session,
+        household_id,
+        n_min=settings.ward_cohort_n_min,
+        decline_threshold=settings.ward_movement_decline_threshold,
+        clear_floor=settings.ward_clear_fraction_floor,
+    )
+    if package is None:
+        raise HTTPException(status_code=404, detail="household not found")
+    return _visit_out(package)

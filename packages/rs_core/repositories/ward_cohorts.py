@@ -48,6 +48,7 @@ class HouseholdCohortAssessment:
     pure `CohortAssessment` enriched with the household's village, ward and Natural Region."""
 
     household_id: str
+    plot_id: str
     village: str | None
     ward: str
     dominant_nr: str
@@ -226,6 +227,7 @@ def _enrich(
         enriched.append(
             HouseholdCohortAssessment(
                 household_id=assessment.household_id,
+                plot_id=assessment.plot_id,
                 village=household.village,
                 ward=household.ward_name,
                 dominant_nr=household.dominant_nr,
