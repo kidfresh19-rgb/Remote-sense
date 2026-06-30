@@ -1,6 +1,15 @@
-import { ArrowRight, CalendarBlank, MapTrifold, Moon, SignOut, Sun } from "@phosphor-icons/react";
+import {
+  ArrowRight,
+  CalendarBlank,
+  MapTrifold,
+  Moon,
+  SignOut,
+  Sun,
+  UsersThree,
+} from "@phosphor-icons/react";
 import { Link } from "@tanstack/react-router";
 
+import { useCanAccessWardWatch } from "@/auth/permissions";
 import { useToken } from "@/auth/TokenProvider";
 import { IconButton } from "@/components/ui";
 import { useTheme } from "@/lib/theme";
@@ -8,6 +17,7 @@ import { useTheme } from "@/lib/theme";
 export function DashboardHeader() {
   const { token, clear } = useToken();
   const { theme, toggle } = useTheme();
+  const canWardWatch = useCanAccessWardWatch();
 
   return (
     <header className="flex h-[72px] shrink-0 items-center justify-between gap-4 border-b border-border bg-panel px-6">
@@ -32,6 +42,13 @@ export function DashboardHeader() {
           <IconButton label="Sign out" onClick={clear}>
             <SignOut size={18} />
           </IconButton>
+        ) : null}
+        {canWardWatch ? (
+          <Link to="/ward-watch">
+            <IconButton label="Ward Watch">
+              <UsersThree size={18} />
+            </IconButton>
+          </Link>
         ) : null}
         <Link to="/aoi-studio">
           <IconButton label="AOI Studio">

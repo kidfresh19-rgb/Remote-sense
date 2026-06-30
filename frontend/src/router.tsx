@@ -2,6 +2,8 @@ import { createRootRoute, createRoute, createRouter, Outlet } from "@tanstack/re
 
 import { AOIStudioPage } from "@/pages/AOIStudioPage";
 import { DashboardPage } from "@/pages/DashboardPage";
+import { VisitCockpitPage } from "@/pages/VisitCockpitPage";
+import { WardWatchPage } from "@/pages/WardWatchPage";
 import { WorkspacePage } from "@/pages/WorkspacePage";
 import { WorkspaceProvider } from "@/state/workspace";
 
@@ -39,7 +41,25 @@ const aoiStudioRoute = createRoute({
   component: AOIStudioPage,
 });
 
-const routeTree = rootRoute.addChildren([dashboardRoute, workspaceRoute, aoiStudioRoute]);
+const wardWatchRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/ward-watch",
+  component: WardWatchPage,
+});
+
+const wardWatchVisitRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/ward-watch/visit/$householdId",
+  component: VisitCockpitPage,
+});
+
+const routeTree = rootRoute.addChildren([
+  dashboardRoute,
+  workspaceRoute,
+  aoiStudioRoute,
+  wardWatchRoute,
+  wardWatchVisitRoute,
+]);
 
 export const router = createRouter({ routeTree });
 

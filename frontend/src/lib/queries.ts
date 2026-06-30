@@ -8,6 +8,7 @@ import {
   ApiError,
   type AOIPushRequest,
   type AOISeriesRequest,
+  type DiagnosisInput,
   type Farm,
   type FarmSeriesRequest,
   type ReviewInput,
@@ -350,6 +351,37 @@ export function useWardWatchRollups() {
     queryKey: ["ward-watch-rollups"],
     queryFn: ({ signal }) => api.wardWatchRollups(token!, signal),
     enabled: !!token,
+  });
+}
+
+/** One household's physical-visit package (PRD 0003 §7.3). Returns null (not an error) when the
+ *  household is not held (404), so the cockpit can show a clean "not found" state. */
+export function useWardWatchVisit(householdId: string | null) {
+  const { token } = useToken();
+  return useQuery({
+    queryKey: ["ward-watch-visit", householdId],
+    queryFn: async ({ signal }) => {
+      try {
+        return await api.wardWatchVisit(householdId!, token!, signal);
+      } catch (err) {
+        if (err instanceof ApiError && err.status === 404) return null;
+        throw err;
+      }
+    },
+    enabled: !!token && !!householdId,
+  });
+}
+
+/** Record one officer field diagnosis (the flywheel, backlog 0038). On success the household's
+ *  visit package is invalidated so the new diagnosis surfaces in its visit history. */
+export function useRecordDiagnosis(householdId: string | null) {
+  const { token } = useToken();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: DiagnosisInput) => api.recordDiagnosis(input, token!),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["ward-watch-visit", householdId] });
+    },
   });
 }
 

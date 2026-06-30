@@ -366,6 +366,112 @@ export interface FoodSecurityRollup {
   by_province: RollupNode[];
 }
 
+/** One stored pass on a plot's index trend in the visit package, with the §4 low-confidence flag.
+ *  Mirrors VisitTrendPointOut. */
+export interface VisitTrendPoint {
+  pass_date: string;
+  ndvi_mean: number | null;
+  clear_fraction: number;
+  low_pixel_quality: boolean;
+}
+
+/** One plot in a household's visit package. `geometry` + `latest_scene_id` + `latest_pass_date` are
+ *  the inputs for the natural-colour orthophoto preview (the AOI-Studio mechanism). Mirrors
+ *  VisitPlotOut. */
+export interface VisitPlot {
+  plot_id: string;
+  dominant_crop: string | null;
+  planting_window: string | null;
+  size_class: string | null;
+  area_m2: number | null;
+  geometry: Geometry;
+  latest_scene_id: string | null;
+  latest_pass_date: string | null;
+  trend: VisitTrendPoint[];
+}
+
+/** The household's cohort movement assessment (the same signal the triage queue ranks on). Mirrors
+ *  VisitAssessmentOut. */
+export interface VisitAssessment {
+  label: string;
+  robust_deviation: number;
+  cohort_level: string;
+  cohort_meets_quorum: boolean;
+  low_pixel_quality: boolean;
+}
+
+/** One index-grounded alert hint - a prioritisation hint, never a diagnosis (PRD 0003 §7.2).
+ *  `framing` carries that caveat so the UI cannot present it as a verdict. Mirrors AlertHintOut. */
+export interface AlertHint {
+  category: string;
+  headline: string;
+  signature: string;
+  strength: number;
+  framing: string;
+}
+
+/** One past field diagnosis on this household (the visit history, newest-first). Mirrors
+ *  PreviousVisitOut. */
+export interface PreviousVisit {
+  diagnosis_id: string;
+  plot_id: string;
+  observed_on: string;
+  observed_crop: string;
+  condition: string;
+  cause: string;
+  recommended_action: string | null;
+  notes: string | null;
+  officer_id: string | null;
+}
+
+/** The physical-visit package for one household (GET /ward-watch/visit/{id}, PRD 0003 §7.3):
+ *  context, per-plot imagery references and index trend, the movement assessment, alert hints, the
+ *  officer's questions, and the household's recorded diagnoses. Mirrors VisitPackageOut. */
+export interface VisitPackage {
+  household_id: string;
+  village: string | null;
+  ward: string | null;
+  dominant_nr: string | null;
+  dominant_crop: string | null;
+  plots: VisitPlot[];
+  assessment: VisitAssessment | null;
+  alert_hints: AlertHint[];
+  recommended_questions: string[];
+  previous_visits: PreviousVisit[];
+  drone_reference: string | null;
+}
+
+/** An officer field diagnosis to record (POST /ward-watch/diagnosis). `observed_crop` / `condition`
+ *  / `cause` are required controlled values; `recommended_action` is an optional controlled value;
+ *  `notes` is free text. `scene_id` is the pass observed against (provenance). The officer is the
+ *  verified token subject, never sent by the client. Mirrors DiagnosisIn. */
+export interface DiagnosisInput {
+  plot_id: string;
+  observed_crop: string;
+  condition: string;
+  cause: string;
+  recommended_action?: string | null;
+  notes?: string | null;
+  scene_id?: string | null;
+  observed_on?: string | null;
+}
+
+/** A stored field diagnosis (the POST response), one labelled ground-truth point. Mirrors
+ *  DiagnosisOut. */
+export interface DiagnosisRecorded {
+  id: string;
+  plot_id: string;
+  observed_on: string;
+  observed_crop: string;
+  condition: string;
+  cause: string;
+  recommended_action: string | null;
+  notes: string | null;
+  scene_id: string | null;
+  officer_id: string | null;
+  created_at: string;
+}
+
 export class ApiError extends Error {
   readonly status: number;
   constructor(status: number, message: string) {
@@ -536,6 +642,10 @@ export const api = {
   },
   wardWatchRollups: (token: string, signal?: AbortSignal) =>
     get<FoodSecurityRollup>("/ward-watch/rollups", token, signal),
+  wardWatchVisit: (householdId: string, token: string, signal?: AbortSignal) =>
+    get<VisitPackage>(`/ward-watch/visit/${encodeURIComponent(householdId)}`, token, signal),
+  recordDiagnosis: (input: DiagnosisInput, token: string) =>
+    send<DiagnosisRecorded>("POST", "/ward-watch/diagnosis", token, input),
 };
 
 /** XYZ template the MapLibre raster source points at, addressing one field/scene/geometry-version
