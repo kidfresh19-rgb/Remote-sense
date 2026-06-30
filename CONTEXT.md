@@ -134,6 +134,18 @@ weather and farm activity, and pushes reviewed results back to the gateway.
   member contributes its nearest clear pass within +/-N days (default 14), and a member with no
   in-window clear pass sits out that round. The fix for the temporal dishonesty of comparing reads
   taken on different dates; reuses the nearest-pass alignment (commit 40d5f2d).
+- **As-of date** a global historical anchor an analyst sets (via the Header date control, persisted in
+  the URL as `?asOf=YYYY-MM-DD`) that shifts every surface to show data as it existed on that day.
+  The rule is *latest pass before or on the date* per field: no future data bleeds in. When set, the
+  overview dashboard (stat cards, health map, analytics cards, activity feed), analyst workspace
+  (Passes list, Read tab, Notes, Audit filtered to on-or-before; Series chart shows full history with
+  a vertical rule at the as-of pass), and the field health map all reflect the historical state. A
+  persistent banner below the Header signals the mode and offers an "Exit" button. Manual scrubber
+  selection in the workspace retires the as-of date for that field, identical to the existing
+  `requestedDate` override pattern. A farm with no pass before the as-of date shows "no data" and
+  surfaces a targeted `collect specific dates` shortcut. Ward Watch integration is deferred until
+  after the Ward Watch feature lands. Distinct from `requestedDate` (field-scoped, transient) and
+  `passDate` (the resolved satellite scene date driving the map).
 - **Group view / group-context panel** the two analyst surfaces for comparison groups. The *group
   view* is a new dashboard-family route (estate-level): one selected cluster or cohort with its
   member count, health distribution, 2x2 movement breakdown, ranked standing list, group time-series
@@ -166,7 +178,7 @@ ADRs, and invariant review are `architect` (read-only).
 
 - Binding build rules: `CLAUDE.md`
 - Product spec: `PLAN.md`
-- Architecture decisions: `docs/adr/` (0001 ports-and-adapters through 0011 AOI Studio preview performance)
+- Architecture decisions: `docs/adr/` (0001 ports-and-adapters through 0013 as-of date global historical anchor)
 - Working process: `docs/process/WORKFLOW.md`
 - Open backlog: `TODO.md` (groomed with `/triage`)
 - Cross-session memory: the agent memory system (`MEMORY.md` index)
