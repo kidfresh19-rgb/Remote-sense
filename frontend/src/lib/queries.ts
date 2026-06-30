@@ -330,6 +330,29 @@ export function useRegionBoundaries(layerId: string | null) {
   });
 }
 
+/** The Ward Watch officer triage queue (PRD 0003 §7.1): the capped, ranked weekly distress queue. A
+ *  ward officer is auto-scoped server-side to their own wards (backlog 0041); a supervisor may pass
+ *  an optional `ward` to filter, or omit it for all wards. */
+export function useWardWatchTriage(params: { ward?: string; cap?: number } = {}) {
+  const { token } = useToken();
+  return useQuery({
+    queryKey: ["ward-watch-triage", params.ward ?? null, params.cap ?? null],
+    queryFn: ({ signal }) => api.wardWatchTriage(params, token!, signal),
+    enabled: !!token,
+  });
+}
+
+/** The Ward Watch food-security rollups (PRD 0003 §10): the same households tallied per ward,
+ *  district and province, idiosyncratic and systemic separate, worst-first. */
+export function useWardWatchRollups() {
+  const { token } = useToken();
+  return useQuery({
+    queryKey: ["ward-watch-rollups"],
+    queryFn: ({ signal }) => api.wardWatchRollups(token!, signal),
+    enabled: !!token,
+  });
+}
+
 export function useCollectField(fieldId: string | null) {
   const { token } = useToken();
   return useMutation({

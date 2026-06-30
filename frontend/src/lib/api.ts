@@ -327,6 +327,45 @@ export interface RegionLayer {
  *  boundary's id, name, source, and dominant Natural Region. */
 export type RegionFeatureCollection = FeatureCollection;
 
+/** One row of the Ward Watch officer triage queue (GET /ward-watch/triage). Geometry-free; ranked by
+ *  movement-label severity then robust deviation. The cohort level, quorum flag and pixel-quality
+ *  flag travel on every row for honesty (PRD 0003 §7.1). Mirrors TriageRowOut in
+ *  services/api/workspace/ward_watch.py. */
+export interface TriageRow {
+  rank: number;
+  household_id: string;
+  village: string | null;
+  ward: string;
+  dominant_crop: string | null;
+  label: string;
+  robust_deviation: number;
+  cohort_level: string;
+  cohort_meets_quorum: boolean;
+  low_pixel_quality: boolean;
+}
+
+/** One administrative unit's movement-label tally, idiosyncratic and systemic reported separately
+ *  (PRD 0003 §10). `distressed` = idiosyncratic + systemic. Mirrors RollupNodeOut. */
+export interface RollupNode {
+  name: string;
+  total: number;
+  nominal: number;
+  resilient: number;
+  idiosyncratic: number;
+  systemic: number;
+  distressed: number;
+  systemic_fraction: number;
+}
+
+/** The food-security rollups (GET /ward-watch/rollups): the same households tallied per ward,
+ *  district and province, each list worst-first. District/province are a single "unassigned" node
+ *  until ward-boundary procurement lands. Mirrors FoodSecurityRollupOut. */
+export interface FoodSecurityRollup {
+  by_ward: RollupNode[];
+  by_district: RollupNode[];
+  by_province: RollupNode[];
+}
+
 export class ApiError extends Error {
   readonly status: number;
   constructor(status: number, message: string) {
@@ -484,6 +523,19 @@ export const api = {
       token,
       signal,
     ),
+  wardWatchTriage: (
+    params: { ward?: string; cap?: number },
+    token: string,
+    signal?: AbortSignal,
+  ) => {
+    const q = new URLSearchParams();
+    if (params.ward) q.set("ward", params.ward);
+    if (params.cap) q.set("cap", String(params.cap));
+    const qs = q.toString();
+    return get<TriageRow[]>(`/ward-watch/triage${qs ? `?${qs}` : ""}`, token, signal);
+  },
+  wardWatchRollups: (token: string, signal?: AbortSignal) =>
+    get<FoodSecurityRollup>("/ward-watch/rollups", token, signal),
 };
 
 /** XYZ template the MapLibre raster source points at, addressing one field/scene/geometry-version
