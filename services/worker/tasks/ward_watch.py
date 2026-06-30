@@ -40,9 +40,10 @@ from services.worker.tasks.analysis import _analyse_aoi_series
 
 log = get_logger("services.worker.tasks.ward_watch")
 
-# v1 drives the movement lens off NDVI; the orchestrator takes an index, so widening to the standard
-# set later is additive.
-DEFAULT_PLOT_INDEX = "ndvi"
+# The movement lens (0032) drives off NDVI; NDMI + NDRE feed the alert-hint engine (0037, §7.2:
+# moisture and red-edge signatures). Each index is a separate engine pass, stored as its own
+# `plot_analysis` series (the upsert keys on index_name), so widening the set stays additive.
+DEFAULT_PLOT_INDICES: tuple[str, ...] = ("ndvi", "ndmi", "ndre")
 
 
 def _clearest_per_day(passes: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -68,14 +69,15 @@ async def ingest_household_plots(
     *,
     adapter: AccessPort,
     months: int,
-    index_name: str = DEFAULT_PLOT_INDEX,
+    indices: tuple[str, ...] = DEFAULT_PLOT_INDICES,
     concurrency: int | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
-    """Run every plot of one household through the AOI engine and persist its index series. Each
-    plot's stored boundary is materialised as the AOI, swept over `months` of backfill, deduped to
-    the clearest pass per day, and written as additive idempotent `plot_analysis` rows carrying full
-    provenance, the per-AOI clear fraction, and the §4 pixel-quality flag. Injectable session +
+    """Run every plot of one household through the AOI engine and persist its index series for each
+    of `indices` (NDVI for the movement lens, NDMI + NDRE for the alert-hint engine). Each plot's
+    stored boundary is materialised as the AOI, swept over `months` of backfill, deduped to the
+    clearest pass per day per index, and written as additive idempotent `plot_analysis` rows with
+    full provenance, the per-AOI clear fraction, and the §4 pixel-quality flag. Injectable session +
     adapter so it runs against the mock adapter with zero network (CLAUDE.md §3). Returns a small
     summary `{household_id, plots, passes_stored}`."""
     from rs_core.models import Plot
@@ -90,22 +92,23 @@ async def ingest_household_plots(
         if plot.boundary is None:
             continue
         geometry = dict(mapping(to_shape(plot.boundary)))
-        series = await _analyse_aoi_series(
-            geometry,
-            index_name,
-            "backfill",
-            None,
-            months,
-            adapter=adapter,
-            backfill_months=months,
-            concurrency=concurrency,
-            now=now,
-        )
-        for pass_result in _clearest_per_day(series.get("passes", [])):
-            await upsert_plot_analysis(
-                session, **plot_series_upsert_kwargs(pass_result, plot_id=plot.id)
+        for index_name in indices:
+            series = await _analyse_aoi_series(
+                geometry,
+                index_name,
+                "backfill",
+                None,
+                months,
+                adapter=adapter,
+                backfill_months=months,
+                concurrency=concurrency,
+                now=now,
             )
-            passes_stored += 1
+            for pass_result in _clearest_per_day(series.get("passes", [])):
+                await upsert_plot_analysis(
+                    session, **plot_series_upsert_kwargs(pass_result, plot_id=plot.id)
+                )
+                passes_stored += 1
     await session.commit()
     log.info(
         "ward_watch.ingest.complete",

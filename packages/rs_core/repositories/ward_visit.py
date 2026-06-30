@@ -10,10 +10,9 @@ internal BFF (the cockpit map needs it); never pushed to the gateway (invariant 
 external contract).
 
 Mirrors `repositories.comparison` / `repositories.ward_cohorts`: the DB work is here, the pure cores
-(movement lens, hint engine) do the judgement. Two pieces are honest seams until their slices land:
-`previous_visits` is empty until the diagnosis flywheel (0038) records visits, and `drone_reference`
-is None until a gateway-provided drone ref is stored (the 0026 inbound carries it, but the reconcile
-does not persist it yet)."""
+(movement lens, hint engine) do the judgement. `previous_visits` reads the household's recorded
+diagnoses (0038); `drone_reference` stays a seam (None) until a gateway-provided drone ref is stored
+(the 0026 inbound carries it, but the reconcile does not persist it yet)."""
 
 from __future__ import annotations
 
@@ -143,6 +142,21 @@ def _engine_series(clear_series: dict[str, list[float]], plot_id: str | None) ->
     return longest if len(longest) >= _MIN_SERIES else None
 
 
+async def _clear_series_for_plot(
+    session: AsyncSession, plot_id: uuid.UUID, index_name: str, clear_floor: float
+) -> list[float] | None:
+    """One plot's clear series for an index (oldest first), or None below the lens minimum. Used to
+    feed the contributing plot's NDMI / NDRE to the alert-hint engine (the moisture / red-edge
+    signatures, PRD §7.2)."""
+    rows = await plot_index_series(session, plot_id, index_name)
+    series = [
+        float(row.mean)
+        for row in rows
+        if row.mean is not None and row.clear_fraction >= clear_floor
+    ]
+    return series if len(series) >= _MIN_SERIES else None
+
+
 async def get_household_visit_package(
     session: AsyncSession,
     household_id: str,
@@ -155,8 +169,8 @@ async def get_household_visit_package(
     """Assemble one household's visit package, or None when no such household is held. Loads each
     plot's stored index series (trend + the latest pass that references the orthophoto), runs the
     cohort movement lens for the assessment, then the alert-hint engine over the contributing plot's
-    series. The hints only reflect the indices ingested today (NDVI), so moisture / red-edge hints
-    stay dormant until the index set widens - honest, not silently empty."""
+    series (NDVI plus its NDMI / NDRE), so the moisture and red-edge signatures fire once those
+    indices are ingested (the 0031 widening)."""
     household = await _resolve_household(session, household_id)
     if household is None:
         return None
@@ -225,8 +239,19 @@ async def get_household_visit_package(
             engine_plot_id = match.plot_id
             dominant_crop = match.dominant_crop
 
+    # NDMI / NDRE for the contributing plot light up the moisture + red-edge hints (PRD §7.2); they
+    # are dormant until plot ingestion stores those indices (it now does, 0031 widening).
+    ndmi_series: list[float] | None = None
+    ndre_series: list[float] | None = None
+    if engine_plot_id is not None:
+        contributing = uuid.UUID(engine_plot_id)
+        ndmi_series = await _clear_series_for_plot(session, contributing, "ndmi", clear_floor)
+        ndre_series = await _clear_series_for_plot(session, contributing, "ndre", clear_floor)
+
     inputs = HintInputs(
         ndvi=_engine_series(clear_series, engine_plot_id),
+        ndmi=ndmi_series,
+        ndre=ndre_series,
         movement_label=assessment.label if assessment is not None else None,
         robust_deviation=assessment.robust_deviation if assessment is not None else None,
     )

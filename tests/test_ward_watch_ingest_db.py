@@ -149,14 +149,17 @@ async def test_ingest_stores_series_with_clear_fraction_and_provenance(maker_) -
         )
         assert rows, "expected a stored per-plot index series"
         for row in rows:
-            assert row.index_name == "ndvi"
+            assert row.index_name in {"ndvi", "ndmi", "ndre"}
             assert 0.0 <= row.clear_fraction <= 1.0
             assert row.provider and row.provider_scene_id and row.processing_mode
             assert row.formula_version
             assert row.pixels > 0
-        # one value per (plot, index, day): no duplicate pass dates survive the dedupe
-        dates = [r.pass_date for r in rows]
-        assert len(dates) == len(set(dates))
+        # NDVI for the movement lens, NDMI + NDRE for the alert-hint engine (0037).
+        assert {r.index_name for r in rows} == {"ndvi", "ndmi", "ndre"}
+        # one value per (plot, index, day): no duplicate pass dates within an index after the dedupe
+        for index_name in {"ndvi", "ndmi", "ndre"}:
+            dates = [r.pass_date for r in rows if r.index_name == index_name]
+            assert len(dates) == len(set(dates))
 
 
 async def test_low_pixel_pass_is_flagged_and_upsert_is_idempotent(maker_) -> None:

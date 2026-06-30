@@ -172,3 +172,63 @@ async def test_unknown_household_is_none(maker_) -> None:
     async with maker_() as session:
         package = await get_household_visit_package(session, "NOPE", n_min=1, decline_threshold=0.1)
     assert package is None
+
+
+def _add_plot_series(session, plot_id, index_name: str, values: list[float]) -> None:
+    start = date(2025, 1, 1)
+    for i, value in enumerate(values):
+        session.add(
+            PlotAnalysis(
+                plot_id=plot_id,
+                scene_id=f"S2_{index_name}_{i}",
+                pass_date=start + timedelta(days=10 * i),
+                index_name=index_name,
+                mean=value,
+                clear_fraction=0.9,
+                resolution_m=10.0,
+                pixels=10,
+                low_pixel_quality=False,
+                formula_version=f"{index_name}-v1",
+                provider="mock",
+                provider_scene_id=f"prov_{index_name}_{i}",
+                processing_mode="mock",
+            )
+        )
+
+
+async def test_water_stress_hint_fires_when_ndmi_and_ndvi_decline(maker_) -> None:
+    # The 0031 widening stores NDMI alongside NDVI, so the visit package can raise the moisture
+    # signature on real data: a moisture drop leading a canopy drop -> water-stress hint (PRD §7.2).
+    async with maker_() as session:
+        household = Household(
+            client_uuid=uuid.uuid4(),
+            canonical_household_id="HH-WS",
+            ward_name="Ward 7",
+            dominant_nr="Region III",
+            village="Chivhu",
+        )
+        session.add(household)
+        await session.flush()
+        plot = Plot(
+            client_uuid=uuid.uuid4(),
+            household_id=household.id,
+            boundary=from_shape(_square_mp(30.0, -17.0, 0.002), srid=4326),
+            geometry_source="officer_proxy",
+            dominant_crop="maize",
+            planting_window="main",
+        )
+        session.add(plot)
+        await session.flush()
+        _add_plot_series(session, plot.id, "ndvi", DECLINING)
+        _add_plot_series(session, plot.id, "ndmi", DECLINING)
+        await session.commit()
+
+    async with maker_() as session:
+        package = await get_household_visit_package(
+            session, "HH-WS", n_min=1, decline_threshold=0.1, clear_floor=0.5
+        )
+    assert package is not None
+    assert (
+        package.assessment is not None
+    )  # a lone declining household still classifies (thin cohort)
+    assert AlertCategory.WATER_STRESS in {h.category for h in package.alert_hints}
