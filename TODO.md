@@ -94,12 +94,21 @@ Remaining work:
   `GET /ward-watch/diagnoses` (the labelled set for export). Recorded diagnoses now fill the 0037
   visit-package `previous_visits`. ⚑ CONFIRM the condition/cause/action vocabularies with the
   agronomy-scientist (PRD §12.9) before the form ships - built as a candidate, swap on confirm.
-- [ ] **0041 owner sign-off** (PRD §12.7): confirm the role-to-permission mapping and wire server-side
-  ward-scoping into the triage endpoint (the ⚑ CONFIRM in `ward_watch.py`). Settle once for PRD 0002
-  and 0003.
+- [x] **0041 owner sign-off** (done 2026-06-30, commit c8d59d0): role-to-permission mapping signed off
+  (owner, Mishael Gwede; CONFIRM markers removed from `rbac.py`) and server-side officer ward-scoping
+  wired into `/ward-watch/triage` + `/visit` via `officer_wards()` (an officer is auto-scoped to the
+  wards they enrolled; a client `ward` may only narrow, never widen; supervisors stay cross-ward).
 - [ ] **Tuning + procurement** (PRD §12.2/3/5/6): `N_min` plus the fallback thresholds, minimum usable
   pixel count plus erosion buffer, the planting-window capture mechanism, and authoritative
   ward-boundary data procurement.
 
-Frontend surfaces (0030 enrollment client, 0040 dashboards) now have a real backend wire contract to
-build against. They await the product-surface call.
+Frontend surfaces:
+- **0040 cockpit** (built 2026-06-30): the triage queue, food-security rollups, visit drill-down
+  (trend + alert hints) and diagnosis-capture form ship as a role-gated React surface at `/ward-watch`,
+  consuming the 0036/0037/0038/0039 endpoints. The 0037/0038 frontends previously deferred are now
+  part of it. A demo seeder (`seed_ward_watch_demo.py`) populates a walkthrough cohort.
+- **0030 enrollment client**: scoped in `docs/backlog/0030-ward-watch-offline-enrollment-client.md`.
+  It is an AgriTrack / gateway-side capture-and-sync client (#6); the remote-sense seams it needs
+  (0026/0027/0028/0029/0031) are already built. Gated on the §7.0 product-surface decision (officer
+  mode vs standalone app) and the 0026 field-name CONFIRM. Only three small in-repo residual checks
+  remain (end-to-end ingest proof, proxy-AOI parity fixture, the 0026 confirm).
