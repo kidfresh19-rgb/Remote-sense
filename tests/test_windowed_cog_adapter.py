@@ -168,6 +168,29 @@ async def test_fetch_applies_offset_and_masks_per_aoi_scl():
     assert result.data.crs == _CRS
 
 
+async def test_fetch_populates_cloud_mask_for_overlay():
+    """The cloud-honesty overlay (backlog 0046) reuses the per-AOI SCL mask this fetch already
+    computes: `cloud_mask` is True only for in-field pixels the clear mask dropped (the cloudy px),
+    never the clear px, never the out-of-field px (that is "not the field", not "unreliable")."""
+    source = _FakeSource()
+    adapter = _adapter(source)
+    await adapter.search(_AOI, _RANGE)
+    ref = SceneRef(
+        scene_id="S2_TEST",
+        provider="cdse",
+        sensing_datetime=datetime(2023, 6, 15, 8, 0, tzinfo=UTC),
+        footprint=_AOI.geometry,
+    )
+    result = await adapter.fetch(ref, _AOI, bands=["B04", "B08"], resolution_m=10.0)
+
+    assert result.cloud_mask is not None
+    # scl [[4,9],[4,4]] & inside [[T,T],[F,T]] -> keep [[T,F],[F,T]] -> masked-in-field only [0,1].
+    assert np.array_equal(result.cloud_mask, np.array([[False, True], [False, False]]))
+    # It is the exact spatial complement, within the field, of the finite index pixels.
+    finite = ~np.isnan(result.data.bands["B04"])
+    assert np.array_equal(result.cloud_mask, source.inside & ~finite)
+
+
 async def test_fetch_reads_scl_with_nearest_resampling():
     source = _FakeSource()
     adapter = _adapter(source)

@@ -118,6 +118,19 @@ async def test_fetch_masks_per_aoi_scl_and_datamask():
     assert "dataMask" in process.calls[0][0]["evalscript"]
 
 
+async def test_fetch_populates_cloud_mask_at_parity_with_windowed_cog():
+    """The cloud-honesty overlay mask (backlog 0046) is computed identically to windowed_cog, so the
+    two real adapters cannot drift: True only for in-field pixels the SCL clear mask dropped."""
+    process, decoder = _FakeProcess(), _FakeDecoder()
+    adapter = _adapter(process, decoder)
+    await adapter.search(_AOI, _RANGE)
+    result = await adapter.fetch(_ref(), _AOI, bands=["B04", "B08"], resolution_m=10.0)
+
+    assert result.cloud_mask is not None
+    # scl [[4,9],[4,4]] & dataMask [[1,1],[0,1]] -> only the cloudy in-AOI pixel [0,1] is masked.
+    assert np.array_equal(result.cloud_mask, np.array([[False, True], [False, False]]))
+
+
 async def test_preview_returns_server_rendered_png_with_locked_range():
     process, decoder = _FakeProcess(), _FakeDecoder()
     adapter = _adapter(process, decoder)

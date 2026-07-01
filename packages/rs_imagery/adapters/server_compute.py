@@ -358,6 +358,9 @@ class ServerComputeAdapter(AccessPort):
         keep = clear_mask(scl) & inside
         masked = {band: np.where(keep, arr, np.nan) for band, arr in decoded.items()}
         clear = clear_fraction(scl, inside)
+        # Same cloud-honesty mask as windowed_cog so the two real adapters stay at parity: in-field
+        # pixels the SCL clear mask dropped, reused from the mask invariant 3 already computed here.
+        cloud_mask = inside & ~keep
 
         return NormalizedResult(
             scene_id=scene_ref.scene_id,
@@ -370,6 +373,7 @@ class ServerComputeAdapter(AccessPort):
                 processing_mode=ProcessingMode.SERVER_COMPUTE,
                 accessed_at=datetime.now(UTC),
             ),
+            cloud_mask=cloud_mask,
         )
 
     async def preview(

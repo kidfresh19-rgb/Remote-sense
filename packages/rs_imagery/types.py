@@ -123,6 +123,13 @@ class NormalizedResult:
     data: BandStack
     clear_fraction: float  # fraction of AOI pixels usable after SCL masking
     provenance: Provenance
+    # The spatial detail behind `clear_fraction`: True where an in-AOI pixel was excluded by the
+    # per-AOI SCL clear mask (invariant 3), i.e. `inside & ~(clear_mask(scl) & inside)`, aligned to
+    # `data`'s grid. This is the same mask invariant 3 already computes at fetch time, captured
+    # before the raw SCL band is discarded (invariant 7) so the cloud-honesty overlay can render
+    # *which part* of the field is unreliable, not just the scalar fraction. None on adapters that
+    # do not model SCL (the mock), which the caller treats as "no overlay for this pass".
+    cloud_mask: np.ndarray | None = None
 
 
 @dataclass

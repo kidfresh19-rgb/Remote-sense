@@ -44,6 +44,21 @@ def index_raster(
     return out
 
 
+def cloud_mask_raster(cloud_mask: np.ndarray) -> np.ndarray:
+    """A single-band float32 raster for the cloud-honesty overlay (backlog 0046): 1.0 where an
+    in-AOI pixel was excluded by per-AOI SCL masking (invariant 3), NaN (NoData) everywhere else.
+
+    `cloud_mask` is the boolean the adapter already computed at fetch time (`inside & ~keep`, where
+    `keep = clear_mask(scl) & inside`); this only reshapes it into the NaN-NoData COG convention the
+    tiler reads, it does not recompute cloud detection. Encoding the masked pixels as the raster's
+    *footprint* (finite where masked, NoData elsewhere) means the tiler renders the hatch exactly
+    over the unreliable part of the field with no geometry needed at tile time - the same way the
+    index COGs already carry their valid region as their footprint."""
+    out = np.full(cloud_mask.shape, NODATA, dtype="float32")
+    out[np.asarray(cloud_mask, dtype=bool)] = 1.0
+    return out
+
+
 def rgb_raster(
     bands: dict[str, np.ndarray],
     *,

@@ -359,6 +359,10 @@ class WindowedCogAdapter(AccessPort):
         keep = clear_mask(scl) & inside
         masked = {band: np.where(keep, arr, np.nan) for band, arr in reflectance.items()}
         clear = clear_fraction(scl, inside)
+        # The spatial detail behind `clear`: in-field pixels the SCL clear mask dropped. Captured
+        # here, the one place the SCL band and the AOI mask coexist, before SCL is discarded
+        # (invariant 7), so the cloud-honesty overlay reuses this mask rather than recomputing it.
+        cloud_mask = inside & ~keep
 
         return NormalizedResult(
             scene_id=scene_ref.scene_id,
@@ -376,6 +380,7 @@ class WindowedCogAdapter(AccessPort):
                 processing_mode=ProcessingMode.WINDOWED_COG,
                 accessed_at=datetime.now(UTC),
             ),
+            cloud_mask=cloud_mask,
         )
 
     async def preview(

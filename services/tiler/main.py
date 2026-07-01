@@ -14,6 +14,7 @@ from rs_core import S3CogStore, cog_key, gdal_s3_env, get_settings, vsis3_uri
 from services.tiler.render import (
     RasterStackUnavailable,
     TileUnavailable,
+    render_mask_tile,
     render_params,
     render_preview,
     render_tile,
@@ -132,6 +133,39 @@ async def tile(
     source = vsis3_uri(settings.minio_bucket, key)
     try:
         png = render_tile(source, index=index, z=z, x=x, y=y, gdal_env=gdal_s3_env(settings))
+    except RasterStackUnavailable as exc:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "raster stack not installed (the `geo` extra runs in-container)",
+        ) from exc
+    except TileUnavailable as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+
+    return Response(content=png, media_type="image/png")
+
+
+@app.get("/mask/{geometry_version}/{field_id}/{scene_id}/{z}/{x}/{y}.png")
+async def mask_tile(
+    geometry_version: int,
+    field_id: str,
+    scene_id: str,
+    z: int,
+    x: int,
+    y: int,
+) -> Response:
+    """The cloud-honesty overlay tile (backlog 0046) for one field/scene/geometry version: a
+    semi-transparent hatch over the pixels the per-AOI SCL mask (invariant 3) dropped, so the map
+    can show *which part* of the field is unreliable, not just the `clear_fraction` badge. One mask
+    per pass, so there is no `{index}` segment; the key pins field/scene/geometry version, so the
+    overlay always tracks the active pass and can never show a stale mask. 404 when the pass has no
+    stored mask COG or the tile is outside coverage; 503 when the raster stack is absent (host)."""
+    settings = get_settings()
+    key = cog_key(
+        field_id=field_id, scene_id=scene_id, index="mask", geometry_version=geometry_version
+    )
+    source = vsis3_uri(settings.minio_bucket, key)
+    try:
+        png = render_mask_tile(source, z=z, x=x, y=y, gdal_env=gdal_s3_env(settings))
     except RasterStackUnavailable as exc:
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,

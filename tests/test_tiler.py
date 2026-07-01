@@ -71,6 +71,43 @@ def test_tile_missing_cog_is_404(monkeypatch) -> None:
         assert client.get("/tiles/ndvi/1/FIELD-1/SCENE-1/0/0/0.png").status_code == 404
 
 
+def test_mask_tile_without_raster_stack_is_503(monkeypatch) -> None:
+    # The cloud-honesty overlay (backlog 0046) shares the host 503 path: no geo extra -> 503.
+    import services.tiler.main as tiler_main
+    from services.tiler.render import RasterStackUnavailable
+
+    def _no_stack(*args: object, **kwargs: object) -> bytes:
+        raise RasterStackUnavailable("no raster stack")
+
+    monkeypatch.setattr(tiler_main, "render_mask_tile", _no_stack)
+    with TestClient(app) as client:
+        assert client.get("/mask/1/FIELD-1/SCENE-1/0/0/0.png").status_code == 503
+
+
+def test_mask_tile_missing_cog_is_404(monkeypatch) -> None:
+    # A pass with no stored mask COG (or a tile outside its coverage) is a 404, like the index tile.
+    import services.tiler.main as tiler_main
+    from services.tiler.render import TileUnavailable
+
+    def _missing(*args: object, **kwargs: object) -> bytes:
+        raise TileUnavailable("no cloud-mask COG at the source")
+
+    monkeypatch.setattr(tiler_main, "render_mask_tile", _missing)
+    with TestClient(app) as client:
+        assert client.get("/mask/1/FIELD-1/SCENE-1/0/0/0.png").status_code == 404
+
+
+def test_mask_tile_returns_png(monkeypatch) -> None:
+    # The happy path serves image/png; the render is stubbed so the route wiring is what is tested.
+    import services.tiler.main as tiler_main
+
+    monkeypatch.setattr(tiler_main, "render_mask_tile", lambda *a, **kw: b"\x89PNG\r\n\x1a\n")
+    with TestClient(app) as client:
+        resp = client.get("/mask/1/FIELD-1/SCENE-1/0/0/0.png")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "image/png"
+
+
 def test_static_unknown_view_is_422() -> None:
     with TestClient(app) as client:
         assert client.get("/static/bogus/1/FIELD-1/SCENE-1.jpg").status_code == 422

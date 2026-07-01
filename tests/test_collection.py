@@ -181,6 +181,41 @@ async def test_collect_field_emits_index_rasters_when_requested() -> None:
     assert rasters["fcc"].array.ndim == 3 and rasters["fcc"].array.shape[0] == 3
     assert rasters["ndvi"].crs  # carries the grid CRS for the COG
     assert len(rasters["ndre"].transform) == 6
+    # The mock models no SCL, so no cloud-mask overlay is emitted on a mock-backed run.
+    assert "mask" not in rasters
+
+
+class _CloudMaskMock(MockAdapter):
+    """Mimics a real adapter for the overlay path: attaches a per-AOI SCL cloud mask to every fetch
+    (the mock proper models no SCL), so the mask-COG emission (backlog 0046) is exercisable with no
+    network. The top half of the window is marked cloud/SCL-masked."""
+
+    async def fetch(self, scene_ref, aoi, bands, *, resolution_m=None):  # noqa: ANN001
+        result = await super().fetch(scene_ref, aoi, bands, resolution_m=resolution_m)
+        h, w = next(iter(result.data.bands.values())).shape
+        mask = np.zeros((h, w), dtype=bool)
+        mask[: h // 2] = True
+        result.cloud_mask = mask
+        return result
+
+
+async def test_collect_field_emits_cloud_mask_raster_when_adapter_provides_one() -> None:
+    """When the adapter carries a per-AOI cloud mask (the real adapters do), collection emits a
+    single-band `mask` raster on the 10 m base grid so the tiler can serve the honesty overlay."""
+    results = await collect_field(
+        adapter=_CloudMaskMock(),
+        aoi=_AOI,
+        time_range=_RANGE,
+        indices=["ndvi", "ndre"],
+        emit_rasters=True,
+    )
+    rasters = results[0].rasters
+    assert "mask" in rasters
+    mask_arr = rasters["mask"].array
+    assert mask_arr.ndim == 2  # a single-band boolean footprint, not a 3-band composite
+    half = mask_arr.shape[0] // 2
+    assert np.all(mask_arr[:half] == 1.0)  # masked pixels are the finite footprint
+    assert np.all(np.isnan(mask_arr[half:]))  # clear pixels are NoData
 
 
 class _FakeCogStore:

@@ -8,7 +8,7 @@ import math
 import numpy as np
 import pytest
 from rs_analysis import index_raster
-from rs_analysis.cog import rgb_raster
+from rs_analysis.cog import cloud_mask_raster, rgb_raster
 
 
 def _ndvi_bands() -> dict[str, np.ndarray]:
@@ -109,6 +109,47 @@ def test_rgb_raster_missing_band_raises() -> None:
     bands = {"B04": np.ones((2, 2), dtype="float32"), "B02": np.ones((2, 2), dtype="float32")}
     with pytest.raises(ValueError, match="B03"):
         rgb_raster(bands)
+
+
+# --- cloud_mask_raster tests (backlog 0046 cloud-honesty overlay) ---
+
+
+def test_cloud_mask_raster_marks_masked_pixels_as_footprint() -> None:
+    """Masked (cloud/SCL) pixels become the raster's finite footprint (1.0); everything else is
+    NoData, so the stored COG's coverage is exactly the unreliable part of the field."""
+    mask = np.array([[False, True], [True, False]])
+    raster = cloud_mask_raster(mask)
+    assert raster.dtype == np.float32
+    assert raster.shape == (2, 2)
+    assert raster[0, 1] == 1.0 and raster[1, 0] == 1.0  # masked -> finite footprint
+    assert np.isnan(raster[0, 0]) and np.isnan(raster[1, 1])  # clear -> NoData
+
+
+def test_cloud_mask_raster_all_clear_is_all_nodata() -> None:
+    """A fully clear pass carries no overlay footprint at all - the tile renders empty."""
+    raster = cloud_mask_raster(np.zeros((3, 3), dtype=bool))
+    assert np.all(np.isnan(raster))
+
+
+def test_cloud_mask_raster_cog_round_trips() -> None:
+    """The masked footprint survives the COG encode/decode as finite-with-NaN-NoData, so the tiler's
+    NoData-derived mask lines up pixel for pixel with the cloud mask the adapter computed."""
+    pytest.importorskip("rasterio")
+    from rasterio.io import MemoryFile
+    from rs_analysis import write_cog
+
+    mask = np.zeros((8, 8), dtype=bool)
+    mask[2:5, 2:5] = True
+    arr = cloud_mask_raster(mask)
+    transform = (10.0, 0.0, 500000.0, 0.0, -10.0, 8030000.0)
+    cog = write_cog(arr, transform=transform, crs="EPSG:32735")
+
+    with MemoryFile(cog) as mem, mem.open() as src:
+        assert src.count == 1
+        assert math.isnan(src.nodata)
+        read = src.read(1)
+        assert np.all(read[2:5, 2:5] == 1.0)  # the masked block is the footprint
+        assert np.isnan(read[0, 0])  # clear pixels are NoData
 
 
 def test_write_cog_rgb_nodata_tagged() -> None:

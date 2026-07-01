@@ -1,4 +1,4 @@
-﻿"""Collection orchestration (Phase 3): turn a field + time range into per-pass index results
+"""Collection orchestration (Phase 3): turn a field + time range into per-pass index results
 by driving the AccessPort and the analysis engine. This is the body the Celery backfill /
 forward-fill tasks call; kept as a plain async function so it is testable against the mock
 adapter with no broker and no DB.
@@ -16,7 +16,14 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 import numpy as np
-from rs_analysis import AnalysisOutput, analyze_index, get_index, index_raster, rgb_raster
+from rs_analysis import (
+    AnalysisOutput,
+    analyze_index,
+    cloud_mask_raster,
+    get_index,
+    index_raster,
+    rgb_raster,
+)
 from rs_imagery import AOI, AccessPort, SceneRef, TimeRange
 
 from services.worker.locks import DEFAULT_LOCK_TTL_SECONDS, LockClient, enqueue_lock
@@ -72,6 +79,7 @@ async def _process_scene(
     fetched_bands_10m = None
     transform_10m = None
     crs_10m = None
+    cloud_mask_10m: np.ndarray | None = None
 
     for resolution_m, names in resolution_groups.items():
         bands = sorted({band for name in names for band in get_index(name).bands})
@@ -85,6 +93,7 @@ async def _process_scene(
             fetched_bands_10m = fetched.data.bands
             transform_10m = fetched.data.transform
             crs_10m = fetched.data.crs
+            cloud_mask_10m = fetched.cloud_mask
 
         for name in names:
             outputs.append(
@@ -109,6 +118,7 @@ async def _process_scene(
         fetched_bands_10m = fetched_10m.data.bands
         transform_10m = fetched_10m.data.transform
         crs_10m = fetched_10m.data.crs
+        cloud_mask_10m = fetched_10m.cloud_mask
 
     if emit_rasters and fetched_bands_10m is not None:
         nir = fetched_bands_10m.get("B08")
@@ -129,6 +139,19 @@ async def _process_scene(
             assert transform_10m is not None and crs_10m is not None
             rasters["fcc"] = IndexRaster(
                 array=np.stack([nir, red, green], axis=0),
+                transform=transform_10m,
+                crs=crs_10m,
+            )
+        # Cloud-honesty overlay (backlog 0046): the per-AOI SCL clear mask the adapter already
+        # computed for this pass, stored as a small boolean COG on the 10 m base grid so the tiler
+        # serves it as a semi-transparent hatch. A derived artifact like rgb/fcc (no stats, no
+        # analysis row), keyed by field/scene/geometry version, so it can never show a stale pass.
+        # Only the real adapters carry a cloud mask (the mock models no SCL), so a mock-backed run
+        # simply emits none - the overlay is a real-data layer.
+        if cloud_mask_10m is not None:
+            assert transform_10m is not None and crs_10m is not None
+            rasters["mask"] = IndexRaster(
+                array=cloud_mask_raster(cloud_mask_10m),
                 transform=transform_10m,
                 crs=crs_10m,
             )
