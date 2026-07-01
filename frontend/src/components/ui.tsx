@@ -94,6 +94,7 @@ interface SegmentedOption<T extends string> {
   value: T;
   label: string;
   title?: string;
+  disabled?: boolean;
 }
 
 export function SegmentedControl<T extends string>({
@@ -122,10 +123,12 @@ export function SegmentedControl<T extends string>({
             aria-selected={active}
             title={opt.title ?? opt.label}
             onClick={() => onChange(opt.value)}
+            disabled={opt.disabled}
             className={cn(
               "rounded-[5px] px-2.5 py-1 text-xs font-medium ease-out transition-colors duration-150",
               focusable,
               active ? "bg-accent text-accent-fg" : "text-muted hover:text-fg",
+              opt.disabled && "opacity-40 pointer-events-none",
             )}
           >
             {opt.label}

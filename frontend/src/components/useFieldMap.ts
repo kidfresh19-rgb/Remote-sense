@@ -6,7 +6,7 @@ import maplibregl, {
 } from "maplibre-gl";
 import { useEffect, useRef, useState, type RefObject } from "react";
 
-import { indexTileTemplate, maskTileTemplate, type Field } from "@/lib/api";
+import { diffTileTemplate, indexTileTemplate, maskTileTemplate, type Field } from "@/lib/api";
 import { config } from "@/lib/config";
 import { activeRasterKey, type IndexKey } from "@/lib/indices";
 
@@ -19,6 +19,12 @@ const INDEX_LAYER = "index-raster-layer";
 // SCL mask dropped for the active pass. One mask per pass, independent of INDEX_LAYER's index.
 const MASK_SOURCE = "cloud-mask-raster";
 const MASK_LAYER = "cloud-mask-raster-layer";
+// Pass-to-pass difference layer (backlog 0045): index(sceneB) minus index(sceneA) between two
+// explicit passes. Stands in for the plain index/rgb/fcc overlay - the diff pane's caller passes
+// showRaster/showRgb/showFcc all false, so INDEX_LAYER never competes with this one for the same
+// pane.
+const DIFF_SOURCE = "index-diff-raster";
+const DIFF_LAYER = "index-diff-raster-layer";
 
 const CUSTOM_AOI_SOURCE = "custom-aoi";
 const CUSTOM_AOI_FILL = "custom-aoi-fill";
@@ -142,6 +148,11 @@ interface FieldMapParams {
    *  above whichever of those is on, so it carries no `index` and never refetches or flickers
    *  when the analyst switches the displayed index. */
   showCloudMask: boolean;
+  /** Pass-to-pass difference layer (backlog 0045): non-null renders index(sceneB) minus
+   *  index(sceneA) for `index`, replacing the plain index/rgb/fcc overlay for this map (the caller
+   *  passes showRaster/showRgb/showFcc all false alongside it). Null/undefined removes the layer.
+   *  Never computed here - the caller resolves both scene ids from its own explicit A/B pick. */
+  diffPass?: { sceneA: string; sceneB: string } | null;
   /** Fit the camera to the field on selection. The follower map in a synced pair sets this false
    *  so the shared-camera controller drives it instead. */
   fit?: boolean;
@@ -353,6 +364,7 @@ export function useFieldMap(
     showRgb,
     showFcc = false,
     showCloudMask,
+    diffPass,
     fit = true,
     controls = true,
     onMap,
@@ -574,6 +586,41 @@ export function useFieldMap(
     if (readyRef.current) apply();
     else map.once("load", apply);
   }, [showCloudMask, field, sceneId]);
+
+  // The pass-to-pass difference overlay from the tiler (backlog 0045): index(sceneB) minus
+  // index(sceneA) between two explicit passes. In practice mutually exclusive with the plain
+  // index/rgb/fcc overlay - the diff pane's caller passes showRaster/showRgb/showFcc all false -
+  // so no layering order needs negotiating against INDEX_LAYER; anchored at FIELD_LINE the same
+  // way that overlay is.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const apply = () => {
+      if (map.getLayer(DIFF_LAYER)) map.removeLayer(DIFF_LAYER);
+      if (map.getSource(DIFF_SOURCE)) map.removeSource(DIFF_SOURCE);
+      if (!diffPass || !field) return;
+      map.addSource(DIFF_SOURCE, {
+        type: "raster",
+        tiles: [
+          diffTileTemplate({
+            index,
+            geometryVersion: field.geometry_version,
+            fieldId: field.field_id,
+            sceneA: diffPass.sceneA,
+            sceneB: diffPass.sceneB,
+          }),
+        ],
+        tileSize: 256,
+      });
+      const beforeId = map.getLayer(FIELD_LINE) ? FIELD_LINE : undefined;
+      map.addLayer(
+        { id: DIFF_LAYER, type: "raster", source: DIFF_SOURCE, paint: { "raster-opacity": 0.8 } },
+        beforeId,
+      );
+    };
+    if (readyRef.current) apply();
+    else map.once("load", apply);
+  }, [diffPass, index, field]);
 
   // Custom AOI overlay: dashed line + translucent fill, placed beneath the field outline.
   useEffect(() => {

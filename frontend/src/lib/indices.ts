@@ -131,3 +131,33 @@ export function colorForValue(meta: IndexMeta, value: number): string {
 export function gradientCss(meta: IndexMeta): string {
   return `linear-gradient(to right, ${meta.gradient.join(", ")})`;
 }
+
+// Diverging ramp for the pass-to-pass difference layer (backlog 0045), matching the tiler's
+// `RdYlGn` colormap (services/tiler/render.py::_DIFF_COLORMAP) so the legend reads the same as the
+// rendered tiles: red is decline, green is growth, the pale center is "no change".
+const DIVERGING = [
+  "#a50026",
+  "#d73027",
+  "#f46d43",
+  "#fdae61",
+  "#fee08b",
+  "#ffffbf",
+  "#d9ef8b",
+  "#a6d96a",
+  "#66bd63",
+  "#1a9850",
+  "#006837",
+];
+
+export function diffGradientCss(): string {
+  return `linear-gradient(to right, ${DIVERGING.join(", ")})`;
+}
+
+/** The symmetric diverging range a pass-to-pass diff of this index renders on, centered on zero:
+ *  (-M, +M) where M = max(|min|, |max|) of the index's own locked single-pass display range.
+ *  Mirrors the tiler's `_diff_range` (services/tiler/render.py) exactly, so the legend's labelled
+ *  range always matches what the rendered diff tile actually used. */
+export function diffRange(meta: IndexMeta): [number, number] {
+  const m = Math.max(Math.abs(meta.min), Math.abs(meta.max));
+  return [-m, m];
+}

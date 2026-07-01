@@ -31,6 +31,11 @@ interface WorkspaceState {
   // showNaturalRegions, this is map context, not field-scoped state, so it survives farm/field
   // changes and restoreView.
   showCloudMask: boolean;
+  // Which of SceneCompare's two views is showing (backlog 0045): the existing synced side-by-side
+  // panes, or the pass-to-pass difference layer. Only meaningful while compareDate is set, and
+  // reset to "side-by-side" whenever compare mode is exited (or the field/farm changes) so a stale
+  // "diff" selection never carries into a fresh, not-yet-explicit A/B pairing.
+  compareMode: "side-by-side" | "diff";
 }
 
 interface RestoreView {
@@ -55,7 +60,8 @@ type Action =
   | { type: "setCustomAOI"; geometry: Geometry | null }
   | { type: "toggleNaturalRegions" }
   | { type: "setUploadedRegionLayer"; layerId: string | null }
-  | { type: "toggleCloudMask" };
+  | { type: "toggleCloudMask" }
+  | { type: "setCompareMode"; compareMode: "side-by-side" | "diff" };
 
 const initialState: WorkspaceState = {
   farmId: null,
@@ -72,6 +78,7 @@ const initialState: WorkspaceState = {
   showNaturalRegions: false,
   uploadedRegionLayerId: null,
   showCloudMask: false,
+  compareMode: "side-by-side",
 };
 
 function reducer(state: WorkspaceState, action: Action): WorkspaceState {
@@ -89,6 +96,7 @@ function reducer(state: WorkspaceState, action: Action): WorkspaceState {
         showContactSheet: false,
         showRgb: false,
         showFcc: false,
+        compareMode: "side-by-side",
       };
     case "selectField":
       if (action.fieldId === state.fieldId) return state;
@@ -101,6 +109,7 @@ function reducer(state: WorkspaceState, action: Action): WorkspaceState {
         showContactSheet: false,
         showRgb: false,
         showFcc: false,
+        compareMode: "side-by-side",
       };
     case "setIndex":
       return { ...state, index: action.index };
@@ -115,11 +124,14 @@ function reducer(state: WorkspaceState, action: Action): WorkspaceState {
       return { ...state, passDate: action.passDate };
     case "setCompareDate":
       // Entering (or switching) compare replaces the contact sheet, mirroring the reverse case in
-      // toggleContactSheet - the two grid/pane views can never both be on.
+      // toggleContactSheet - the two grid/pane views can never both be on. Leaving compare entirely
+      // (compareDate -> null) also drops back to side-by-side, so a stale "diff" selection never
+      // carries into the next time compare is entered.
       return {
         ...state,
         compareDate: action.compareDate,
         showContactSheet: action.compareDate !== null ? false : state.showContactSheet,
+        compareMode: action.compareDate === null ? "side-by-side" : state.compareMode,
       };
     case "restoreView":
       // Atomic restore: setting farm then field separately would trip selectFarm's field-clear.
@@ -134,6 +146,7 @@ function reducer(state: WorkspaceState, action: Action): WorkspaceState {
         showContactSheet: false,
         showRgb: false,
         showFcc: false,
+        compareMode: "side-by-side",
       };
     case "toggleContactSheet":
       const nextShowContactSheet = !state.showContactSheet;
@@ -175,6 +188,8 @@ function reducer(state: WorkspaceState, action: Action): WorkspaceState {
       return { ...state, uploadedRegionLayerId: action.layerId };
     case "toggleCloudMask":
       return { ...state, showCloudMask: !state.showCloudMask };
+    case "setCompareMode":
+      return { ...state, compareMode: action.compareMode };
     default:
       return state;
   }
@@ -197,6 +212,7 @@ interface WorkspaceContextValue extends WorkspaceState {
   toggleNaturalRegions: () => void;
   setUploadedRegionLayer: (layerId: string | null) => void;
   toggleCloudMask: () => void;
+  setCompareMode: (mode: "side-by-side" | "diff") => void;
 }
 
 const WorkspaceContext = createContext<WorkspaceContextValue | null>(null);
@@ -223,6 +239,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       setUploadedRegionLayer: (layerId) =>
         dispatch({ type: "setUploadedRegionLayer", layerId }),
       toggleCloudMask: () => dispatch({ type: "toggleCloudMask" }),
+      setCompareMode: (mode) => dispatch({ type: "setCompareMode", compareMode: mode }),
     }),
     [state],
   );

@@ -518,3 +518,23 @@ export function maskTileTemplate(params: {
   )}/{z}/{x}/{y}.png`;
   return `${config.tilerBaseUrl}/mask/${path}`;
 }
+
+/** XYZ template for the pass-to-pass difference layer (backlog 0045): index(sceneB) minus
+ *  index(sceneA), rendered on a symmetric diverging ramp centered on zero. Only reachable once the
+ *  caller has resolved two explicit passes (SceneCompare's own pickers) - this builder never
+ *  guesses a pair, it just addresses whichever two scene ids it is given. 404s until both passes
+ *  have a COG at `index` or the tile falls outside coverage; a plain MapLibre raster source
+ *  tolerates that the same way indexTileTemplate's tiles do. */
+export function diffTileTemplate(params: {
+  index: string;
+  geometryVersion: number;
+  fieldId: string;
+  sceneA: string;
+  sceneB: string;
+}): string {
+  const { index, geometryVersion, fieldId, sceneA, sceneB } = params;
+  const path = `${encodeURIComponent(index)}/${geometryVersion}/${encodeURIComponent(
+    fieldId,
+  )}/${encodeURIComponent(sceneA)}/${encodeURIComponent(sceneB)}/{z}/{x}/{y}.png`;
+  return `${config.tilerBaseUrl}/diff/${path}`;
+}
