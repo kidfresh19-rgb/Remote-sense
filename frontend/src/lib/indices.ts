@@ -98,6 +98,14 @@ export function indexMeta(key: IndexKey): IndexMeta {
   return meta;
 }
 
+/** Composite precedence shared by every raster-URL builder in the workspace: false-color beats
+ *  true-color beats the plain index colormap. Kept in one place so the main map (`useFieldMap`),
+ *  the scene list thumbnails (`SceneList`), and the contact-sheet grid (`ContactSheet`) can never
+ *  drift out of agreement about what a given pass "looks like" under the current toggle state. */
+export function activeRasterKey(index: IndexKey, showRgb: boolean, showFcc: boolean): "rgb" | "fcc" | IndexKey {
+  return showFcc ? "fcc" : showRgb ? "rgb" : index;
+}
+
 function hexToRgb(hex: string): [number, number, number] {
   const h = hex.replace("#", "");
   return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];

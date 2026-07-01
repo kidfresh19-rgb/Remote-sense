@@ -1,4 +1,14 @@
-import { CaretLeft, CaretRight, Columns, Stack, X, Lightning, Eye, Plant } from "@phosphor-icons/react";
+import {
+  CaretLeft,
+  CaretRight,
+  Columns,
+  Stack,
+  SquaresFour,
+  X,
+  Lightning,
+  Eye,
+  Plant,
+} from "@phosphor-icons/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { Field } from "@/lib/api";
@@ -14,6 +24,7 @@ import {
 import { useWorkspace } from "@/state/workspace";
 
 import { AOIBar } from "./AOIBar";
+import { ContactSheet } from "./ContactSheet";
 import { CoordinateEntryModal } from "./CoordinateEntryModal";
 import { FileUploadPanel } from "./FileUploadPanel";
 import { IndexLegend } from "./IndexLegend";
@@ -41,7 +52,10 @@ export function MapPanel({
     fieldId,
     index,
     passDate,
+    setPassDate,
     compareDate,
+    showContactSheet,
+    toggleContactSheet,
     showRaster,
     showRgb,
     showFcc,
@@ -84,6 +98,18 @@ export function MapPanel({
   const [hasNavigated, setHasNavigated] = useState(false);
   const flyToRef = useRef<((center: [number, number], zoom?: number) => void) | null>(null);
   const fitBoundsRef = useRef<((sw: [number, number], ne: [number, number]) => void) | null>(null);
+
+  // No MapLibre instance is mounted while the contact sheet is showing - useFieldMap's cleanup
+  // calls map.remove() on unmount - so the fly-to/fit-bounds handles captured from the last live
+  // map would otherwise call into a removed instance. Null them out so the AOI toolbar's search
+  // and coordinate-entry flows safely no-op instead of throwing; SingleSceneMap/SceneCompare hand
+  // back fresh handles via onMapReady the moment either remounts.
+  useEffect(() => {
+    if (showContactSheet) {
+      flyToRef.current = null;
+      fitBoundsRef.current = null;
+    }
+  }, [showContactSheet]);
 
   const selectedField = useMemo(
     () => fields.data?.find((f) => f.field_id === fieldId) ?? null,
@@ -170,7 +196,11 @@ export function MapPanel({
   return (
     <section className="relative min-h-0 h-full bg-bg">
       {/* Map — always mounted so the AOI toolbar and coordinate/geocoder callbacks have a
-           live map regardless of field selection state. */}
+           live map regardless of field selection state, except in the contact sheet, which
+           replaces the map with a grid of static thumbnails (see the flyToRef/fitBoundsRef
+           invalidation effect above). The three modes are mutually exclusive by construction:
+           workspace state keeps compareDate and showContactSheet from both being set at once,
+           and this chain only ever renders one of the three branches regardless. */}
       {comparing && selectedField ? (
         <SceneCompare
           field={selectedField}
@@ -179,6 +209,21 @@ export function MapPanel({
           onDrawComplete={handleDrawComplete}
           onDrawCancel={handleDrawCancel}
           onMapReady={handleMapReady}
+        />
+      ) : showContactSheet && selectedField ? (
+        <ContactSheet
+          field={selectedField}
+          scenes={list}
+          isLoading={scenes.isLoading}
+          isError={scenes.isError}
+          error={scenes.error}
+          onRetry={() => scenes.refetch()}
+          onSelectPass={(date) => {
+            setPassDate(date);
+            // Only reachable while showContactSheet is true, so this always exits (never
+            // re-enters) contact-sheet mode.
+            toggleContactSheet();
+          }}
         />
       ) : (
         <SingleSceneMap
@@ -278,6 +323,15 @@ export function MapPanel({
           className="border border-border bg-panel"
         >
           <Columns size={18} />
+        </IconButton>
+        <IconButton
+          label={showContactSheet ? "Exit contact sheet" : "View all passes as a grid"}
+          active={showContactSheet}
+          onClick={toggleContactSheet}
+          disabled={!selectedField}
+          className="border border-border bg-panel"
+        >
+          <SquaresFour size={18} />
         </IconButton>
         <RegionLayersControl
           layers={regionLayers.data ?? []}

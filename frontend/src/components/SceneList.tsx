@@ -5,6 +5,7 @@ import { useToken } from "@/auth/TokenProvider";
 import type { ResolvedPass } from "@/lib/api";
 import { config } from "@/lib/config";
 import { cn, formatDate } from "@/lib/format";
+import { activeRasterKey } from "@/lib/indices";
 import { useAsOf, useScenes } from "@/lib/queries";
 import { useLazyImage } from "@/lib/useLazyImage";
 import { useWorkspace } from "@/state/workspace";
@@ -97,11 +98,11 @@ function SceneRow({
   const [imgError, setImgError] = useState(false);
   const [downloading, setDownloading] = useState(false);
 
-  // Mirrors useFieldMap's main-map raster precedence (FCC > RGB > index), so the thumbnail
-  // matches whatever composite the analyst has picked. Unlike the main map, a thumbnail must
-  // never render blank, so with both composite toggles off it falls back to the index colormap
-  // rather than the map's "none" state - always analytical by default.
-  const activeRaster = showFcc ? "fcc" : showRgb ? "rgb" : index;
+  // activeRasterKey mirrors the main map's composite precedence (FCC > RGB > index) so the
+  // thumbnail matches whatever composite the analyst has picked. Unlike the main map, a
+  // thumbnail must never render blank, so it always resolves to something - never the map's
+  // "none" state.
+  const activeRaster = activeRasterKey(index, showRgb, showFcc);
 
   const tilerUrl =
     geometryVersion != null

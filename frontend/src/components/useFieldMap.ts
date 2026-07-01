@@ -8,7 +8,7 @@ import { useEffect, useRef, type RefObject } from "react";
 
 import { indexTileTemplate, type Field } from "@/lib/api";
 import { config } from "@/lib/config";
-import type { IndexKey } from "@/lib/indices";
+import { activeRasterKey, type IndexKey } from "@/lib/indices";
 
 const FIELD_SOURCE = "field";
 const FIELD_FILL = "field-fill";
@@ -478,7 +478,11 @@ export function useFieldMap(
     const apply = () => {
       if (map.getLayer(INDEX_LAYER)) map.removeLayer(INDEX_LAYER);
       if (map.getSource(INDEX_SOURCE)) map.removeSource(INDEX_SOURCE);
-      const activeRaster = showFcc ? "fcc" : showRgb ? "rgb" : showRaster ? index : null;
+      // The fcc/rgb/index precedence itself is shared (activeRasterKey); the extra showRaster
+      // gate is local to the live map, which - unlike a thumbnail - can hide the layer entirely
+      // instead of always falling back to the index colormap.
+      const activeRaster =
+        showFcc || showRgb || showRaster ? activeRasterKey(index, showRgb, showFcc) : null;
       if (!activeRaster || !field || !sceneId) return;
       map.addSource(INDEX_SOURCE, {
         type: "raster",

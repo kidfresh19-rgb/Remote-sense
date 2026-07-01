@@ -14,6 +14,9 @@ interface WorkspaceState {
   requestedDate: string | null;
   // The second pass to compare the primary against. Non-null puts the map into side-by-side mode.
   compareDate: string | null;
+  // Small-multiples grid of every pass's thumbnail (backlog 0044). Mutually exclusive with
+  // compare mode - both replace the single map, so the reducer keeps them from being on at once.
+  showContactSheet: boolean;
   showRaster: boolean;
   showRgb: boolean;
   showFcc: boolean; // false color (NIR/red/green): vegetation renders red
@@ -39,6 +42,7 @@ type Action =
   | { type: "applyResolvedPass"; passDate: string }
   | { type: "setCompareDate"; compareDate: string | null }
   | { type: "restoreView"; view: RestoreView }
+  | { type: "toggleContactSheet" }
   | { type: "toggleRaster" }
   | { type: "toggleRgb" }
   | { type: "toggleFcc" }
@@ -53,6 +57,7 @@ const initialState: WorkspaceState = {
   passDate: null,
   requestedDate: null,
   compareDate: null,
+  showContactSheet: false,
   showRaster: false,
   showRgb: false,
   showFcc: false,
@@ -73,6 +78,7 @@ function reducer(state: WorkspaceState, action: Action): WorkspaceState {
         passDate: null,
         requestedDate: null,
         compareDate: null,
+        showContactSheet: false,
         showRgb: false,
         showFcc: false,
       };
@@ -84,6 +90,7 @@ function reducer(state: WorkspaceState, action: Action): WorkspaceState {
         passDate: null,
         requestedDate: null,
         compareDate: null,
+        showContactSheet: false,
         showRgb: false,
         showFcc: false,
       };
@@ -99,7 +106,13 @@ function reducer(state: WorkspaceState, action: Action): WorkspaceState {
       // "requested X -> showing Y (gap)".
       return { ...state, passDate: action.passDate };
     case "setCompareDate":
-      return { ...state, compareDate: action.compareDate };
+      // Entering (or switching) compare replaces the contact sheet, mirroring the reverse case in
+      // toggleContactSheet - the two grid/pane views can never both be on.
+      return {
+        ...state,
+        compareDate: action.compareDate,
+        showContactSheet: action.compareDate !== null ? false : state.showContactSheet,
+      };
     case "restoreView":
       // Atomic restore: setting farm then field separately would trip selectFarm's field-clear.
       return {
@@ -110,8 +123,17 @@ function reducer(state: WorkspaceState, action: Action): WorkspaceState {
         passDate: null,
         requestedDate: null,
         compareDate: null,
+        showContactSheet: false,
         showRgb: false,
         showFcc: false,
+      };
+    case "toggleContactSheet":
+      const nextShowContactSheet = !state.showContactSheet;
+      // Entering the contact sheet replaces compare mode for the same reason.
+      return {
+        ...state,
+        showContactSheet: nextShowContactSheet,
+        compareDate: nextShowContactSheet ? null : state.compareDate,
       };
     case "toggleRaster":
       const nextShowRaster = !state.showRaster;
@@ -157,6 +179,7 @@ interface WorkspaceContextValue extends WorkspaceState {
   applyResolvedPass: (passDate: string) => void;
   setCompareDate: (date: string | null) => void;
   restoreView: (view: RestoreView) => void;
+  toggleContactSheet: () => void;
   toggleRaster: () => void;
   toggleRgb: () => void;
   toggleFcc: () => void;
@@ -180,6 +203,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       applyResolvedPass: (passDate) => dispatch({ type: "applyResolvedPass", passDate }),
       setCompareDate: (compareDate) => dispatch({ type: "setCompareDate", compareDate }),
       restoreView: (view) => dispatch({ type: "restoreView", view }),
+      toggleContactSheet: () => dispatch({ type: "toggleContactSheet" }),
       toggleRaster: () => dispatch({ type: "toggleRaster" }),
       toggleRgb: () => dispatch({ type: "toggleRgb" }),
       toggleFcc: () => dispatch({ type: "toggleFcc" }),
