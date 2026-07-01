@@ -141,10 +141,11 @@ Independent of A vs B, the enrollment capability must:
 
 Small, and mostly verification rather than new product code:
 
-- [ ] **End-to-end ingest proof:** a test that drives a synthetic enrolled batch through
-  `fetch_household_declarations` → 0031 reconcile → a geometry-bearing Plot with the declared crop mix
-  and planting window, asserting an enrolled household becomes triage-visible. Most pieces exist; this
-  asserts the seam as a whole for the enrollment path.
+- [x] **End-to-end ingest proof** (done 2026-07-01): `tests/test_ward_watch_end_to_end_db.py` chains
+  `RecordingGatewayPort.fetch_household_declarations` → `_to_household_values` → 0031 reconcile → 0031
+  ingest → 0032 `assess_household_cohorts`, proving a pre-seeded geometry-bearing household becomes
+  triage-visible (dominant crop, ward, Natural Region correctly folded) with an honest small-cohort
+  `cohort_meets_quorum is False` outcome, not a forced quorum.
 - [ ] **Proxy-AOI parity fixture (if Option-1 locus is chosen):** publish a small fixture of
   `(lat, lon, size_class) → expected 4326 polygon + area_m2` generated from `proxy_aoi.py`, for the
   client's on-device port to test against. Keeps the two implementations from drifting.

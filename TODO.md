@@ -98,6 +98,9 @@ Remaining work:
   (owner, Mishael Gwede; CONFIRM markers removed from `rbac.py`) and server-side officer ward-scoping
   wired into `/ward-watch/triage` + `/visit` via `officer_wards()` (an officer is auto-scoped to the
   wards they enrolled; a client `ward` may only narrow, never widen; supervisors stay cross-ward).
+- [x] **End-to-end ingest proof** (done 2026-07-01, `tests/test_ward_watch_end_to_end_db.py`): the
+  0030 residual - proves the full enrollment-to-triage seam (gateway declarations → reconcile → index
+  ingest → triage read) chains correctly against a pre-seeded household.
 - [ ] **Tuning + procurement** (PRD §12.2/3/5/6): `N_min` plus the fallback thresholds, minimum usable
   pixel count plus erosion buffer, the planting-window capture mechanism, and authoritative
   ward-boundary data procurement.
@@ -110,8 +113,9 @@ Frontend surfaces:
 - **0030 enrollment client**: scoped in `docs/backlog/0030-ward-watch-offline-enrollment-client.md`.
   It is an AgriTrack / gateway-side capture-and-sync client (#6); the remote-sense seams it needs
   (0026/0027/0028/0029/0031) are already built. Gated on the §7.0 product-surface decision (officer
-  mode vs standalone app) and the 0026 field-name CONFIRM. Only three small in-repo residual checks
-  remain (end-to-end ingest proof, proxy-AOI parity fixture, the 0026 confirm).
+  mode vs standalone app) and the 0026 field-name CONFIRM. Two small in-repo residual checks remain
+  (proxy-AOI parity fixture - conditional on the locus decision, the 0026 confirm); the end-to-end
+  ingest proof is done (above).
 
 ---
 
