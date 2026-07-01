@@ -98,3 +98,5 @@ store available without introducing a new persistence layer.
   as the initial requested date when a field is opened while the anchor is active.
 - Ward Watch is unaffected until its feature branch merges; no placeholder or stub is needed because
   the anchor is read from the URL at the call site.
+- PRD: `docs/prd/0004-as-of-date-historical-anchor.md`. Implementation branch: new branch off
+  `develop` after `feat/ward-watch-movement-lens` merges.
