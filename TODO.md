@@ -112,3 +112,27 @@ Frontend surfaces:
   (0026/0027/0028/0029/0031) are already built. Gated on the §7.0 product-surface decision (officer
   mode vs standalone app) and the 0026 field-name CONFIRM. Only three small in-repo residual checks
   remain (end-to-end ingest proof, proxy-AOI parity fixture, the 0026 confirm).
+
+---
+
+## 📌 PRD 0004 — As-of date global historical anchor + individual-pass visualization
+
+Spec: `docs/prd/0004-as-of-date-historical-anchor.md` (Status: `ready-for-agent`, ADR 0013 accepted).
+Original scope (stories 1-20, the global `?asOf=` anchor across dashboard + workspace surfaces) is
+specced but **not yet sliced into backlog items** - its own text schedules the implementation branch
+for after `feat/ward-watch-movement-lens` merges. Not a "next tracer" to pick up on this branch.
+
+- [ ] **Global as-of anchor** (stories 1-20): not yet sliced. Slice via `/to-issues` once the Ward
+  Watch branch merges, per the PRD's own rollout note.
+
+**Extended scope: individual-pass visualization** (stories 21-25, folded in 2026-07-01) sliced into
+five independent backlog items - none block each other, any agent can grab any one:
+- [ ] **0042** index-aware pass thumbnails (frontend-only; `SceneList` thumbnails follow the active
+  index instead of hardcoded RGB).
+- [ ] **0043** timelapse playback control (frontend-only; auto-advance `passDate` on an interval).
+- [ ] **0044** contact-sheet / small-multiples map view (frontend-only; grid of per-pass thumbnails).
+- [ ] **0045** pass-to-pass difference layer (backend + frontend; decided 2026-07-01: no implicit
+  default pairing, extends `SceneCompare`'s explicit A/B; symmetric diverging colormap centered on
+  zero).
+- [ ] **0046** cloud-mask / clear-pixel honesty overlay (backend + frontend; decided 2026-07-01:
+  semi-transparent hatch, reuses the existing per-AOI SCL mask). Recommended before 0045.

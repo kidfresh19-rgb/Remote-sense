@@ -136,13 +136,58 @@ skip; the BFF contract is the higher-value seam):
 - Confirm that when `asOfDate` is non-null, the query key includes the date and the request URL
   carries `?as_of=`.
 
+## Extended scope: individual-pass visualization (folded in 2026-07-01)
+
+The original scope above propagates a resolved date to more surfaces; it deliberately does not
+change how a single pass is rendered. A separate review of the pass-selection UX (`SceneList`,
+`TimelineScrubber`, `SceneCompare`, `IndexTimeseriesChart`) found the selection mechanics extensive
+but the visualization of an individual pass thin: exactly one raster, swapped per click. These five
+user stories fold that richer visualization in as additive scope, sliced into their own backlog
+items (see Further Notes) so they can ship independently of the global-anchor propagation work above
+and of each other.
+
+21. As an analyst, I want each pass's thumbnail to render in the index I'm currently viewing (not
+    always true color), so that the pass list itself shows a mini analysis map for every date at a
+    glance. Implementation note: `SceneList.tsx`'s thumbnail URL hardcodes the `rgb` composite, but
+    the tiler's `/static/{index}/...` route already colormaps any index (`render_params` in
+    `services/tiler/render.py`) — swap the hardcoded string for the workspace's active `index`.
+    Frontend-only, no backend change.
+22. As an analyst, I want to play the field's history as a timelapse over the map, so that I can
+    watch canopy development or decline across a season without manually clicking every pass.
+    Implementation note: a play/pause control advancing `passDate` through the field's sorted scene
+    list on an interval; reuses the existing `setPassDate` path the scrubber already drives.
+    Frontend-only.
+23. As an analyst, I want to see many passes laid out as small maps side by side (a contact sheet),
+    so that I can compare the field's appearance across a whole season spatially, not one pass at a
+    time. Implementation note: a map-panel view mode laying out N passes' static thumbnails (per
+    story 21, at the active index) in a grid; reuses the same tiler endpoint, no new backend
+    surface.
+24. As an analyst, I want a difference layer between two passes rendered as its own map, so that
+    decline or growth is visually obvious without mentally subtracting two side-by-side images.
+    Implementation note: a new tiler render path reading two index COGs for the same field and
+    geometry version and rendering their pixel-wise difference with a diverging colormap. This is
+    new raster math (`rs_analysis` / tiler) but render-only, like the existing RGB preview — no new
+    stored analysis, no provenance change.
+25. As an analyst, I want to see which pixels were cloud-masked on the selected pass, so that a low
+    clear-fraction reading is visually explained rather than a percentage I have to trust.
+    Implementation note: surface the per-pixel SCL-derived clear/cloud mask invariant 3 already
+    computes during masking, as a static overlay layer for the active pass. The `windowed_cog`
+    adapter already computes an AOI mask during fetch (`adapters/windowed_cog.py:358`,
+    per `docs/plan/orthophoto-download-improvements.md` P2) — reuse it rather than recomputing.
+
+None of the five touch an architecture invariant (story 24 and 25 add render-only raster paths, not
+stored analyses), so no new ADR is required. Stories 24 and 25 are geospatial-engineer-owned (new
+raster/tiler work); 21-23 are frontend-only.
+
 ## Out of Scope
 
 - Ward Watch surfaces — deferred until the Ward Watch feature merges (ADR 0013).
 - Future-date protection beyond a `max` attribute on the date picker input — no server-side
   enforcement needed since future data cannot exist.
-- The tiler / COG layer — the raster is already driven by `passDate` (resolved by the existing
-  `requestedDate` flow); no tiler change is needed.
+- The tiler / COG layer for the global-anchor mechanism itself — the raster is already driven by
+  `passDate` (resolved by the existing `requestedDate` flow); no tiler change is needed for the
+  anchor. (The Extended scope section above does add tiler work, but that is pass-visualization
+  richness, a separate concern from date propagation.)
 - Exporting a historical snapshot as PDF or CSV — analysts use the existing CSV export paths.
 - Restricting the date picker's minimum to the earliest available pass — the "no data" state
   handles dates before any data gracefully without needing a constrained picker.
@@ -157,3 +202,8 @@ skip; the BFF contract is the higher-value seam):
   by this feature.
 - Implementation branch: open a new branch off `main` after the Ward Watch branch
   (`feat/ward-watch-movement-lens`) merges.
+- The Extended scope section's five user stories (21-25) are sliced into
+  `docs/backlog/0042` through `0046` (2026-07-01). Unlike stories 1-20, these are independently
+  buildable now - they do not need the global anchor to land first and do not block each other.
+  0045's pairing-default and colormap questions, and 0046's mask-rendering treatment, were decided at
+  slicing time (recorded in each backlog file's header) rather than left as open CONFIRM markers.
