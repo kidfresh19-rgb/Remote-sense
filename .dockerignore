@@ -1,0 +1,20 @@
+# Nothing here is ever COPY'd by Dockerfile - this only trims what gets sent to the daemon
+# as build context. azure/ in particular is a full second copy of this repo (robocopy mirror,
+# see docs/agents or CLAUDE.md) and would otherwise double the context on every build.
+.git
+.venv
+azure
+__pycache__
+**/__pycache__
+.mypy_cache
+.ruff_cache
+.pytest_cache
+frontend/node_modules
+frontend/dist
+scratch
+tests
+.env
+.tmp-diag
+*.docx
+.coverage
+coverage.json
