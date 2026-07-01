@@ -28,6 +28,7 @@ import { ContactSheet } from "./ContactSheet";
 import { CoordinateEntryModal } from "./CoordinateEntryModal";
 import { FileUploadPanel } from "./FileUploadPanel";
 import { IndexLegend } from "./IndexLegend";
+import { PlaybackControl } from "./PlaybackControl";
 import { RegionLayersControl } from "./RegionLayersControl";
 import { SceneCompare } from "./SceneCompare";
 import { EmptyState } from "./states";
@@ -91,6 +92,9 @@ export function MapPanel({
   const [showUpload, setShowUpload] = useState(false);
   const [analysingAOI, setAnalysingAOI] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  // Timelapse playback's "pause rather than skip a loading frame" signal (backlog 0043), bubbled
+  // up from SingleSceneMap's own useFieldMap instance - see PlaybackControl below.
+  const [isRasterLoading, setIsRasterLoading] = useState(false);
   const analyseAOIMutation = useAnalyseAOI();
   // A pin for a searched place that has no boundary, and a sticky flag that retires the "select a
   // field" prompt once the analyst has navigated anywhere (so it never sits over a flown-to view).
@@ -134,6 +138,7 @@ export function MapPanel({
 
   const comparing = compareDate !== null;
   const canCompare = useMemo(() => new Set(list.map((s) => s.pass_date)).size >= 2, [list]);
+  const canPlay = list.length >= 2;
 
   const toggleCompare = () => {
     if (comparing) {
@@ -241,6 +246,7 @@ export function MapPanel({
           onDrawComplete={handleDrawComplete}
           onDrawCancel={handleDrawCancel}
           onMapReady={handleMapReady}
+          onLoadingChange={setIsRasterLoading}
         />
       )}
 
@@ -333,6 +339,17 @@ export function MapPanel({
         >
           <SquaresFour size={18} />
         </IconButton>
+        <PlaybackControl
+          scenes={list}
+          passDate={passDate}
+          setPassDate={setPassDate}
+          isRasterLoading={isRasterLoading}
+          fieldId={fieldId}
+          farmId={farmId}
+          suspended={comparing || showContactSheet}
+          disabled={!selectedField || comparing || showContactSheet || !canPlay}
+          className="border border-border bg-panel"
+        />
         <RegionLayersControl
           layers={regionLayers.data ?? []}
           naturalRegionsOn={showNaturalRegions}
@@ -449,6 +466,7 @@ function SingleSceneMap({
   onDrawComplete,
   onDrawCancel,
   onMapReady,
+  onLoadingChange,
 }: {
   field: Field | null;
   index: IndexKey;
@@ -467,9 +485,12 @@ function SingleSceneMap({
     flyTo: (center: [number, number], zoom?: number) => void,
     fitBounds: (sw: [number, number], ne: [number, number]) => void,
   ) => void;
+  /** Bubbles the raster's loading state up to MapPanel, which feeds PlaybackControl so timelapse
+   *  playback can pause on a frame whose tile hasn't finished loading (backlog 0043). */
+  onLoadingChange?: (isLoading: boolean) => void;
 }) {
   const ref = useRef<HTMLDivElement | null>(null);
-  useFieldMap(ref, {
+  const { isRasterLoading } = useFieldMap(ref, {
     field,
     index,
     sceneId,
@@ -485,6 +506,9 @@ function SingleSceneMap({
     onDrawCancel,
     onMapReady,
   });
+  useEffect(() => {
+    onLoadingChange?.(isRasterLoading);
+  }, [isRasterLoading, onLoadingChange]);
   // size-full (not absolute inset-0): MapLibre's stylesheet sets `.maplibregl-map { position:
   // relative }` unlayered, which beats Tailwind v4's layered `absolute` utility — so inset-0 would
   // collapse the container to 0 height. An explicit 100% width/height is immune to that.

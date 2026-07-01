@@ -4,7 +4,7 @@ import maplibregl, {
   type Map as MaplibreMap,
   type StyleSpecification,
 } from "maplibre-gl";
-import { useEffect, useRef, type RefObject } from "react";
+import { useEffect, useRef, useState, type RefObject } from "react";
 
 import { indexTileTemplate, type Field } from "@/lib/api";
 import { config } from "@/lib/config";
@@ -331,7 +331,9 @@ function stopDraw(
 
 /** Owns one MapLibre map for a field: the boundary outline and the toggled index raster overlay
  *  (one field/scene/geometry-version COG via the tiler). Shared by the single map and the
- *  side-by-side comparison, so the rendering logic lives in exactly one place. */
+ *  side-by-side comparison, so the rendering logic lives in exactly one place. Returns
+ *  `isRasterLoading` alongside `cancelDraw` - callers that don't need it (e.g. SceneCompare) can
+ *  simply ignore it. */
 export function useFieldMap(
   containerRef: RefObject<HTMLDivElement | null>,
   {
@@ -353,10 +355,15 @@ export function useFieldMap(
     onDrawCancel,
     onMapReady,
   }: FieldMapParams,
-): { cancelDraw: () => void } {
+): { cancelDraw: () => void; isRasterLoading: boolean } {
   const mapRef = useRef<MaplibreMap | null>(null);
   const markerRef = useRef<maplibregl.Marker | null>(null);
   const readyRef = useRef(false);
+  // True while the index/RGB/FCC raster just requested from the tiler hasn't finished loading -
+  // driven by the map's own 'idle' event (fires once every source has settled), against the
+  // source swap this hook already performs below. Exposed so a caller (timelapse playback,
+  // backlog 0043) can hold its current frame instead of advancing past a tile that hasn't arrived.
+  const [isRasterLoading, setIsRasterLoading] = useState(false);
   const onMapRef = useRef(onMap);
   onMapRef.current = onMap;
   const controlsRef = useRef(controls);
@@ -396,6 +403,12 @@ export function useFieldMap(
         (sw, ne) => map.fitBounds([sw, ne], { padding: 64, duration: 800, maxZoom: 15 }),
       );
     });
+    // Registered once for the map's lifetime (not tied to any one effect's own dependencies):
+    // 'idle' fires whenever the map has finished rendering and every source has settled, which is
+    // the general "nothing is still loading" signal - simpler and sufficient versus tracking
+    // INDEX_SOURCE's individual tile requests, since a raster source swap is the dominant thing
+    // that makes the map non-idle while a field is selected.
+    map.on("idle", () => setIsRasterLoading(false));
     mapRef.current = map;
     onMapRef.current?.(map);
     return () => {
@@ -483,7 +496,10 @@ export function useFieldMap(
       // instead of always falling back to the index colormap.
       const activeRaster =
         showFcc || showRgb || showRaster ? activeRasterKey(index, showRgb, showFcc) : null;
-      if (!activeRaster || !field || !sceneId) return;
+      if (!activeRaster || !field || !sceneId) {
+        setIsRasterLoading(false); // nothing requested - nothing to wait for
+        return;
+      }
       map.addSource(INDEX_SOURCE, {
         type: "raster",
         tiles: [
@@ -501,6 +517,9 @@ export function useFieldMap(
         { id: INDEX_LAYER, type: "raster", source: INDEX_SOURCE, paint: { "raster-opacity": 0.8 } },
         beforeId,
       );
+      // This source swap just kicked off a new tile fetch; the persistent 'idle' listener
+      // registered at map creation flips this back to false once the map settles.
+      setIsRasterLoading(true);
     };
     if (readyRef.current) apply();
     else map.once("load", apply);
@@ -663,5 +682,5 @@ export function useFieldMap(
     stopDraw(mapRef.current, clickHandlerRef, dblclickHandlerRef, keyHandlerRef, drawVerticesRef, isDrawingRef);
   };
 
-  return { cancelDraw };
+  return { cancelDraw, isRasterLoading };
 }
