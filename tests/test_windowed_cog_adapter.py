@@ -283,6 +283,7 @@ class _CountingRasterioSource(RasterioWindowSource):
 
 
 def test_band_memo_serves_repeat_reads_once() -> None:
+    pytest.importorskip("rasterio")
     src = _CountingRasterioSource()
     w1 = src.read_window("s3://eodata/x/B04_10m.jp2", aoi=_AOI, resolution_m=10.0)
     w2 = src.read_window("s3://eodata/x/B04_10m.jp2", aoi=_AOI, resolution_m=10.0)
@@ -292,6 +293,7 @@ def test_band_memo_serves_repeat_reads_once() -> None:
 
 
 def test_band_memo_keys_on_bbox_and_resolution() -> None:
+    pytest.importorskip("rasterio")
     src = _CountingRasterioSource()
     href = "s3://eodata/x/B04_10m.jp2"
     src.read_window(href, aoi=_AOI, resolution_m=10.0)
@@ -309,6 +311,7 @@ def test_metadata_xml_is_memoized() -> None:
 
 
 def test_band_memo_collapses_concurrent_identical_reads() -> None:
+    pytest.importorskip("rasterio")
     src = _CountingRasterioSource(delay=0.02)  # widen the in-flight window so threads overlap
     n = 16
     barrier = threading.Barrier(n)
@@ -389,6 +392,7 @@ async def test_search_cache_fails_open() -> None:
 
 
 async def test_multi_index_collapses_shared_reads(monkeypatch) -> None:
+    pytest.importorskip("rasterio")
     from services.worker.tasks.analysis import _analyse_aoi_series_multi
 
     # Inject a counting RasterioWindowSource

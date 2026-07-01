@@ -1,4 +1,4 @@
-# PRD 0003: As-of date — global historical anchor
+# PRD 0004: As-of date — global historical anchor
 
 Status: ready-for-agent
 
