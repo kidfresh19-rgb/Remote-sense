@@ -6,7 +6,7 @@ import maplibregl, {
 } from "maplibre-gl";
 import { useEffect, useRef, useState, type RefObject } from "react";
 
-import { indexTileTemplate, type Field } from "@/lib/api";
+import { indexTileTemplate, maskTileTemplate, type Field } from "@/lib/api";
 import { config } from "@/lib/config";
 import { activeRasterKey, type IndexKey } from "@/lib/indices";
 
@@ -15,6 +15,10 @@ const FIELD_FILL = "field-fill";
 const FIELD_LINE = "field-line";
 const INDEX_SOURCE = "index-raster";
 const INDEX_LAYER = "index-raster-layer";
+// Cloud-mask honesty overlay (backlog 0046): a semi-transparent hatch marking pixels the per-AOI
+// SCL mask dropped for the active pass. One mask per pass, independent of INDEX_LAYER's index.
+const MASK_SOURCE = "cloud-mask-raster";
+const MASK_LAYER = "cloud-mask-raster-layer";
 
 const CUSTOM_AOI_SOURCE = "custom-aoi";
 const CUSTOM_AOI_FILL = "custom-aoi-fill";
@@ -133,6 +137,11 @@ interface FieldMapParams {
   /** False color (NIR/red/green). Optional so the comparison maps, which are index-only, need
    *  no change. */
   showFcc?: boolean;
+  /** Cloud-mask honesty overlay (backlog 0046): a semi-transparent hatch over pixels the per-AOI
+   *  SCL mask dropped for the active pass. Independent of showRaster/showRgb/showFcc - it renders
+   *  above whichever of those is on, so it carries no `index` and never refetches or flickers
+   *  when the analyst switches the displayed index. */
+  showCloudMask: boolean;
   /** Fit the camera to the field on selection. The follower map in a synced pair sets this false
    *  so the shared-camera controller drives it instead. */
   fit?: boolean;
@@ -343,6 +352,7 @@ export function useFieldMap(
     showRaster,
     showRgb,
     showFcc = false,
+    showCloudMask,
     fit = true,
     controls = true,
     onMap,
@@ -512,7 +522,16 @@ export function useFieldMap(
         ],
         tileSize: 256,
       });
-      const beforeId = map.getLayer(FIELD_LINE) ? FIELD_LINE : undefined;
+      // The cloud-mask overlay (if on) must always render above this layer - checking for
+      // MASK_LAYER first, not just FIELD_LINE, keeps that true no matter which of the two the
+      // analyst toggled on more recently. Two effects both inserting at a fixed FIELD_LINE anchor
+      // would otherwise race: MapLibre's addLayer(layer, beforeId) splices at beforeId's *current*
+      // array index, so whichever layer was (re)added most recently ends up on top.
+      const beforeId = map.getLayer(MASK_LAYER)
+        ? MASK_LAYER
+        : map.getLayer(FIELD_LINE)
+          ? FIELD_LINE
+          : undefined;
       map.addLayer(
         { id: INDEX_LAYER, type: "raster", source: INDEX_SOURCE, paint: { "raster-opacity": 0.8 } },
         beforeId,
@@ -524,6 +543,37 @@ export function useFieldMap(
     if (readyRef.current) apply();
     else map.once("load", apply);
   }, [showRaster, showRgb, showFcc, index, field, sceneId]);
+
+  // The cloud-mask honesty overlay from the tiler (backlog 0046): a semi-transparent hatch over
+  // pixels the per-AOI SCL mask dropped for the active pass. Kept in its own effect, independent
+  // of index/rgb/fcc, so switching the displayed base layer never retriggers this fetch or
+  // flickers the hatch. beforeId anchors to FIELD_LINE, same as the index overlay above - see that
+  // effect's beforeId, which yields to MASK_LAYER when present, so the hatch stays on top of the
+  // base layer regardless of which of the two was toggled on more recently.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const apply = () => {
+      if (map.getLayer(MASK_LAYER)) map.removeLayer(MASK_LAYER);
+      if (map.getSource(MASK_SOURCE)) map.removeSource(MASK_SOURCE);
+      if (!showCloudMask || !field || !sceneId) return;
+      map.addSource(MASK_SOURCE, {
+        type: "raster",
+        tiles: [
+          maskTileTemplate({
+            geometryVersion: field.geometry_version,
+            fieldId: field.field_id,
+            sceneId,
+          }),
+        ],
+        tileSize: 256,
+      });
+      const beforeId = map.getLayer(FIELD_LINE) ? FIELD_LINE : undefined;
+      map.addLayer({ id: MASK_LAYER, type: "raster", source: MASK_SOURCE }, beforeId);
+    };
+    if (readyRef.current) apply();
+    else map.once("load", apply);
+  }, [showCloudMask, field, sceneId]);
 
   // Custom AOI overlay: dashed line + translucent fill, placed beneath the field outline.
   useEffect(() => {

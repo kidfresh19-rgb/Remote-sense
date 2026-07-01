@@ -501,3 +501,20 @@ export function indexTileTemplate(params: {
   )}/${encodeURIComponent(sceneId)}/{z}/{x}/{y}.png`;
   return `${config.tilerBaseUrl}/tiles/${path}`;
 }
+
+/** XYZ template for the cloud-mask honesty overlay (backlog 0046): a semi-transparent hatch over
+ *  pixels the per-AOI SCL mask dropped, fully transparent everywhere else (both clear pixels and
+ *  outside the field). One mask per pass, independent of which index/rgb/fcc base layer is
+ *  showing, so there is no `index` segment. 404s until the pass has a mask COG or the tile falls
+ *  outside coverage; a plain MapLibre raster source tolerates that by rendering nothing there. */
+export function maskTileTemplate(params: {
+  geometryVersion: number;
+  fieldId: string;
+  sceneId: string;
+}): string {
+  const { geometryVersion, fieldId, sceneId } = params;
+  const path = `${geometryVersion}/${encodeURIComponent(fieldId)}/${encodeURIComponent(
+    sceneId,
+  )}/{z}/{x}/{y}.png`;
+  return `${config.tilerBaseUrl}/mask/${path}`;
+}

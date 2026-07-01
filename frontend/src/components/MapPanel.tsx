@@ -1,6 +1,7 @@
 import {
   CaretLeft,
   CaretRight,
+  CloudWarning,
   Columns,
   Stack,
   SquaresFour,
@@ -63,6 +64,8 @@ export function MapPanel({
     toggleRaster,
     toggleRgb,
     toggleFcc,
+    showCloudMask,
+    toggleCloudMask,
     setCompareDate,
     customAOI,
     setCustomAOI,
@@ -238,6 +241,7 @@ export function MapPanel({
           showRaster={showRaster}
           showRgb={showRgb}
           showFcc={showFcc}
+          showCloudMask={showCloudMask}
           customAOI={customAOI}
           naturalRegions={naturalRegions.data ?? null}
           uploadedRegions={uploadedRegions.data ?? null}
@@ -320,6 +324,15 @@ export function MapPanel({
           className="border border-border bg-panel"
         >
           <Plant size={18} />
+        </IconButton>
+        <IconButton
+          label={showCloudMask ? "Hide cloud-mask overlay" : "Show cloud-mask overlay"}
+          active={showCloudMask}
+          onClick={toggleCloudMask}
+          disabled={!selectedField}
+          className="border border-border bg-panel"
+        >
+          <CloudWarning size={18} />
         </IconButton>
         <IconButton
           label={comparing ? "Exit comparison" : "Compare two passes"}
@@ -458,6 +471,7 @@ function SingleSceneMap({
   showRaster,
   showRgb,
   showFcc,
+  showCloudMask,
   customAOI,
   naturalRegions,
   uploadedRegions,
@@ -474,6 +488,7 @@ function SingleSceneMap({
   showRaster: boolean;
   showRgb: boolean;
   showFcc: boolean;
+  showCloudMask: boolean;
   customAOI: import("geojson").Geometry | null;
   naturalRegions: import("geojson").FeatureCollection | null;
   uploadedRegions: import("geojson").FeatureCollection | null;
@@ -497,6 +512,7 @@ function SingleSceneMap({
     showRaster,
     showRgb,
     showFcc,
+    showCloudMask,
     customAOI,
     naturalRegions,
     uploadedRegions,

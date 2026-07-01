@@ -737,6 +737,9 @@ function StudioMap({
     showRaster: false,
     showRgb: false,
     showFcc: false,
+    // No field/scene is ever selected in AOI Studio's draw map, so the mask overlay (which
+    // requires both) can never render here regardless - false matches the sibling flags above.
+    showCloudMask: false,
     customAOI: aoi,
     marker,
     drawMode,

@@ -35,7 +35,8 @@ export function SceneCompare({
   onDrawCancel,
   onMapReady,
 }: SceneCompareProps) {
-  const { index, showRaster, showRgb, passDate, compareDate, setPassDate, setCompareDate } = useWorkspace();
+  const { index, showRaster, showRgb, showCloudMask, passDate, compareDate, setPassDate, setCompareDate } =
+    useWorkspace();
   const scenes = useScenes(field.field_id);
   const list = useMemo(() => scenes.data ?? [], [scenes.data]);
   const dates = useMemo(() => list.map((s) => s.pass_date), [list]);
@@ -66,6 +67,7 @@ export function SceneCompare({
         sceneId={leftScene?.scene_id ?? null}
         showRaster={showRaster}
         showRgb={showRgb}
+        showCloudMask={showCloudMask}
         fit
         controls
         onMap={setLeftMap}
@@ -89,6 +91,7 @@ export function SceneCompare({
         sceneId={rightScene?.scene_id ?? null}
         showRaster={showRaster}
         showRgb={showRgb}
+        showCloudMask={showCloudMask}
         fit={false}
         controls={false}
         onMap={setRightMap}
@@ -111,6 +114,7 @@ function CompareCell({
   sceneId,
   showRaster,
   showRgb,
+  showCloudMask,
   fit,
   controls,
   onMap,
@@ -126,6 +130,7 @@ function CompareCell({
   sceneId: string | null;
   showRaster: boolean;
   showRgb: boolean;
+  showCloudMask: boolean;
   fit: boolean;
   controls: boolean;
   onMap: (map: MaplibreMap | null) => void;
@@ -146,6 +151,7 @@ function CompareCell({
     sceneId,
     showRaster,
     showRgb,
+    showCloudMask,
     fit,
     controls,
     onMap,

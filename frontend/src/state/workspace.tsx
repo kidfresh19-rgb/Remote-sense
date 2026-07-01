@@ -25,6 +25,12 @@ interface WorkspaceState {
   // independent of the selected field, so they are not cleared on a farm/field change.
   showNaturalRegions: boolean; // the seeded Natural Region layer
   uploadedRegionLayerId: string | null; // the chosen analyst-uploaded layer, or none
+  // Cloud-mask honesty overlay (backlog 0046): a semi-transparent hatch over SCL-masked pixels for
+  // the active pass. Independent of showRaster/showRgb/showFcc - it renders on top of whichever
+  // base layer is showing, so it is never coupled to (or cleared by) that selection. Like
+  // showNaturalRegions, this is map context, not field-scoped state, so it survives farm/field
+  // changes and restoreView.
+  showCloudMask: boolean;
 }
 
 interface RestoreView {
@@ -48,7 +54,8 @@ type Action =
   | { type: "toggleFcc" }
   | { type: "setCustomAOI"; geometry: Geometry | null }
   | { type: "toggleNaturalRegions" }
-  | { type: "setUploadedRegionLayer"; layerId: string | null };
+  | { type: "setUploadedRegionLayer"; layerId: string | null }
+  | { type: "toggleCloudMask" };
 
 const initialState: WorkspaceState = {
   farmId: null,
@@ -64,6 +71,7 @@ const initialState: WorkspaceState = {
   customAOI: null,
   showNaturalRegions: false,
   uploadedRegionLayerId: null,
+  showCloudMask: false,
 };
 
 function reducer(state: WorkspaceState, action: Action): WorkspaceState {
@@ -165,6 +173,8 @@ function reducer(state: WorkspaceState, action: Action): WorkspaceState {
       return { ...state, showNaturalRegions: !state.showNaturalRegions };
     case "setUploadedRegionLayer":
       return { ...state, uploadedRegionLayerId: action.layerId };
+    case "toggleCloudMask":
+      return { ...state, showCloudMask: !state.showCloudMask };
     default:
       return state;
   }
@@ -186,6 +196,7 @@ interface WorkspaceContextValue extends WorkspaceState {
   setCustomAOI: (geometry: Geometry | null) => void;
   toggleNaturalRegions: () => void;
   setUploadedRegionLayer: (layerId: string | null) => void;
+  toggleCloudMask: () => void;
 }
 
 const WorkspaceContext = createContext<WorkspaceContextValue | null>(null);
@@ -211,6 +222,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       toggleNaturalRegions: () => dispatch({ type: "toggleNaturalRegions" }),
       setUploadedRegionLayer: (layerId) =>
         dispatch({ type: "setUploadedRegionLayer", layerId }),
+      toggleCloudMask: () => dispatch({ type: "toggleCloudMask" }),
     }),
     [state],
   );
