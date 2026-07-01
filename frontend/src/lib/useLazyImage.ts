@@ -11,25 +11,31 @@ export function useLazyImage(url: string | null): {
 } {
   const [src, setSrc] = useState<string | null>(null);
   const observerRef = useRef<IntersectionObserver | null>(null);
-  const loadedRef = useRef(false);
 
   useEffect(() => {
     setSrc(null);
-    loadedRef.current = false;
   }, [url]);
 
+  // `ref` is memoized on `url`, so React only re-invokes it (detach with null, then attach with
+  // the element) when `url` actually changes - never on an unrelated re-render of the same url.
+  // A "haven't we already loaded this?" guard is therefore unnecessary and was actively harmful:
+  // it fired during the layout-phase attach, before the effect above (a passive effect, which
+  // always runs later) could reset it, so it read a stale flag from the *previous* url and
+  // skipped observing the new one - leaving an already-loaded, still-visible thumbnail stuck
+  // blank on a url change instead of loading the new image. Always observing fresh here is cheap
+  // and correct; the browser's own HTTP cache (not this hook) is what avoids refetching a url
+  // already seen.
   const ref = useCallback(
     (el: Element | null) => {
       if (observerRef.current) {
         observerRef.current.disconnect();
         observerRef.current = null;
       }
-      if (!el || !url || loadedRef.current) return;
+      if (!el || !url) return;
       const observer = new IntersectionObserver(
         ([entry]) => {
           if (entry.isIntersecting) {
             setSrc(url);
-            loadedRef.current = true;
             observer.disconnect();
           }
         },

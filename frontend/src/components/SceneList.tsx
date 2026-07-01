@@ -92,14 +92,20 @@ function SceneRow({
   token: string | null;
   onSelect: () => void;
 }) {
-  const { index } = useWorkspace();
+  const { index, showRgb, showFcc } = useWorkspace();
   const [imgLoaded, setImgLoaded] = useState(false);
   const [imgError, setImgError] = useState(false);
   const [downloading, setDownloading] = useState(false);
 
+  // Mirrors useFieldMap's main-map raster precedence (FCC > RGB > index), so the thumbnail
+  // matches whatever composite the analyst has picked. Unlike the main map, a thumbnail must
+  // never render blank, so with both composite toggles off it falls back to the index colormap
+  // rather than the map's "none" state - always analytical by default.
+  const activeRaster = showFcc ? "fcc" : showRgb ? "rgb" : index;
+
   const tilerUrl =
     geometryVersion != null
-      ? `${config.tilerBaseUrl}/static/rgb/${geometryVersion}/${encodeURIComponent(fieldId)}/${encodeURIComponent(sceneId)}.jpg`
+      ? `${config.tilerBaseUrl}/static/${activeRaster}/${geometryVersion}/${encodeURIComponent(fieldId)}/${encodeURIComponent(sceneId)}.jpg`
       : null;
   const { ref, src } = useLazyImage(tilerUrl);
 
