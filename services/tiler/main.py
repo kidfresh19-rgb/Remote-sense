@@ -9,11 +9,13 @@ from __future__ import annotations
 
 from fastapi import FastAPI, HTTPException, Response, status
 from fastapi.concurrency import run_in_threadpool
+from rs_analysis import get_colormap
 from rs_core import S3CogStore, cog_key, gdal_s3_env, get_settings, vsis3_uri
 
 from services.tiler.render import (
     RasterStackUnavailable,
     TileUnavailable,
+    render_diff_tile,
     render_mask_tile,
     render_params,
     render_preview,
@@ -166,6 +168,57 @@ async def mask_tile(
     source = vsis3_uri(settings.minio_bucket, key)
     try:
         png = render_mask_tile(source, z=z, x=x, y=y, gdal_env=gdal_s3_env(settings))
+    except RasterStackUnavailable as exc:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "raster stack not installed (the `geo` extra runs in-container)",
+        ) from exc
+    except TileUnavailable as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+
+    return Response(content=png, media_type="image/png")
+
+
+@app.get("/diff/{index}/{geometry_version}/{field_id}/{scene_a}/{scene_b}/{z}/{x}/{y}.png")
+async def diff_tile(
+    index: str,
+    geometry_version: int,
+    field_id: str,
+    scene_a: str,
+    scene_b: str,
+    z: int,
+    x: int,
+    y: int,
+) -> Response:
+    """The pass-to-pass difference tile (backlog 0045) for one field / index / geometry version:
+    reads the index COGs of two scenes - `scene_a` (A, the baseline) and `scene_b` (B) - and renders
+    B minus A on a symmetric diverging ramp centered on zero, so decline and growth read as opposite
+    colours. Render-only: nothing new is stored (invariant 5 untouched). The diff only renders once
+    the caller has picked both passes (SceneCompare's existing pickers); the route never guesses a
+    pair. 404 for an unknown or non-diffable view (rgb / fcc / mask have no scalar diverging range),
+    or when *either* pass has no COG / the tile is outside coverage (the same placeholder path a
+    missing single-pass COG uses); 503 when the raster stack is absent (host)."""
+    try:
+        get_colormap(index)  # only scalar indices have a diverging range; rejects rgb/fcc/mask
+    except KeyError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"cannot diff view {index!r}") from exc
+
+    settings = get_settings()
+    env = gdal_s3_env(settings)
+    source_a = vsis3_uri(
+        settings.minio_bucket,
+        cog_key(
+            field_id=field_id, scene_id=scene_a, index=index, geometry_version=geometry_version
+        ),
+    )
+    source_b = vsis3_uri(
+        settings.minio_bucket,
+        cog_key(
+            field_id=field_id, scene_id=scene_b, index=index, geometry_version=geometry_version
+        ),
+    )
+    try:
+        png = render_diff_tile(source_a, source_b, index=index, z=z, x=x, y=y, gdal_env=env)
     except RasterStackUnavailable as exc:
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,

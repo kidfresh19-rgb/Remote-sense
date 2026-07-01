@@ -67,6 +67,28 @@ def render_params(index: str) -> dict[str, object]:
     return {"colormap_name": colormap.colormap, "rescale": (colormap.vmin, colormap.vmax)}
 
 
+# Pass-to-pass difference layer (backlog 0045). A diff of one index between two passes (B minus
+# A) is drawn on a *symmetric* diverging ramp centered on zero, so an equal decline and growth
+# carry equal visual weight. `get_colormap(index)` is the single-pass display range and is
+# asymmetric for most indices (NDVI is -0.2..0.9), so clamping a diff to that literal pair would
+# put "no change" off center; instead the diff is clamped to +/- M where M = max(|vmin|, |vmax|)
+# (NDVI -> +/-0.9). One fixed diverging colormap is used for every index (not the per-index
+# single-pass one) so the analyst reads one legend across all diffs: `RdYlGn` reads intuitively
+# as red=decline / green=growth. `BrBG` (NDMI's ramp) is the alternative diverging option;
+# `RdYlGn` is chosen for that colour semantics and because four of five indices already use it.
+_DIFF_COLORMAP: str = "RdYlGn"
+
+
+def _diff_range(index: str) -> tuple[float, float]:
+    """The symmetric diverging range a pass-to-pass diff of `index` is rendered on, centered on
+    zero: (-M, +M) where M = max(|vmin|, |vmax|) of the index's locked single-pass display range.
+    Pure - unit-testable with no raster stack. Raises KeyError for a view with no scalar colormap
+    (rgb / fcc / mask cannot be diffed on a diverging ramp)."""
+    colormap = get_colormap(index)
+    m = max(abs(colormap.vmin), abs(colormap.vmax))
+    return (-m, m)
+
+
 def render_preview(
     source: str,
     *,
@@ -207,3 +229,68 @@ def render_mask_tile(
     masked = ~np.ma.getmaskarray(image.array)[0]
     rgb, alpha = _hatch_overlay(masked)
     return cast("bytes", render_rgba(rgb, mask=alpha, img_format="PNG"))
+
+
+def render_diff_tile(
+    source_a: str,
+    source_b: str,
+    *,
+    index: str,
+    z: int,
+    x: int,
+    y: int,
+    gdal_env: dict[str, str] | None = None,
+) -> bytes:
+    """Render one XYZ tile of the pass-to-pass difference of `index` (backlog 0045): read the same
+    tile window from two already-computed index COGs - `source_a` (pass A, the baseline) and
+    `source_b` (pass B) for the same field / index / geometry version but two scenes - subtract them
+    (B minus A) and colorize the result on the symmetric diverging ramp from `_diff_range`, centered
+    on zero so decline and growth read as opposite colours.
+
+    Render-only: nothing is stored and no provenance changes (the reflectance conversion already
+    happened when each index COG was written, invariant 2). Per-pixel partial NoData is resolved the
+    only way a difference can be: a pixel that is NoData in *either* pass - per-AOI SCL masking runs
+    independently per pass (invariant 3), so a pixel clear on A can be masked on B or the reverse -
+    is NoData in the diff and renders transparent, because B minus A is undefined unless both sides
+    are present. This falls out for free: rio-tiler carries NoData as the masked-array mask, so the
+    subtraction of the two masked arrays ORs the two masks.
+
+    Raises RasterStackUnavailable without the `geo` extra, TileUnavailable when *either* COG is
+    missing / unreadable or the tile is outside its coverage - the same 404 contract a missing
+    single-pass COG uses, so the existing "preview pending" placeholder just works here too."""
+    try:
+        import rasterio
+        from rasterio.errors import RasterioIOError
+        from rio_tiler.colormap import cmap as default_cmaps
+        from rio_tiler.errors import TileOutsideBounds
+        from rio_tiler.io import Reader
+        from rio_tiler.models import ImageData
+    except ImportError as exc:
+        raise RasterStackUnavailable(str(exc)) from exc
+
+    # Same credential handling as render_tile: rasterio 1.4 refuses AWS credentials as rasterio.Env
+    # options, so move them into the process environment (GDAL reads them for /vsis3/) and pass only
+    # the endpoint/addressing options to the Env.
+    env = dict(gdal_env or {})
+    for cred_key in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"):
+        cred_val = env.pop(cred_key, None)
+        if cred_val is not None:
+            os.environ[cred_key] = cred_val
+
+    try:
+        with rasterio.Env(**env):
+            with Reader(source_a) as cog_a:
+                tile_a = cog_a.tile(x, y, z)
+            with Reader(source_b) as cog_b:
+                tile_b = cog_b.tile(x, y, z)
+    except TileOutsideBounds as exc:
+        raise TileUnavailable(f"tile {z}/{x}/{y} is outside {index} diff coverage") from exc
+    except RasterioIOError as exc:
+        raise TileUnavailable(f"no readable {index} COG for one of the two passes") from exc
+
+    # Masked-array subtraction: the result is masked wherever either pass is NoData, so a pixel
+    # clear on only one pass drops out of the diff (undefined) rather than reading as a huge change.
+    diff = ImageData(tile_b.array - tile_a.array)
+    colormap = default_cmaps.get(_DIFF_COLORMAP.lower())
+    diff.rescale(in_range=(_diff_range(index),))
+    return diff.render(img_format="PNG", colormap=colormap)

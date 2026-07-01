@@ -108,6 +108,59 @@ def test_mask_tile_returns_png(monkeypatch) -> None:
     assert resp.headers["content-type"] == "image/png"
 
 
+# --- pass-to-pass difference layer (backlog 0045) ---
+
+
+def test_diff_tile_unknown_index_is_404() -> None:
+    with TestClient(app) as client:
+        # The index is validated before any raster work, so this is 404 even without the stack.
+        assert client.get("/diff/bogus/1/FIELD-1/SCENE-A/SCENE-B/0/0/0.png").status_code == 404
+
+
+def test_diff_tile_non_scalar_view_is_404() -> None:
+    # rgb / fcc / mask have no scalar diverging range, so a diff of them is rejected up front.
+    with TestClient(app) as client:
+        assert client.get("/diff/rgb/1/FIELD-1/SCENE-A/SCENE-B/0/0/0.png").status_code == 404
+
+
+def test_diff_tile_without_raster_stack_is_503(monkeypatch) -> None:
+    # Shares the host 503 path with the other render routes: no geo extra -> 503.
+    import services.tiler.main as tiler_main
+    from services.tiler.render import RasterStackUnavailable
+
+    def _no_stack(*args: object, **kwargs: object) -> bytes:
+        raise RasterStackUnavailable("no raster stack")
+
+    monkeypatch.setattr(tiler_main, "render_diff_tile", _no_stack)
+    with TestClient(app) as client:
+        assert client.get("/diff/ndvi/1/FIELD-1/SCENE-A/SCENE-B/0/0/0.png").status_code == 503
+
+
+def test_diff_tile_missing_cog_is_404(monkeypatch) -> None:
+    # Either pass missing its COG (or a tile outside coverage) is a 404, the same placeholder path a
+    # missing single-pass tile uses - no new frontend-side error handling needed.
+    import services.tiler.main as tiler_main
+    from services.tiler.render import TileUnavailable
+
+    def _missing(*args: object, **kwargs: object) -> bytes:
+        raise TileUnavailable("no readable ndvi COG for one of the two passes")
+
+    monkeypatch.setattr(tiler_main, "render_diff_tile", _missing)
+    with TestClient(app) as client:
+        assert client.get("/diff/ndvi/1/FIELD-1/SCENE-A/SCENE-B/0/0/0.png").status_code == 404
+
+
+def test_diff_tile_returns_png(monkeypatch) -> None:
+    # The happy path serves image/png; the render is stubbed so the route wiring is what is tested.
+    import services.tiler.main as tiler_main
+
+    monkeypatch.setattr(tiler_main, "render_diff_tile", lambda *a, **kw: b"\x89PNG\r\n\x1a\n")
+    with TestClient(app) as client:
+        resp = client.get("/diff/ndvi/1/FIELD-1/SCENE-A/SCENE-B/0/0/0.png")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "image/png"
+
+
 def test_static_unknown_view_is_422() -> None:
     with TestClient(app) as client:
         assert client.get("/static/bogus/1/FIELD-1/SCENE-1.jpg").status_code == 422
