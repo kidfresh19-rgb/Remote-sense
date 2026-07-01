@@ -1,4 +1,4 @@
-import { DownloadSimple, Spinner, ChartLine, Table as TableIcon, ArrowUp, ArrowDown, ArrowsOut, ArrowsIn, X, ChartPieSlice, Image as ImageIcon, FileImage, Warning } from "@phosphor-icons/react";
+import { DownloadSimple, Spinner, ChartLine, Table as TableIcon, ArrowUp, ArrowDown, ArrowsOut, ArrowsIn, X, ChartPieSlice, Image as ImageIcon, FileImage } from "@phosphor-icons/react";
 import { useMemo, useState, useCallback, useEffect } from "react";
 import { createPortal } from "react-dom";
 import type { Geometry } from "geojson";
