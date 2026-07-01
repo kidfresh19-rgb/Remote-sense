@@ -52,12 +52,11 @@ DEMO_HOUSEHOLDS = [
 
 async def amain() -> None:
     from geoalchemy2.shape import from_shape
-    from shapely.geometry import MultiPolygon, Polygon
-    from sqlalchemy import delete, select, text
-
     from rs_core.config import get_settings
     from rs_core.db import Base, get_engine, get_sessionmaker
     from rs_core.models import Diagnosis, Household, Plot, PlotAnalysis
+    from shapely.geometry import MultiPolygon, Polygon
+    from sqlalchemy import delete, select, text
 
     print(f"Seeding demo Ward Watch data into: {get_settings().database_url}")
 
@@ -68,18 +67,23 @@ async def amain() -> None:
 
     def square(lon: float, lat: float = -17.8) -> MultiPolygon:
         h = 0.001
-        return MultiPolygon(
-            [Polygon([(lon - h, lat - h), (lon + h, lat - h), (lon + h, lat + h), (lon - h, lat + h)])]
-        )
+        corners = [
+            (lon - h, lat - h),
+            (lon + h, lat - h),
+            (lon + h, lat + h),
+            (lon - h, lat + h),
+        ]
+        return MultiPolygon([Polygon(corners)])
 
     maker = get_sessionmaker()
     async with maker() as s:
-        demo_hh = select(Household.id).where(Household.canonical_household_id.like(f"{DEMO_PREFIX}%"))
+        demo_like = f"{DEMO_PREFIX}%"
+        demo_hh = select(Household.id).where(Household.canonical_household_id.like(demo_like))
         demo_plots = select(Plot.id).where(Plot.household_id.in_(demo_hh))
         await s.execute(delete(PlotAnalysis).where(PlotAnalysis.plot_id.in_(demo_plots)))
         await s.execute(delete(Diagnosis).where(Diagnosis.plot_id.in_(demo_plots)))
         await s.execute(delete(Plot).where(Plot.household_id.in_(demo_hh)))
-        await s.execute(delete(Household).where(Household.canonical_household_id.like(f"{DEMO_PREFIX}%")))
+        await s.execute(delete(Household).where(Household.canonical_household_id.like(demo_like)))
         await s.flush()
 
         start = date.today() - timedelta(days=40)
