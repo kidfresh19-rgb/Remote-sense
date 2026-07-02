@@ -309,9 +309,7 @@ def test_aoi_window_mask_clips_to_drawn_polygon() -> None:
     # Right triangle in lon/lat: the hypotenuse cuts off the south-east bbox corner.
     triangle = {
         "type": "Polygon",
-        "coordinates": [
-            [[31.00, -17.80], [31.02, -17.80], [31.00, -17.82], [31.00, -17.80]]
-        ],
+        "coordinates": [[[31.00, -17.80], [31.02, -17.80], [31.00, -17.82], [31.00, -17.80]]],
     }
     crs = "EPSG:32736"  # 31 E is east of 30 E
     left, bottom, right, top = transform_bounds("EPSG:4326", crs, 31.00, -17.82, 31.02, -17.80)
