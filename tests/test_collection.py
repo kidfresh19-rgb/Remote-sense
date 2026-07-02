@@ -49,6 +49,18 @@ async def test_collect_field_returns_all_indices_per_scene() -> None:
         assert all(0.0 <= o.clear_fraction <= 1.0 for o in r.outputs)
 
 
+async def test_collect_field_carries_scene_metadata_for_provenance() -> None:
+    """Every pass carries the per-scene radiometric metadata (quantification value + per-band BOA
+    offset, invariant 2), keyed to the scene, so the collection task persists it (invariant 5)
+    without a second adapter.metadata() call."""
+    results = await collect_field(adapter=_adapter(), aoi=_AOI, time_range=_RANGE, indices=["ndvi"])
+    assert results
+    for r in results:
+        assert r.scene_metadata.scene_id == r.scene_id
+        assert r.scene_metadata.quantification_value > 0
+        assert r.scene_metadata.boa_add_offset  # per-band additive offsets present
+
+
 async def test_collect_field_rejects_empty_indices() -> None:
     # An empty index list would search + skip every scene and store nothing; fail fast instead.
     with pytest.raises(ValueError, match="at least one index"):

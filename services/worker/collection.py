@@ -24,7 +24,7 @@ from rs_analysis import (
     index_raster,
     rgb_raster,
 )
-from rs_imagery import AOI, AccessPort, SceneRef, TimeRange
+from rs_imagery import AOI, AccessPort, SceneMetadata, SceneRef, TimeRange
 
 from services.worker.locks import DEFAULT_LOCK_TTL_SECONDS, LockClient, enqueue_lock
 from services.worker.planning import plan_scenes
@@ -42,14 +42,18 @@ class IndexRaster:
 
 @dataclass(frozen=True)
 class ScenePassResult:
-    """All index outputs for one field on one pass, plus the provenance needed to persist
-    them additively (provider/scene id/processing mode travel from the adapter result)."""
+    """All index outputs for one field on one pass, plus the per-scene radiometric metadata and
+    the provenance needed to persist them additively (provider/scene id/processing mode travel
+    from the adapter result; scene_metadata carries the quantification value + BOA offset that
+    reflectance was computed from (invariant 2) so the collection task can persist it
+    (invariant 5)."""
 
     scene_id: str
     provider: str
     processing_mode: str
     sensing_datetime: datetime
     outputs: list[AnalysisOutput]
+    scene_metadata: SceneMetadata
     rasters: dict[str, IndexRaster] = field(default_factory=dict)
 
 
@@ -156,12 +160,19 @@ async def _process_scene(
                 crs=crs_10m,
             )
 
+    # Invariant 2 provenance: the quantification value + per-band BOA offset that reflectance was
+    # computed from are read per scene from metadata (the adapter memoises the metadata read, so
+    # this shares fetch's I/O rather than adding a round-trip). Carry them on the result so
+    # run_collection persists them (invariant 5) without a second adapter.metadata() call.
+    scene_metadata = await adapter.metadata(scene.scene_id)
+
     return ScenePassResult(
         scene_id=scene.scene_id,
         provider=provider,
         processing_mode=processing_mode,
         sensing_datetime=scene.sensing_datetime,
         outputs=outputs,
+        scene_metadata=scene_metadata,
         rasters=rasters,
     )
 

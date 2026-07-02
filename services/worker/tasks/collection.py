@@ -152,7 +152,8 @@ async def run_collection(
     analyses = 0
     for result in results:
         # Scene metadata first: the analysis rows FK onto it (first-write-wins, immutable).
-        # scene_metadata was gathered concurrently with the band fetches in collect_field.
+        # scene_metadata travels on each ScenePassResult from collect_field (read per scene from
+        # metadata, invariant 2), so no second adapter.metadata() call is needed here.
         await upsert_scene_metadata(
             session,
             scene_id=result.scene_id,
