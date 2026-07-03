@@ -29,6 +29,17 @@ export function useCanPublish(): boolean {
   return decodeRoles(token).some((role) => PUBLISH_ROLES.has(role));
 }
 
+// Roles that hold the `run_analysis` permission, mirroring rs_core/rbac.py (analyst + publisher +
+// admin). COSMETIC only, same contract as PUBLISH_ROLES above: it decides whether to enable the
+// AOI Studio run/backfill action so a viewer is not handed a button that 403s. The server stays
+// authoritative - every /analyse call is gated by require(RUN_ANALYSIS).
+const RUN_ANALYSIS_ROLES = new Set(["analyst", "publisher", "admin"]);
+
+export function useCanRunAnalysis(): boolean {
+  const { token } = useToken();
+  return decodeRoles(token).some((role) => RUN_ANALYSIS_ROLES.has(role));
+}
+
 // Ward Watch role gates, mirroring the settled rs_core/rbac.py mapping (backlog 0041). COSMETIC
 // only - the server gates every endpoint with require(...), so these just decide what to render.
 // VIEW_TRIAGE_QUEUE = ward_officer + district_agronomist + admin (the queue + visit cockpit).

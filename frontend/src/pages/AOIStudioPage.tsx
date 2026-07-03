@@ -19,6 +19,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { TokenGate } from "@/auth/TokenGate";
 import { useToken } from "@/auth/TokenProvider";
+import { useCanRunAnalysis } from "@/auth/permissions";
 import { AOIBar } from "@/components/AOIBar";
 import { AOIReportModal } from "@/components/aoi/AOIReportModal";
 import { GatewaySendModal } from "@/components/aoi/GatewaySendModal";
@@ -32,6 +33,7 @@ import { Badge, Button, IconButton, SegmentedControl } from "@/components/ui";
 import { useFarmPush } from "@/lib/useFarmPush";
 import {
   api,
+  ApiError,
   type AOIJob,
   type AOIJobEnqueued,
   type AOISeriesMode,
@@ -115,6 +117,7 @@ type SelectedIndex = IndexKey | "all";
 
 function Studio() {
   const { token } = useToken();
+  const canRunAnalysis = useCanRunAnalysis();
   const { farm: farmParam } = routeApi.useSearch();
   const [aoi, setAoi] = useState<Geometry | null>(null);
   const [farmTarget, setFarmTarget] = useState<FarmTarget | null>(null);
@@ -181,6 +184,7 @@ function Studio() {
 
   const canRun =
     !busy &&
+    canRunAnalysis &&
     (aoi !== null || farmTarget !== null) &&
     (mode === "backfill" || dates.length > 0);
 
@@ -297,7 +301,17 @@ function Studio() {
       }
       setJobId(enqueued.job_id);
     } catch (err) {
-      setLocalError(err instanceof Error ? err : new Error("Could not start the analysis."));
+      // A 403 here means the token lacks run_analysis (a viewer reached the button anyway). Show
+      // the cause in plain language rather than the raw {"detail":"requires run_analysis"} body.
+      if (err instanceof ApiError && err.status === 403) {
+        setLocalError(
+          new Error(
+            "You do not have permission to run analysis. This needs the analyst role - sign out and sign back in with an analyst token.",
+          ),
+        );
+      } else {
+        setLocalError(err instanceof Error ? err : new Error("Could not start the analysis."));
+      }
     } finally {
       setRunning(false);
     }
@@ -441,7 +455,11 @@ function Studio() {
             <BackfillControl months={months} onChange={setMonths} />
           )}
 
-          {!busy && !aoi && !farmTarget ? (
+          {!canRunAnalysis ? (
+            <div className="rounded-md border border-caution/20 bg-caution/10 p-2.5 text-xs text-caution leading-normal">
+              <strong>Analyst access required:</strong> Running a batch or backfill needs the analyst role. Your current sign-in is view-only. Sign out and sign back in with an analyst token to run analysis.
+            </div>
+          ) : !busy && !aoi && !farmTarget ? (
             <div className="rounded-md border border-caution/20 bg-caution/10 p-2.5 text-xs text-caution leading-normal">
               <strong>Area required:</strong> Draw an area on the map, upload a boundary, or pick a farm/field using the leaf button to start.
             </div>
@@ -454,11 +472,13 @@ function Studio() {
           <div
             className="w-full mt-1"
             title={
-              !aoi && !farmTarget
-                ? "Select an area first"
-                : mode === "dates" && dates.length === 0
-                  ? "Select at least one date"
-                  : undefined
+              !canRunAnalysis
+                ? "Analyst role required to run analysis"
+                : !aoi && !farmTarget
+                  ? "Select an area first"
+                  : mode === "dates" && dates.length === 0
+                    ? "Select at least one date"
+                    : undefined
             }
           >
             <Button

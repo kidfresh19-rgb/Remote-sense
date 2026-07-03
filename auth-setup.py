@@ -36,13 +36,27 @@ from pathlib import Path
 # Constants
 # ──────────────────────────────────────────────────────────────────────
 
-VALID_ROLES = ("viewer", "analyst", "publisher", "admin")
+# Keep in step with the Role enum in packages/rs_core/rbac.py. The Ward Watch roles (PRD 0003) were
+# added there; a token minted for one of them needs to be reproducible from this bootstrap tool too.
+VALID_ROLES = (
+    "viewer",
+    "analyst",
+    "publisher",
+    "admin",
+    "ward_officer",
+    "district_agronomist",
+    "ministry",
+)
 
 ROLE_PERMISSIONS = {
     "viewer": ["Read analyses, interpretations, history"],
     "analyst": ["+ Annotate, run analysis"],
     "publisher": ["+ Push to gateway / publish interpretations"],
     "admin": ["Everything"],
+    # Ward Watch roles (PRD 0003) - see rbac.py for the authoritative permission mapping.
+    "ward_officer": ["Enroll households, view triage queue, record diagnoses (ward-scoped)"],
+    "district_agronomist": ["Read + triage queue + food-security rollups"],
+    "ministry": ["Read + food-security rollups (widest view)"],
 }
 
 # ──────────────────────────────────────────────────────────────────────
