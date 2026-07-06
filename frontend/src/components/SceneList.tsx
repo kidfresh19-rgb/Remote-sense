@@ -23,7 +23,17 @@ export function SceneList({
 }) {
   const { token } = useToken();
   const query = useScenes(fieldId, collecting);
-  const { passDate, setPassDate } = useWorkspace();
+  const { passDate, setPassDate, showRaster, showRgb, showFcc, toggleRgb } = useWorkspace();
+
+  // Picking a pass here should actually show that day on the map. The map only draws imagery while
+  // an index / true-colour / false-colour layer is active, and all three default off, so a bare
+  // click would set the date but leave the map unchanged. When no layer is on yet, default to true
+  // colour ("what the field looked like on that day"); if the analyst already chose a layer, keep it
+  // and just swap the date.
+  const selectPass = (date: string) => {
+    setPassDate(date);
+    if (!showRaster && !showRgb && !showFcc) toggleRgb();
+  };
 
   if (query.isLoading) return <LoadingRows />;
   if (query.isError) return <ErrorState error={query.error} onRetry={() => query.refetch()} />;
@@ -47,7 +57,7 @@ export function SceneList({
         <TimelineScrubber
           dates={scenes.map((s) => s.pass_date)}
           value={passDate}
-          onChange={setPassDate}
+          onChange={selectPass}
         />
       </div>
       <div className="border-b border-border p-3">
@@ -64,7 +74,7 @@ export function SceneList({
               geometryVersion={geometryVersion}
               active={scene.pass_date === passDate}
               token={token}
-              onSelect={() => setPassDate(scene.pass_date)}
+              onSelect={() => selectPass(scene.pass_date)}
             />
           </li>
         ))}
