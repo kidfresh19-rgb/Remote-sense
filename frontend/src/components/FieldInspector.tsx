@@ -3,6 +3,7 @@ import {
   CalendarPlus,
   ChartLine,
   ClockCounterClockwise,
+  Gauge,
   Lightning,
   NotePencil,
   Star,
@@ -20,6 +21,7 @@ import { useWorkspace } from "@/state/workspace";
 import { AnnotationsPanel } from "./AnnotationsPanel";
 import { AuditPanel } from "./AuditPanel";
 import { DateBatchInput } from "./DateBatchInput";
+import { FieldHealthPanel } from "./FieldHealthPanel";
 import { IndexTimeseriesChart } from "./IndexTimeseriesChart";
 import { InterpretationPanel } from "./InterpretationPanel";
 import { SceneList } from "./SceneList";
@@ -28,9 +30,10 @@ import { Button, IconButton } from "./ui";
 
 const MAX_COLLECT_DATES = 36; // mirrors MAX_COLLECT_DATES in services/api/workspace/fields.py
 
-type Tab = "series" | "passes" | "read" | "notes" | "audit";
+type Tab = "overview" | "series" | "passes" | "read" | "notes" | "audit";
 
 const TABS: { id: Tab; label: string; icon: ReactNode }[] = [
+  { id: "overview", label: "Overview", icon: <Gauge size={15} /> },
   { id: "series", label: "Series", icon: <ChartLine size={15} /> },
   { id: "passes", label: "Passes", icon: <Stack size={15} /> },
   { id: "read", label: "Read", icon: <Article size={15} /> },
@@ -228,7 +231,9 @@ export function FieldInspector() {
             transition={{ duration: 0.12, ease: "easeOut" }}
             className="min-h-full flex flex-col"
           >
-            {tab === "series" ? (
+            {tab === "overview" ? (
+              <FieldHealthPanel fieldId={fieldId} />
+            ) : tab === "series" ? (
               <IndexTimeseriesChart
                 fieldId={fieldId}
                 collecting={collecting}

@@ -27,6 +27,7 @@ import { colorForValue, gradientCss, indexMeta, INDICES, type IndexKey } from "@
 import { EmptyState } from "../states";
 import { Badge } from "../ui";
 import { FieldOverview } from "./FieldOverview";
+import { seriesFromJobs } from "@/lib/fieldHealth";
 
 export type SelectedIndex = IndexKey | "all";
 
@@ -461,7 +462,7 @@ export function AOIResultsTable({
 
       <div className="flex-1 min-h-0 overflow-y-auto">
         {overviewActive ? (
-          <FieldOverview jobs={jobs} />
+          <FieldOverview series={seriesFromJobs(jobs)} />
         ) : (
           renderJobContent()
         )}

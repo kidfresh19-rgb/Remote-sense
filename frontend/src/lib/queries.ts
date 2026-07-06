@@ -12,8 +12,9 @@ import {
   type Farm,
   type FarmSeriesRequest,
   type ReviewInput,
+  type TimeseriesPoint,
 } from "./api";
-import type { IndexKey } from "./indices";
+import { INDICES, type IndexKey } from "./indices";
 
 export function useFarms() {
   const { token } = useToken();
@@ -44,6 +45,33 @@ export function useTimeseries(fieldId: string | null, index: IndexKey, collectin
     refetchInterval: (query) =>
       collecting && !query.state.data?.some((p) => p.mean !== null) ? 8000 : false,
   });
+}
+
+/** Fetch every index's timeseries for one field in parallel, for the cross-index field-health
+ *  Overview. Shares the ["timeseries", fieldId, index] cache keys with `useTimeseries`, so the
+ *  Series tab and the Overview never double-fetch the same index. */
+export function useAllIndexTimeseries(fieldId: string | null) {
+  const { token } = useToken();
+  const results = useQueries({
+    queries: INDICES.map((meta) => ({
+      queryKey: ["timeseries", fieldId, meta.key] as const,
+      queryFn: ({ signal }: { signal: AbortSignal }) =>
+        api.timeseries(fieldId!, meta.key, token!, signal),
+      enabled: !!token && !!fieldId,
+      staleTime: 30_000,
+    })),
+  });
+
+  const byIndex: Partial<Record<IndexKey, TimeseriesPoint[]>> = {};
+  results.forEach((r, i) => {
+    if (r.data) byIndex[INDICES[i].key] = r.data;
+  });
+
+  return {
+    byIndex,
+    isLoading: results.some((r) => r.isLoading),
+    isError: results.some((r) => r.isError),
+  };
 }
 
 export function useScenes(fieldId: string | null, collecting = false) {

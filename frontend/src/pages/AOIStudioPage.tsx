@@ -505,7 +505,7 @@ function Studio() {
       </div>
 
       {/* Results */}
-      <section className="flex max-h-[44vh] shrink-0 flex-col border-t border-border bg-panel">
+      <section className="flex max-h-[62vh] shrink-0 flex-col border-t border-border bg-panel">
         {anyResults ? (
           <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border px-3 py-1.5">
             <span className="text-xs font-medium text-muted">Results</span>
