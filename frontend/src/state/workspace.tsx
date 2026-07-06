@@ -61,6 +61,20 @@ const initialState: WorkspaceState = {
   uploadedRegionLayerId: null,
 };
 
+/** Reveal the current pass on the map. The map only draws imagery while an index / true-colour /
+ *  false-colour layer is active, and all three default off, so selecting a pass would otherwise
+ *  leave the map unchanged. When a pass is selected (a row click, the scrubber, or an as-of date
+ *  snapping to its nearest real pass) and no layer is shown yet, default to true colour - "what the
+ *  field looked like on that day". An already-chosen layer is left untouched. Imagery is never
+ *  averaged or synthesised for a gap: a date the satellite skipped resolves to the nearest stored
+ *  pass upstream (invariant 4), and this only decides how that pass is drawn. */
+function revealPass(state: WorkspaceState): WorkspaceState {
+  if (state.passDate && !state.showRaster && !state.showRgb && !state.showFcc) {
+    return { ...state, showRgb: true };
+  }
+  return state;
+}
+
 function reducer(state: WorkspaceState, action: Action): WorkspaceState {
   switch (action.type) {
     case "selectFarm":
@@ -91,13 +105,14 @@ function reducer(state: WorkspaceState, action: Action): WorkspaceState {
       return { ...state, index: action.index };
     case "setPassDate":
       // A manual pass pick retires the as-of request: the analyst overrode the resolution.
-      return { ...state, passDate: action.passDate, requestedDate: null };
+      return revealPass({ ...state, passDate: action.passDate, requestedDate: null });
     case "setRequestedDate":
       return { ...state, requestedDate: action.requestedDate };
     case "applyResolvedPass":
       // An as-of resolution landing on the map keeps the request so the label can state
-      // "requested X -> showing Y (gap)".
-      return { ...state, passDate: action.passDate };
+      // "requested X -> showing Y (gap)". Reveal it too, so snapping a no-pass date to its nearest
+      // stored pass actually shows that pass instead of a blank map.
+      return revealPass({ ...state, passDate: action.passDate });
     case "setCompareDate":
       return { ...state, compareDate: action.compareDate };
     case "restoreView":
