@@ -19,6 +19,14 @@ _COMPOSITE_RANGES: dict[str, tuple[tuple[float, float], ...]] = {
     "fcc": ((0.0, 0.45), (0.0, 0.3), (0.0, 0.3)),
 }
 
+# A plain linear stretch of low-valued surface reflectance renders dark and muddy (mid-tones land
+# around 0.3-0.5 of full scale), so the true-colour preview looked like nothing against a satellite
+# basemap. A gamma lift plus a gentle sigmoidal contrast brings the composites to a natural,
+# photo-like brightness - what the field looked like on the day - without blowing out bright
+# surfaces. This is display only: the stored COG keeps raw float32 reflectance (invariant 2), and
+# index heatmaps (which carry their own colormap + locked range) are never touched by it.
+_COMPOSITE_COLOR_FORMULA = "gamma RGB 1.7 sigmoidal RGB 3 0.5"
+
 
 class RasterStackUnavailable(RuntimeError):
     """The raster stack (`rasterio` / `rio-tiler`, the `geo` extra) is not installed - the host
@@ -70,6 +78,7 @@ def render_preview(
 
     if index in _COMPOSITE_RANGES:
         image.rescale(in_range=_COMPOSITE_RANGES[index])
+        image.apply_color_formula(_COMPOSITE_COLOR_FORMULA)
         return image.render(img_format="JPEG", quality=85)
 
     from rio_tiler.colormap import cmap as default_cmaps
@@ -122,6 +131,7 @@ def render_tile(
 
     if index in _COMPOSITE_RANGES:
         image.rescale(in_range=_COMPOSITE_RANGES[index])
+        image.apply_color_formula(_COMPOSITE_COLOR_FORMULA)
         return image.render(img_format="PNG")
 
     params = render_params(index)
