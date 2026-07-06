@@ -1,6 +1,6 @@
 # Backlog 0043 — Individual-pass visualization: timelapse playback control
 
-- Status: ready-for-agent
+- Status: done (landed on develop `8850e7f`, pushed both remotes 2026-07-06)
 - Type: frontend
 - Parent: PRD 0004 (`docs/prd/0004-as-of-date-historical-anchor.md`), Extended scope, story 22
 - Blocked by: None

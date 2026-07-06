@@ -1,6 +1,6 @@
 # Backlog 0045 — Individual-pass visualization: pass-to-pass difference/change layer
 
-- Status: ready-for-agent
+- Status: done (landed on develop `4c099e4` tiler + `dcdd556` frontend, pushed both remotes 2026-07-06)
 - Type: backend (`rs_analysis` / tiler) + frontend
 - Parent: PRD 0004 (`docs/prd/0004-as-of-date-historical-anchor.md`), Extended scope, story 24
 - Blocked by: None

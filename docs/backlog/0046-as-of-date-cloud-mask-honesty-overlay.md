@@ -1,6 +1,6 @@
 # Backlog 0046 — Individual-pass visualization: cloud-mask / clear-pixel honesty overlay
 
-- Status: ready-for-agent
+- Status: done (landed on develop `bccbdbe` tiler + `60a5476` frontend, pushed both remotes 2026-07-06)
 - Type: backend (tiler) + frontend
 - Parent: PRD 0004 (`docs/prd/0004-as-of-date-historical-anchor.md`), Extended scope, story 25
 - Blocked by: None. Recommended pickup order: before 0045 - ships the "here's what's unreliable"

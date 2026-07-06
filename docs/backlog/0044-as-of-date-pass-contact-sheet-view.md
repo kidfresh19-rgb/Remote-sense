@@ -1,6 +1,6 @@
 # Backlog 0044 — Individual-pass visualization: contact-sheet / small-multiples map view
 
-- Status: ready-for-agent
+- Status: done (landed on develop `859c44f`, pushed both remotes 2026-07-06)
 - Type: frontend
 - Parent: PRD 0004 (`docs/prd/0004-as-of-date-historical-anchor.md`), Extended scope, story 23
 - Blocked by: None. Soft dependency: reuse 0042's index-aware thumbnail URL helper if it has already

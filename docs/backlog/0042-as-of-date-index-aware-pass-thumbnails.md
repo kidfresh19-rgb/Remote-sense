@@ -1,6 +1,6 @@
 # Backlog 0042 — Individual-pass visualization: index-aware pass thumbnails
 
-- Status: ready-for-agent
+- Status: done (landed on develop `ef586da`, pushed both remotes 2026-07-06)
 - Type: frontend
 - Parent: PRD 0004 (`docs/prd/0004-as-of-date-historical-anchor.md`), Extended scope, story 21
 - Blocked by: None

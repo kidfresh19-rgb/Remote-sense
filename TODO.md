@@ -130,13 +130,22 @@ for after `feat/ward-watch-movement-lens` merges. Not a "next tracer" to pick up
   Watch branch merges, per the PRD's own rollout note.
 
 **Extended scope: individual-pass visualization** (stories 21-25, folded in 2026-07-01) sliced into
-five independent backlog items - none block each other, any agent can grab any one:
-- [ ] **0042** index-aware pass thumbnails (frontend-only; `SceneList` thumbnails follow the active
-  index instead of hardcoded RGB).
-- [ ] **0043** timelapse playback control (frontend-only; auto-advance `passDate` on an interval).
-- [ ] **0044** contact-sheet / small-multiples map view (frontend-only; grid of per-pass thumbnails).
-- [ ] **0045** pass-to-pass difference layer (backend + frontend; decided 2026-07-01: no implicit
+five independent backlog items. All five built and landed on `develop` (pushed to both remotes
+2026-07-06):
+- [x] **0042** index-aware pass thumbnails (frontend-only; `SceneList` thumbnails follow the active
+  index instead of hardcoded RGB). Landed `ef586da`.
+- [x] **0043** timelapse playback control (frontend-only; auto-advance `passDate` on an interval).
+  Landed `8850e7f`.
+- [x] **0044** contact-sheet / small-multiples map view (frontend-only; grid of per-pass thumbnails).
+  Landed `859c44f`.
+- [x] **0045** pass-to-pass difference layer (backend + frontend; decided 2026-07-01: no implicit
   default pairing, extends `SceneCompare`'s explicit A/B; symmetric diverging colormap centered on
-  zero).
-- [ ] **0046** cloud-mask / clear-pixel honesty overlay (backend + frontend; decided 2026-07-01:
-  semi-transparent hatch, reuses the existing per-AOI SCL mask). Recommended before 0045.
+  zero). Landed `4c099e4` (tiler) + `dcdd556` (frontend).
+- [x] **0046** cloud-mask / clear-pixel honesty overlay (backend + frontend; decided 2026-07-01:
+  semi-transparent hatch, reuses the existing per-AOI SCL mask). Landed `bccbdbe` (tiler) +
+  `60a5476` (frontend).
+
+Follow-up from the 0045/0046 `/code-review` (re-filed 2026-07-06, the original was lost uncommitted):
+- [ ] **0047** tiler render routes block the event loop on sync COG reads (needs-triage). All four
+  `render_*` routes in `services/tiler/main.py` call the blocking read directly; `diff_tile` reads
+  two COGs sequentially. Fix: wrap in `run_in_threadpool` (pattern already in `export_cog`).
