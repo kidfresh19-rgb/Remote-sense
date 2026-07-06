@@ -9,6 +9,7 @@ import { useEffect, useRef, type RefObject } from "react";
 import { indexTileTemplate, type Field } from "@/lib/api";
 import { config } from "@/lib/config";
 import type { IndexKey } from "@/lib/indices";
+import { rasterForView, type MapView } from "@/lib/mapView";
 
 const FIELD_SOURCE = "field";
 const FIELD_FILL = "field-fill";
@@ -128,11 +129,8 @@ interface FieldMapParams {
   field: Field | null;
   index: IndexKey;
   sceneId: string | null;
-  showRaster: boolean;
-  showRgb: boolean;
-  /** False color (NIR/red/green). Optional so the comparison maps, which are index-only, need
-   *  no change. */
-  showFcc?: boolean;
+  /** How the field imagery is drawn: index heatmap, true colour, false colour, or basemap only. */
+  mapView: MapView;
   /** Fit the camera to the field on selection. The follower map in a synced pair sets this false
    *  so the shared-camera controller drives it instead. */
   fit?: boolean;
@@ -338,9 +336,7 @@ export function useFieldMap(
     field,
     index,
     sceneId,
-    showRaster,
-    showRgb,
-    showFcc = false,
+    mapView,
     fit = true,
     controls = true,
     onMap,
@@ -478,7 +474,7 @@ export function useFieldMap(
     const apply = () => {
       if (map.getLayer(INDEX_LAYER)) map.removeLayer(INDEX_LAYER);
       if (map.getSource(INDEX_SOURCE)) map.removeSource(INDEX_SOURCE);
-      const activeRaster = showFcc ? "fcc" : showRgb ? "rgb" : showRaster ? index : null;
+      const activeRaster = rasterForView(mapView, index);
       if (!activeRaster || !field || !sceneId) return;
       map.addSource(INDEX_SOURCE, {
         type: "raster",
@@ -492,15 +488,19 @@ export function useFieldMap(
         ],
         tileSize: 256,
       });
+      // True/false colour are the field's actual imagery, drawn opaque so they read as a photo of
+      // the field on that day rather than a wash blended into the basemap. The index heatmap stays
+      // semi-transparent so the field's texture and shape read through the colour ramp.
+      const opacity = mapView === "index" ? 0.8 : 1;
       const beforeId = map.getLayer(FIELD_LINE) ? FIELD_LINE : undefined;
       map.addLayer(
-        { id: INDEX_LAYER, type: "raster", source: INDEX_SOURCE, paint: { "raster-opacity": 0.8 } },
+        { id: INDEX_LAYER, type: "raster", source: INDEX_SOURCE, paint: { "raster-opacity": opacity } },
         beforeId,
       );
     };
     if (readyRef.current) apply();
     else map.once("load", apply);
-  }, [showRaster, showRgb, showFcc, index, field, sceneId]);
+  }, [mapView, index, field, sceneId]);
 
   // Custom AOI overlay: dashed line + translucent fill, placed beneath the field outline.
   useEffect(() => {

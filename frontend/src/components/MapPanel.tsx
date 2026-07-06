@@ -1,15 +1,17 @@
 import { CaretLeft, CaretRight, Columns, Stack, X, Lightning, Eye, Plant } from "@phosphor-icons/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import type { Field } from "@/lib/api";
+import type { Field, TimeseriesPoint } from "@/lib/api";
 import { saveCustomAOI } from "@/lib/customAOIs";
 import { indexMeta, type IndexKey } from "@/lib/indices";
+import type { MapView } from "@/lib/mapView";
 import {
   useFields,
   useScenes,
   useAnalyseAOI,
   useRegionBoundaries,
   useRegionLayers,
+  useTimeseries,
 } from "@/lib/queries";
 import { useWorkspace } from "@/state/workspace";
 
@@ -17,6 +19,7 @@ import { AOIBar } from "./AOIBar";
 import { CoordinateEntryModal } from "./CoordinateEntryModal";
 import { FileUploadPanel } from "./FileUploadPanel";
 import { IndexLegend } from "./IndexLegend";
+import { MapPassReadout } from "./MapPassReadout";
 import { RegionLayersControl } from "./RegionLayersControl";
 import { SceneCompare } from "./SceneCompare";
 import { EmptyState } from "./states";
@@ -41,13 +44,10 @@ export function MapPanel({
     fieldId,
     index,
     passDate,
+    setPassDate,
     compareDate,
-    showRaster,
-    showRgb,
-    showFcc,
-    toggleRaster,
-    toggleRgb,
-    toggleFcc,
+    mapView,
+    setMapView,
     setCompareDate,
     customAOI,
     setCustomAOI,
@@ -59,6 +59,9 @@ export function MapPanel({
 
   const fields = useFields(farmId);
   const scenes = useScenes(fieldId);
+  // Per-pass index numbers for the on-map readout. Shares the ["timeseries", fieldId, index] cache
+  // key with the Series tab, so surfacing the numbers on the map never triggers a second fetch.
+  const timeseries = useTimeseries(fieldId, index);
 
   // Region-boundary overlays (PRD 0002 slices 8a/8b): the seeded Natural Region layer toggles on
   // its own id; an uploaded layer is fetched only while one is chosen. Both default off.
@@ -90,6 +93,20 @@ export function MapPanel({
     [fields.data, fieldId],
   );
   const list = useMemo(() => scenes.data ?? [], [scenes.data]);
+  // Unique pass dates, oldest first. A field can hold several scenes on one date (adjacent MGRS
+  // tiles), so dedupe before the readout keys/steps on them; `list` is already ascending, and Set
+  // preserves that order.
+  const passDates = useMemo(() => Array.from(new Set(list.map((s) => s.pass_date))), [list]);
+  const pointByDate = useMemo(() => {
+    const m = new Map<string, TimeseriesPoint>();
+    for (const p of timeseries.data ?? []) m.set(p.pass_date, p);
+    return m;
+  }, [timeseries.data]);
+  const clearByDate = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const s of list) m.set(s.pass_date, s.clear_fraction);
+    return m;
+  }, [list]);
 
   // A selected field or a drawn/entered AOI is a stronger target than a search pin, so retire the
   // pin (and the empty-state prompt) when either takes over.
@@ -185,9 +202,7 @@ export function MapPanel({
           field={selectedField}
           index={index}
           sceneId={activeSceneId}
-          showRaster={showRaster}
-          showRgb={showRgb}
-          showFcc={showFcc}
+          mapView={mapView}
           customAOI={customAOI}
           naturalRegions={naturalRegions.data ?? null}
           uploadedRegions={uploadedRegions.data ?? null}
@@ -243,33 +258,35 @@ export function MapPanel({
 
       {/* Left-side map controls — shifted down to clear the AOI bar */}
       <div className="absolute left-3 top-[72px] z-20 flex flex-col gap-2">
-        <IconButton
-          label={showRaster ? "Hide index layer" : "Show index layer"}
-          active={showRaster}
-          onClick={toggleRaster}
-          disabled={!selectedField}
-          className="border border-border bg-panel"
-        >
-          <Stack size={18} />
-        </IconButton>
-        <IconButton
-          label={showRgb ? "Hide true color imagery" : "Show true color imagery"}
-          active={showRgb}
-          onClick={toggleRgb}
-          disabled={!selectedField}
-          className="border border-border bg-panel"
-        >
-          <Eye size={18} />
-        </IconButton>
-        <IconButton
-          label={showFcc ? "Hide false color (NIR)" : "Show false color (NIR)"}
-          active={showFcc}
-          onClick={toggleFcc}
-          disabled={!selectedField}
-          className="border border-border bg-panel"
-        >
-          <Plant size={18} />
-        </IconButton>
+        {/* Map view: one mutually-exclusive choice of index heatmap / true colour / false colour.
+            Grouped in one frame so it reads as a single "pick a view" control (not three toggles
+            that silently override each other); clicking the active view returns to basemap only. */}
+        <div className="flex flex-col overflow-hidden rounded-md border border-border bg-panel">
+          <IconButton
+            label={`${indexMeta(index).label} heatmap`}
+            active={mapView === "index"}
+            onClick={() => setMapView(mapView === "index" ? "none" : "index")}
+            disabled={!selectedField}
+          >
+            <Stack size={18} />
+          </IconButton>
+          <IconButton
+            label="True colour"
+            active={mapView === "truecolor"}
+            onClick={() => setMapView(mapView === "truecolor" ? "none" : "truecolor")}
+            disabled={!selectedField}
+          >
+            <Eye size={18} />
+          </IconButton>
+          <IconButton
+            label="False colour (NIR)"
+            active={mapView === "falsecolor"}
+            onClick={() => setMapView(mapView === "falsecolor" ? "none" : "falsecolor")}
+            disabled={!selectedField}
+          >
+            <Plant size={18} />
+          </IconButton>
+        </div>
         <IconButton
           label={comparing ? "Exit comparison" : "Compare two passes"}
           active={comparing}
@@ -337,10 +354,27 @@ export function MapPanel({
         {inspectorOpen ? <CaretRight size={12} weight="bold" /> : <CaretLeft size={12} weight="bold" />}
       </button>
 
-      {/* Index legend — meaningless over the visual composites, so hidden with either */}
-      {selectedField && !showRgb && !showFcc ? (
+      {/* Index legend — the colour key for the heatmap, so shown only in the index view (it is
+           meaningless over the true/false-colour composites or the bare basemap). */}
+      {selectedField && mapView === "index" ? (
         <div className="absolute bottom-3 left-3 z-20">
           <IndexLegend meta={indexMeta(index)} />
+        </div>
+      ) : null}
+
+      {/* On-map pass control — names the displayed pass, jumps to any collected pass, and shows its
+           collected numbers, all without leaving the map. Single-map only; comparison mode carries
+           its own per-pane readouts. */}
+      {!comparing && selectedField && passDates.length > 0 ? (
+        <div className="pointer-events-none absolute inset-x-0 bottom-3 z-20 flex justify-center">
+          <MapPassReadout
+            meta={indexMeta(index)}
+            dates={passDates}
+            value={passDate}
+            onChange={setPassDate}
+            points={pointByDate}
+            clearByDate={clearByDate}
+          />
         </div>
       ) : null}
 
@@ -384,9 +418,7 @@ function SingleSceneMap({
   field,
   index,
   sceneId,
-  showRaster,
-  showRgb,
-  showFcc,
+  mapView,
   customAOI,
   naturalRegions,
   uploadedRegions,
@@ -399,9 +431,7 @@ function SingleSceneMap({
   field: Field | null;
   index: IndexKey;
   sceneId: string | null;
-  showRaster: boolean;
-  showRgb: boolean;
-  showFcc: boolean;
+  mapView: MapView;
   customAOI: import("geojson").Geometry | null;
   naturalRegions: import("geojson").FeatureCollection | null;
   uploadedRegions: import("geojson").FeatureCollection | null;
@@ -419,9 +449,7 @@ function SingleSceneMap({
     field,
     index,
     sceneId,
-    showRaster,
-    showRgb,
-    showFcc,
+    mapView,
     customAOI,
     naturalRegions,
     uploadedRegions,

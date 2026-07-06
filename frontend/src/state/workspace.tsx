@@ -2,6 +2,7 @@ import type { Geometry } from "geojson";
 import { createContext, useContext, useMemo, useReducer, type ReactNode } from "react";
 
 import { DEFAULT_INDEX, type IndexKey } from "@/lib/indices";
+import type { MapView } from "@/lib/mapView";
 
 interface WorkspaceState {
   farmId: string | null;
@@ -14,9 +15,10 @@ interface WorkspaceState {
   requestedDate: string | null;
   // The second pass to compare the primary against. Non-null puts the map into side-by-side mode.
   compareDate: string | null;
-  showRaster: boolean;
-  showRgb: boolean;
-  showFcc: boolean; // false color (NIR/red/green): vegetation renders red
+  // How the field imagery is drawn on the map: the selected index heatmap, true colour, false
+  // colour (NIR), or basemap only. A single explicit view, so the layers can never silently
+  // override one another.
+  mapView: MapView;
   customAOI: Geometry | null; // user-defined analysis boundary
   // Region-boundary map overlays (comparison groups, PRD 0002 slices 8a/8b). Global map context,
   // independent of the selected field, so they are not cleared on a farm/field change.
@@ -39,9 +41,7 @@ type Action =
   | { type: "applyResolvedPass"; passDate: string }
   | { type: "setCompareDate"; compareDate: string | null }
   | { type: "restoreView"; view: RestoreView }
-  | { type: "toggleRaster" }
-  | { type: "toggleRgb" }
-  | { type: "toggleFcc" }
+  | { type: "setMapView"; view: MapView }
   | { type: "setCustomAOI"; geometry: Geometry | null }
   | { type: "toggleNaturalRegions" }
   | { type: "setUploadedRegionLayer"; layerId: string | null };
@@ -53,24 +53,23 @@ const initialState: WorkspaceState = {
   passDate: null,
   requestedDate: null,
   compareDate: null,
-  showRaster: false,
-  showRgb: false,
-  showFcc: false,
+  mapView: "none",
   customAOI: null,
   showNaturalRegions: false,
   uploadedRegionLayerId: null,
 };
 
-/** Reveal the current pass on the map. The map only draws imagery while an index / true-colour /
- *  false-colour layer is active, and all three default off, so selecting a pass would otherwise
- *  leave the map unchanged. When a pass is selected (a row click, the scrubber, or an as-of date
- *  snapping to its nearest real pass) and no layer is shown yet, default to true colour - "what the
- *  field looked like on that day". An already-chosen layer is left untouched. Imagery is never
- *  averaged or synthesised for a gap: a date the satellite skipped resolves to the nearest stored
- *  pass upstream (invariant 4), and this only decides how that pass is drawn. */
+/** Reveal the current pass on the map. The map only draws imagery while a view (true colour / false
+ *  colour / index heatmap) is active, and it defaults to basemap-only, so selecting a pass would
+ *  otherwise leave the map unchanged. When a pass is in play and the map is still basemap-only,
+ *  default to true colour - how the field actually looked on that day - which is what an analyst
+ *  reaches for first. The index heatmap and false colour are one click away on the view control.
+ *  An already-chosen view is left untouched. Imagery is never averaged or synthesised for a gap: a
+ *  date the satellite skipped resolves to the nearest stored pass upstream (invariant 4), and this
+ *  only decides how that pass is drawn. */
 function revealPass(state: WorkspaceState): WorkspaceState {
-  if (state.passDate && !state.showRaster && !state.showRgb && !state.showFcc) {
-    return { ...state, showRgb: true };
+  if (state.passDate && state.mapView === "none") {
+    return { ...state, mapView: "truecolor" };
   }
   return state;
 }
@@ -79,7 +78,8 @@ function reducer(state: WorkspaceState, action: Action): WorkspaceState {
   switch (action.type) {
     case "selectFarm":
       if (action.farmId === state.farmId) return state;
-      // Switching farm clears the field-scoped selection so panels never show stale context.
+      // Switching farm clears the field-scoped selection so panels never show stale context. The
+      // map view persists: an analyst working in the index heatmap keeps it as they move fields.
       return {
         ...state,
         farmId: action.farmId,
@@ -87,8 +87,6 @@ function reducer(state: WorkspaceState, action: Action): WorkspaceState {
         passDate: null,
         requestedDate: null,
         compareDate: null,
-        showRgb: false,
-        showFcc: false,
       };
     case "selectField":
       if (action.fieldId === state.fieldId) return state;
@@ -98,10 +96,12 @@ function reducer(state: WorkspaceState, action: Action): WorkspaceState {
         passDate: null,
         requestedDate: null,
         compareDate: null,
-        showRgb: false,
-        showFcc: false,
       };
     case "setIndex":
+      // Picking an index sets which index the heatmap view draws; it does not change the view. So
+      // choosing NDVI while viewing the true-colour photo leaves the photo up (the heatmap updates
+      // when the analyst switches to the index view), and switching index while in the heatmap
+      // re-renders it.
       return { ...state, index: action.index };
     case "setPassDate":
       // A manual pass pick retires the as-of request: the analyst overrode the resolution.
@@ -125,33 +125,9 @@ function reducer(state: WorkspaceState, action: Action): WorkspaceState {
         passDate: null,
         requestedDate: null,
         compareDate: null,
-        showRgb: false,
-        showFcc: false,
       };
-    case "toggleRaster":
-      const nextShowRaster = !state.showRaster;
-      return {
-        ...state,
-        showRaster: nextShowRaster,
-        showRgb: nextShowRaster ? false : state.showRgb,
-        showFcc: nextShowRaster ? false : state.showFcc,
-      };
-    case "toggleRgb":
-      const nextShowRgb = !state.showRgb;
-      return {
-        ...state,
-        showRgb: nextShowRgb,
-        showRaster: nextShowRgb ? false : state.showRaster,
-        showFcc: nextShowRgb ? false : state.showFcc,
-      };
-    case "toggleFcc":
-      const nextShowFcc = !state.showFcc;
-      return {
-        ...state,
-        showFcc: nextShowFcc,
-        showRaster: nextShowFcc ? false : state.showRaster,
-        showRgb: nextShowFcc ? false : state.showRgb,
-      };
+    case "setMapView":
+      return { ...state, mapView: action.view };
     case "setCustomAOI":
       return { ...state, customAOI: action.geometry };
     case "toggleNaturalRegions":
@@ -172,9 +148,7 @@ interface WorkspaceContextValue extends WorkspaceState {
   applyResolvedPass: (passDate: string) => void;
   setCompareDate: (date: string | null) => void;
   restoreView: (view: RestoreView) => void;
-  toggleRaster: () => void;
-  toggleRgb: () => void;
-  toggleFcc: () => void;
+  setMapView: (view: MapView) => void;
   setCustomAOI: (geometry: Geometry | null) => void;
   toggleNaturalRegions: () => void;
   setUploadedRegionLayer: (layerId: string | null) => void;
@@ -195,9 +169,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       applyResolvedPass: (passDate) => dispatch({ type: "applyResolvedPass", passDate }),
       setCompareDate: (compareDate) => dispatch({ type: "setCompareDate", compareDate }),
       restoreView: (view) => dispatch({ type: "restoreView", view }),
-      toggleRaster: () => dispatch({ type: "toggleRaster" }),
-      toggleRgb: () => dispatch({ type: "toggleRgb" }),
-      toggleFcc: () => dispatch({ type: "toggleFcc" }),
+      setMapView: (view) => dispatch({ type: "setMapView", view }),
       setCustomAOI: (geometry) => dispatch({ type: "setCustomAOI", geometry }),
       toggleNaturalRegions: () => dispatch({ type: "toggleNaturalRegions" }),
       setUploadedRegionLayer: (layerId) =>
